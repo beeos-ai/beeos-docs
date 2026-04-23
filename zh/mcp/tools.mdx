@@ -1,0 +1,199 @@
+---
+title: 工具
+description: 通过 MCP 协议发现和调用智能体工具。
+---
+
+MCP 工具让外部 AI 平台发现智能体的能力并调用特定功能。BeeOS 智能体
+自动将注册的技能暴露为 MCP 工具。
+
+## tools/list
+
+发现智能体提供的所有工具。
+
+**请求：**
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/list"
+}
+```
+
+**响应：**
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "tools": [
+      {
+        "name": "web_search",
+        "description": "搜索任何主题的最新网络信息。",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string",
+              "description": "搜索查询"
+            },
+            "max_results": {
+              "type": "integer",
+              "description": "最大返回结果数",
+              "default": 5
+            }
+          },
+          "required": ["query"]
+        }
+      },
+      {
+        "name": "screenshot",
+        "description": "截取当前浏览器或桌面视图的屏幕截图。",
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        }
+      }
+    ]
+  }
+}
+```
+
+### 工具 Schema
+
+响应中每个工具遵循以下结构：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `name` | string | 工具唯一标识符 |
+| `description` | string | 人类可读的工具功能描述 |
+| `inputSchema` | object | 描述工具输入参数的 JSON Schema |
+
+## tools/call
+
+调用智能体上的特定工具。
+
+**请求：**
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "tools/call",
+  "params": {
+    "name": "web_search",
+    "arguments": {
+      "query": "BeeOS AI 智能体平台",
+      "max_results": 3
+    }
+  }
+}
+```
+
+**响应：**
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "以下是关于 'BeeOS AI 智能体平台' 的前 3 个结果：\n\n1. ..."
+      }
+    ]
+  }
+}
+```
+
+### tools/call 参数
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `name` | string | 是 | `tools/list` 中的工具名称 |
+| `arguments` | object | 是 | 匹配工具 `inputSchema` 的参数 |
+
+### 结果内容类型
+
+`result.content` 数组可包含：
+
+| 类型 | 说明 |
+|------|------|
+| `text` | 纯文本结果 |
+| `image` | Base64 编码的图片，带 MIME 类型 |
+| `resource` | 资源 URI 引用 |
+
+## tools/call 原理
+
+底层实现上，`tools/call` 是一个同步聊天往返：
+
+1. MCP Gateway 将工具调用转换为消息并发送给智能体
+2. 智能体处理工具调用并返回回复
+3. Gateway 提取回复文本并作为 MCP 内容返回
+
+```mermaid
+flowchart LR
+    Client["MCP 客户端"] -->|"tools/call"| GW["MCP Gateway"]
+    GW --> BeeOS["BeeOS 平台"]
+    BeeOS -->|"投递"| Agent["智能体"]
+    Agent -->|"回复"| BeeOS
+    BeeOS --> GW
+    GW -->|"结果"| Client
+```
+
+## 多轮上下文
+
+默认情况下，每次 `tools/call` 创建一个新的对话上下文。为在多次工具调用间
+保持对话上下文，MCP Gateway 按 MCP 规范跟踪 `Mcp-Session-Id` 头。
+同一会话内的调用共享相同的对话上下文，使智能体可以访问之前的对话历史。
+
+## 超时
+
+`tools/call` 的默认超时为 **60 秒**。如果智能体在此窗口内未回复，
+Gateway 返回 JSON-RPC 错误：
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "error": {
+    "code": -32003,
+    "message": "Agent reply timeout"
+  }
+}
+```
+
+## 错误处理
+
+| 错误码 | 含义 |
+|--------|------|
+| `-32601` | 工具未找到（检查 `tools/list`） |
+| `-32602` | 参数无效（检查 `inputSchema`） |
+| `-32003` | 智能体超时 |
+| `-32603` | 内部错误 |
+
+## 示例：完整流程
+
+```bash
+# 1. 列出工具
+curl -s -X POST "https://mcp.beeos.ai/${AGENT_ID}/mcp" \
+  -H "X-Agent-API-Key: bak_YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | jq '.result.tools[].name'
+
+# 2. 调用工具
+curl -s -X POST "https://mcp.beeos.ai/${AGENT_ID}/mcp" \
+  -H "X-Agent-API-Key: bak_YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc":"2.0",
+    "id":2,
+    "method":"tools/call",
+    "params":{
+      "name":"web_search",
+      "arguments":{"query":"BeeOS"}
+    }
+  }' | jq '.result.content[0].text'
+```

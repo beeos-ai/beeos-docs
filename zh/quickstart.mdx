@@ -1,14 +1,14 @@
 ---
-title: Quickstart
-description: Deploy your first agent and invoke it in 5 minutes.
+title: 快速开始
+description: 5 分钟内部署并调用你的第一个智能体。
 ---
 
-## Prerequisites
+## 前置条件
 
-- A BeeOS account at [beeos.ai](https://beeos.ai)
-- A **User API Key** (`oag_...`) from **Settings > API Keys**
+- 注册 [beeos.ai](https://beeos.ai) BeeOS 账号
+- 在 **设置 > API Keys** 中获取 **用户 API Key**（`oag_...`）
 
-## 1. Install the SDK
+## 1. 安装 SDK
 
 <CodeGroup>
 
@@ -21,12 +21,12 @@ go get github.com/beeos-ai/sdk-go
 ```
 
 ```bash curl
-# No installation needed — use curl directly
+# 无需安装，直接使用 curl
 ```
 
 </CodeGroup>
 
-## 2. List available providers
+## 2. 列出可用 Provider
 
 <CodeGroup>
 
@@ -66,7 +66,7 @@ curl -s https://openapi.beeos.ai/api/v1/providers \
 
 </CodeGroup>
 
-## 3. Deploy an agent instance
+## 3. 部署智能体实例
 
 <CodeGroup>
 
@@ -77,8 +77,8 @@ const instance = await client.instances.deploy({
   modelPrimary: "gpt-4o",
 });
 
-console.log("Instance ID:", instance.id);
-console.log("Status:", instance.status);
+console.log("实例 ID:", instance.id);
+console.log("状态:", instance.status);
 ```
 
 ```go Go
@@ -87,7 +87,7 @@ inst, _ := client.Instances.Deploy(context.Background(), beeos.DeployInstanceReq
     AgentFramework: "beeos-claw",
     ModelPrimary:   "gpt-4o",
 })
-fmt.Println("Instance ID:", inst.ID)
+fmt.Println("实例 ID:", inst.ID)
 ```
 
 ```bash curl
@@ -103,26 +103,26 @@ curl -s -X POST https://openapi.beeos.ai/api/v1/instances \
 
 </CodeGroup>
 
-## 4. Invoke the agent
+## 4. 调用智能体
 
-Once the instance is `running`, you can send it a message:
+实例状态变为 `running` 后，即可向其发送消息：
 
 <CodeGroup>
 
 ```typescript TypeScript
 const result = await client.agents.invoke(instance.identityId, {
-  message: "Hello! What can you do?",
+  message: "你好！你能做什么？",
 });
 
-console.log("Reply:", result.text);
-console.log("Context:", result.context_id);
+console.log("回复:", result.text);
+console.log("上下文:", result.context_id);
 ```
 
 ```go Go
 reply, _ := client.Agents.Invoke(context.Background(), agentID, beeos.InvokeAgentRequest{
-    Message: "Hello! What can you do?",
+    Message: "你好！你能做什么？",
 })
-fmt.Println("Reply:", reply.Text)
+fmt.Println("回复:", reply.Text)
 ```
 
 ```bash curl
@@ -130,32 +130,32 @@ curl -s -X POST "https://openapi.beeos.ai/api/v1/agents/${AGENT_ID}/invoke" \
   -H "Authorization: Bearer oag_YOUR_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "message": "Hello! What can you do?"
+    "message": "你好！你能做什么？"
   }' | jq '.data'
 ```
 
 </CodeGroup>
 
-For streaming responses, set `Accept: text/event-stream`:
+获取流式响应，请设置 `Accept: text/event-stream`：
 
 ```bash
 curl -N -X POST "https://openapi.beeos.ai/api/v1/agents/${AGENT_ID}/invoke" \
   -H "Authorization: Bearer oag_YOUR_KEY" \
   -H "Content-Type: application/json" \
   -H "Accept: text/event-stream" \
-  -d '{"message": "Tell me about yourself"}'
+  -d '{"message": "介绍一下你自己"}'
 ```
 
-## 5. Clean up
+## 5. 清理资源
 
 ```bash
 curl -s -X DELETE "https://openapi.beeos.ai/api/v1/instances/${INSTANCE_ID}" \
   -H "Authorization: Bearer oag_YOUR_KEY" | jq
 ```
 
-## Next steps
+## 下一步
 
-- [Authentication](/authentication) — understand all auth methods
-- [A2A Protocol](/a2a/overview) — build agent-to-agent workflows
-- [MCP Integration](/mcp/overview) — connect agents to Claude, Cursor, and more
-- [API Reference](/api-reference) — explore all endpoints interactively
+- [认证](/zh/authentication) — 了解所有认证方式
+- [A2A 协议](/zh/a2a/overview) — 构建智能体间的协作流程
+- [MCP 集成](/zh/mcp/overview) — 将智能体连接到 Claude、Cursor 等平台
+- [API 参考](/api-reference) — 交互式探索所有端点

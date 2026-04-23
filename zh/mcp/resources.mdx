@@ -1,0 +1,211 @@
+---
+title: 资源
+description: MCP 智能体暴露的只读数据资源和提示模板。
+---
+
+除了工具外，MCP 智能体还可以暴露 **资源**（只读数据）和
+**提示模板**（可复用的消息模式）。这些遵循标准 MCP 规范。
+
+## 资源
+
+资源代表 MCP 客户端可以读取但不能修改的数据。
+
+### resources/list
+
+发现可用资源：
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "resources/list"
+}
+```
+
+**响应：**
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "resources": [
+      {
+        "uri": "beeos://agent/config",
+        "name": "智能体配置",
+        "description": "当前智能体配置和能力",
+        "mimeType": "application/json"
+      },
+      {
+        "uri": "beeos://agent/skills",
+        "name": "技能注册表",
+        "description": "所有注册技能及其元数据列表",
+        "mimeType": "application/json"
+      }
+    ]
+  }
+}
+```
+
+### 资源 Schema
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `uri` | string | 资源唯一标识符 |
+| `name` | string | 人类可读的名称 |
+| `description` | string | 资源包含的内容说明 |
+| `mimeType` | string | 资源的内容类型 |
+
+### resources/read
+
+按 URI 读取特定资源：
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "resources/read",
+  "params": {
+    "uri": "beeos://agent/config"
+  }
+}
+```
+
+**响应：**
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+    "contents": [
+      {
+        "uri": "beeos://agent/config",
+        "mimeType": "application/json",
+        "text": "{\"name\":\"Research Assistant\",\"model\":\"gpt-4o\",\"skills\":[\"web_search\",\"summarize\"]}"
+      }
+    ]
+  }
+}
+```
+
+## 提示模板
+
+提示模板是 MCP 客户端可以向用户展示的可复用消息模式。
+
+### prompts/list
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "prompts/list"
+}
+```
+
+**响应：**
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "result": {
+    "prompts": [
+      {
+        "name": "research",
+        "description": "研究一个主题并提供摘要",
+        "arguments": [
+          {
+            "name": "topic",
+            "description": "要研究的主题",
+            "required": true
+          },
+          {
+            "name": "depth",
+            "description": "研究深度：brief、standard 或 deep",
+            "required": false
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+### prompts/get
+
+使用参数渲染提示模板：
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "method": "prompts/get",
+  "params": {
+    "name": "research",
+    "arguments": {
+      "topic": "量子计算",
+      "depth": "deep"
+    }
+  }
+}
+```
+
+**响应：**
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "result": {
+    "messages": [
+      {
+        "role": "user",
+        "content": {
+          "type": "text",
+          "text": "深入研究量子计算。提供涵盖近期进展、主要参与者和实际应用的全面摘要。"
+        }
+      }
+    ]
+  }
+}
+```
+
+## 示例：完整资源流程
+
+```bash
+# 列出资源
+curl -s -X POST "https://mcp.beeos.ai/${AGENT_ID}/mcp" \
+  -H "X-Agent-API-Key: bak_YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"resources/list"}' | jq '.result.resources'
+
+# 读取资源
+curl -s -X POST "https://mcp.beeos.ai/${AGENT_ID}/mcp" \
+  -H "X-Agent-API-Key: bak_YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"resources/read","params":{"uri":"beeos://agent/config"}}' | jq
+
+# 列出提示
+curl -s -X POST "https://mcp.beeos.ai/${AGENT_ID}/mcp" \
+  -H "X-Agent-API-Key: bak_YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":3,"method":"prompts/list"}' | jq '.result.prompts'
+```
+
+## 可用性
+
+并非所有智能体都暴露资源或提示。如果智能体未注册任何资源或提示，
+响应可能包含空数组：
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "resources": []
+  }
+}
+```
+
+这是正常行为，不是错误。

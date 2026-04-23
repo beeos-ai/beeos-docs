@@ -1,3 +1,17 @@
-<svg width="120" height="32" viewBox="0 0 120 32" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <text x="0" y="24" font-family="Inter, system-ui, sans-serif" font-weight="700" font-size="24" fill="#ffffff">BeeOS</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 150 36" fill="none">
+  <!-- Bee icon scaled from 500x500 to 30x30, offset to (3,3) -->
+  <g transform="translate(3,3) scale(0.06)">
+    <rect width="500" height="500" rx="100" fill="#FFCA28"/>
+    <path d="M99 361.418C99 162.968 401.4 162.968 401.4 361.418C401.4 366.43 399.409 371.237 395.864 374.782C392.32 378.326 387.513 380.318 382.5 380.318H117.9C112.887 380.318 108.08 378.326 104.536 374.782C100.991 371.237 99 366.43 99 361.418Z" fill="black"/>
+    <path d="M204.7 224C187.95 185.378 165.617 159.044 137.7 145" stroke="black" stroke-width="20" stroke-linecap="round"/>
+    <path d="M127.7 160C138.746 160 147.7 151.046 147.7 140C147.7 128.954 138.746 120 127.7 120C116.655 120 107.7 128.954 107.7 140C107.7 151.046 116.655 160 127.7 160Z" fill="black"/>
+    <path d="M301.23 223.92C318.24 184.188 340.92 157.098 369.27 142.65" stroke="black" stroke-width="20" stroke-linecap="round"/>
+    <path d="M381.7 160C392.746 160 401.7 151.046 401.7 140C401.7 128.954 392.746 120 381.7 120C370.655 120 361.7 128.954 361.7 140C361.7 151.046 370.655 160 381.7 160Z" fill="black"/>
+    <circle cx="184.05" cy="303.3" r="17.01" fill="#FFCA28"/>
+    <circle cx="316.35" cy="303.3" r="17.01" fill="#FFCF70"/>
+  </g>
+
+  <text x="40" y="25" font-family="system-ui,-apple-system,'Segoe UI',sans-serif" font-size="24" font-weight="800" letter-spacing="-0.5">
+    <tspan fill="#FFCA28">Bee</tspan><tspan fill="#FFE082">OS</tspan>
+  </text>
 </svg>

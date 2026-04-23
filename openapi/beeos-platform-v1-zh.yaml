@@ -1,38 +1,38 @@
 openapi: 3.1.0
 info:
-  title: BeeOS Platform API
+  title: BeeOS 平台 API
   version: 1.0.0
   description: |
-    The **BeeOS Platform API** for managing agent instances and invoking agents.
-    SDKs are available for [TypeScript](https://www.npmjs.com/package/@beeos-ai/sdk)
-    and [Go](https://github.com/beeos-ai/sdk-go).
+    **BeeOS 平台 API**，用于管理智能体实例和调用智能体。
+    SDK 支持 [TypeScript](https://www.npmjs.com/package/@beeos-ai/sdk)
+    和 [Go](https://github.com/beeos-ai/sdk-go)。
 
-    **Auth:** every operation requires either a user **JWT** or an **`oag_`**
-    User API Key passed via `Authorization: Bearer`.
+    **认证：**所有操作均需携带用户 **JWT** 或 **`oag_`** 用户 API Key，
+    通过 `Authorization: Bearer` 传递。
 servers:
   - url: https://openapi.beeos.ai
-    description: Production
+    description: 生产环境
 tags:
   - name: deploy
-    description: Provider / region / model catalog.
+    description: Provider / 区域 / 模型目录。
   - name: instances
-    description: Agent instance lifecycle (deploy, start, stop, restart, destroy).
+    description: 智能体实例生命周期（部署、启动、停止、重启、销毁）。
   - name: agents
-    description: Agent listing, details, and invocation.
+    description: 智能体列表、详情和调用。
 security:
   - bearerAuth: []
 paths:
   # ---------------------------------------------------------------------
-  # Catalog
+  # 目录
   # ---------------------------------------------------------------------
   /api/v1/providers:
     get:
       operationId: listProviders
       tags: [deploy]
-      summary: List available providers (catalog)
+      summary: 列出可用 Provider（目录）
       responses:
         "200":
-          description: Standard `{ success, data }` envelope; `data` is a list of provider catalog items.
+          description: 标准 `{ success, data }` 信封；`data` 为 Provider 目录项列表。
           content:
             application/json:
               schema:
@@ -41,15 +41,16 @@ paths:
     get:
       operationId: listDeployRegions
       tags: [deploy]
-      summary: List deploy regions
+      summary: 列出部署区域
       parameters:
         - name: providerId
           in: query
           required: false
           schema: { type: string }
+          description: 按 Provider ID 过滤。
       responses:
         "200":
-          description: Standard envelope; `data` is a list of deploy regions.
+          description: 标准信封；`data` 为部署区域列表。
           content:
             application/json:
               schema:
@@ -58,60 +59,68 @@ paths:
     get:
       operationId: listDeployModels
       tags: [deploy]
-      summary: List deploy models
+      summary: 列出部署模型
       parameters:
         - name: agentFramework
           in: query
           required: false
           schema: { type: string }
+          description: 按智能体框架过滤。
       responses:
         "200":
-          description: Standard envelope; `data` is a list of deploy model options.
+          description: 标准信封；`data` 为部署模型选项列表。
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/DeployModelsListResponse'
 
   # ---------------------------------------------------------------------
-  # Instances
+  # 实例
   # ---------------------------------------------------------------------
   /api/v1/instances:
     get:
       operationId: listInstances
       tags: [instances]
-      summary: List the caller's instances
+      summary: 列出调用者的实例
       parameters:
         - name: page
           in: query
           required: false
           schema: { type: integer, format: int32, minimum: 0 }
+          description: 页码（从 0 开始）。
         - name: pageSize
           in: query
           required: false
           schema: { type: integer, format: int32, minimum: 0, maximum: 200 }
+          description: 每页数量。
         - name: status
           in: query
           required: false
           schema: { type: string }
+          description: 按状态过滤。
         - name: providerId
           in: query
           required: false
           schema: { type: string }
+          description: 按 Provider ID 过滤。
         - name: agentFramework
           in: query
           required: false
           schema: { type: string }
+          description: 按智能体框架过滤。
         - name: clusterId
           in: query
           required: false
           schema: { type: string }
+          description: 按集群 ID 过滤。
         - name: search
           in: query
           required: false
           schema: { type: string }
+          description: 搜索关键词。
       responses:
         "200":
-          description: Paginated list of instances (`{ success, data, total }`).
+          description: 分页实例列表（`{ success, data, total }`）。
           content:
             application/json:
               schema:
@@ -119,7 +128,7 @@ paths:
     post:
       operationId: deployInstance
       tags: [instances]
-      summary: Deploy a new instance (catalog-driven via `variantId` or explicit).
+      summary: 部署新实例（通过 `variantId` 目录驱动或显式指定）。
       requestBody:
         required: true
         content:
@@ -128,7 +137,7 @@ paths:
               $ref: '#/components/schemas/DeployInstanceRequest'
       responses:
         "201":
-          description: Standard envelope; `data` is the created instance.
+          description: 标准信封；`data` 为创建的实例。
           content:
             application/json:
               schema:
@@ -143,10 +152,10 @@ paths:
     get:
       operationId: getInstance
       tags: [instances]
-      summary: Get an instance by id
+      summary: 根据 ID 获取实例
       responses:
         "200":
-          description: Standard envelope; `data` is the instance.
+          description: 标准信封；`data` 为实例详情。
           content:
             application/json:
               schema:
@@ -154,10 +163,10 @@ paths:
     delete:
       operationId: destroyInstance
       tags: [instances]
-      summary: Destroy (terminate) an instance
+      summary: 销毁（终止）实例
       responses:
         "200":
-          description: Standard envelope; `data` is the literal `"destroyed"`.
+          description: 标准信封；`data` 为字符串 `"destroyed"`。
           content:
             application/json:
               schema:
@@ -172,10 +181,10 @@ paths:
     post:
       operationId: startInstance
       tags: [instances]
-      summary: Start an instance
+      summary: 启动实例
       responses:
         "200":
-          description: Standard envelope; `data` is the instance after the operation.
+          description: 标准信封；`data` 为操作后的实例。
           content:
             application/json:
               schema:
@@ -189,10 +198,10 @@ paths:
     post:
       operationId: stopInstance
       tags: [instances]
-      summary: Stop an instance
+      summary: 停止实例
       responses:
         "200":
-          description: Standard envelope; `data` is the instance after the operation.
+          description: 标准信封；`data` 为操作后的实例。
           content:
             application/json:
               schema:
@@ -206,40 +215,42 @@ paths:
     post:
       operationId: restartInstance
       tags: [instances]
-      summary: Restart an instance
+      summary: 重启实例
       responses:
         "200":
-          description: Standard envelope; `data` is the instance after the operation.
+          description: 标准信封；`data` 为操作后的实例。
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/InstanceResponse'
 
   # ---------------------------------------------------------------------
-  # Agents
+  # 智能体
   # ---------------------------------------------------------------------
   /api/v1/agents:
     get:
       operationId: listAgents
       tags: [agents]
-      summary: List agents owned by the caller.
+      summary: 列出调用者拥有的智能体。
       parameters:
         - name: instance_id
           in: query
           required: false
           schema: { type: string, maxLength: 128 }
-          description: Filter agents by instance ID.
+          description: 按实例 ID 过滤智能体。
         - name: limit
           in: query
           required: false
           schema: { type: integer, format: int32, default: 20 }
+          description: 最大返回数量。
         - name: offset
           in: query
           required: false
           schema: { type: integer, format: int32, default: 0 }
+          description: 分页偏移量。
       responses:
         "200":
-          description: Paginated list of agents.
+          description: 分页智能体列表。
           content:
             application/json:
               schema:
@@ -254,10 +265,10 @@ paths:
     get:
       operationId: getAgent
       tags: [agents]
-      summary: Get agent details by ID.
+      summary: 根据 ID 获取智能体详情。
       responses:
         "200":
-          description: Agent details.
+          description: 智能体详情。
           content:
             application/json:
               schema:
@@ -272,14 +283,12 @@ paths:
     post:
       operationId: invokeAgent
       tags: [agents]
-      summary: Send a message to an agent and receive a reply.
+      summary: 向智能体发送消息并接收回复。
       description: |
-        Sends a message to the specified agent and blocks until the agent
-        replies (or times out).
+        向指定智能体发送消息，阻塞等待智能体回复（或超时）。
 
-        For streaming responses, set `Accept: text/event-stream` — the
-        response body will be Server-Sent Events with `delta` and `done`
-        event types.
+        获取流式响应请设置 `Accept: text/event-stream` — 响应体将是
+        Server-Sent Events，包含 `delta` 和 `done` 事件类型。
       requestBody:
         required: true
         content:
@@ -289,8 +298,8 @@ paths:
       responses:
         "200":
           description: |
-            Blocking: JSON envelope with agent reply.
-            Streaming (`Accept: text/event-stream`): SSE stream.
+            阻塞模式：JSON 信封包含智能体回复。
+            流式模式（`Accept: text/event-stream`）：SSE 流。
           content:
             application/json:
               schema:
@@ -298,7 +307,7 @@ paths:
             text/event-stream:
               schema:
                 type: string
-                description: SSE stream with `delta` and `done` events.
+                description: 包含 `delta` 和 `done` 事件的 SSE 流。
 
 components:
   securitySchemes:
@@ -307,10 +316,10 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: |
-        Pass a user **JWT** or an **`oag_`** User API Key on the
-        `Authorization: Bearer <token>` header.
+        通过 `Authorization: Bearer <token>` 头传递用户 **JWT** 或 **`oag_`**
+        用户 API Key。
   schemas:
-    # -------- Envelope helpers --------
+    # -------- 信封辅助 --------
     SuccessEnvelope:
       type: object
       required: [success]
@@ -327,7 +336,7 @@ components:
             data:
               type: string
 
-    # -------- Catalog --------
+    # -------- 目录 --------
     ProviderMeta:
       type: object
       required: [id, name, description, version]
@@ -401,7 +410,7 @@ components:
               items:
                 $ref: '#/components/schemas/DeployModelItem'
 
-    # -------- Instance --------
+    # -------- 实例 --------
     InstanceDataDTO:
       type: object
       required:
@@ -441,12 +450,12 @@ components:
         status:
           type: string
           description: |
-            One of `pending` | `provisioning` | `running` | `stopped` |
-            `terminated`.
+            取值为 `pending` | `provisioning` | `running` | `stopped` |
+            `terminated` 之一。
         desiredStatus:
           type: string
           description: |
-            One of `running` | `stopped` | `terminated`.
+            取值为 `running` | `stopped` | `terminated` 之一。
         endpoint: { type: string }
         bridgeId: { type: string }
         identityId: { type: string }
@@ -455,11 +464,11 @@ components:
           format: int64
         connectivity:
           type: string
-          description: One of `unknown` | `online` | `offline`.
+          description: 取值为 `unknown` | `online` | `offline` 之一。
         haltReason: { type: string }
         providerConfig:
           description: |
-            Sanitized provider config (apiKeys stripped). Raw JSON object.
+            经过脱敏的 Provider 配置（apiKeys 已移除）。原始 JSON 对象。
           type: object
           additionalProperties: true
         publicIp: { type: string }
@@ -507,76 +516,101 @@ components:
       type: object
       required: [name]
       description: |
-        Either supply a **catalog** `variantId` (authoritative — lifts
-        `agentFramework` / `providerId` / region / scheduling hints from the
-        variant) **or** provide an explicit `agentFramework` (+ optional
-        `providerId`). Client-supplied scheduling fields (ownershipPreference /
-        maxPricePerHour / resourceTypeHint) are **not** accepted here; the
-        catalog variant is the source of truth.
+        可以提供 **目录** `variantId`（权威来源 — 从 variant 获取
+        `agentFramework` / `providerId` / 区域 / 调度策略），**或者**
+        显式指定 `agentFramework`（+ 可选的 `providerId`）。
+        客户端提供的调度字段（ownershipPreference / maxPricePerHour /
+        resourceTypeHint）**不在此处**接受；目录 variant 是唯一来源。
       properties:
         variantId:
           type: string
           maxLength: 128
+          description: 目录 variant ID。
         agentFramework:
           type: string
           maxLength: 64
+          description: 智能体框架。
         providerId:
           type: string
           maxLength: 64
+          description: Provider ID。
         providerConfig:
           description: |
-            Free-form provider-specific configuration merged with the catalog
-            config (catalog wins on key conflicts).
+            自由格式的 Provider 特定配置，与目录配置合并
+            （冲突时目录优先）。
           type: object
           additionalProperties: true
         name:
           type: string
           maxLength: 128
+          description: 实例名称。
         modelPrimary:
           type: string
           maxLength: 128
+          description: 主模型 ID。
         models:
           type: array
           items: { type: string, maxLength: 128 }
+          description: 可选的附加模型列表。
         systemPrompt:
           type: string
           maxLength: 8192
+          description: 系统提示词。
         mcpServers:
           type: object
           additionalProperties: true
+          description: MCP 服务器配置。
         bridgeId:
           type: string
           maxLength: 128
+          description: 指定的 Bridge ID。
         config:
           description: |
-            Alternate name for `providerConfig`; same semantics. Used by the
-            variant-driven path to layer user extras (apiKeys / apiBaseUrls)
-            on top of the catalog config.
+            `providerConfig` 的替代名称；语义相同。
           type: object
           additionalProperties: true
         clusterId:
           type: string
           maxLength: 128
+          description: 指定的集群 ID。
         preferredRegion:
           type: string
           maxLength: 64
+          description: 首选区域。
 
-    # -------- Agents --------
+    # -------- 智能体 --------
     AgentDTO:
       type: object
       required: [id, instanceId, name, status, visibility, mcpEnabled]
       properties:
-        id: { type: string }
-        instanceId: { type: string }
-        name: { type: string }
-        description: { type: string }
-        displayName: { type: string }
-        status: { type: string }
-        slug: { type: string }
-        mcpEnabled: { type: boolean }
+        id:
+          type: string
+          description: 智能体 ID。
+        instanceId:
+          type: string
+          description: 所属实例 ID。
+        name:
+          type: string
+          description: 智能体名称。
+        description:
+          type: string
+          description: 智能体描述。
+        displayName:
+          type: string
+          description: 显示名称。
+        status:
+          type: string
+          description: 智能体状态。
+        slug:
+          type: string
+          description: URL 友好标识符。
+        mcpEnabled:
+          type: boolean
+          description: 是否启用 MCP。
         visibility:
           type: string
           enum: [private, public, marketplace, unlisted]
+          description: 可见性。
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
     AgentListResponse:
@@ -603,14 +637,14 @@ components:
       properties:
         message:
           type: string
-          description: The message to send to the agent.
+          description: 发送给智能体的消息。
         context_id:
           type: string
-          description: Optional conversation context ID for multi-turn conversations.
+          description: 可选的会话上下文 ID，用于多轮对话。
         timeout_ms:
           type: integer
           format: int64
-          description: Timeout in milliseconds (default 120000).
+          description: 超时时间（毫秒），默认 120000。
     InvokeAgentResponse:
       allOf:
         - $ref: '#/components/schemas/SuccessEnvelope'
@@ -623,10 +657,10 @@ components:
               properties:
                 text:
                   type: string
-                  description: Agent reply text.
+                  description: 智能体回复文本。
                 context_id:
                   type: string
-                  description: Conversation context ID for multi-turn conversations.
+                  description: 会话上下文 ID，用于多轮对话。
                 is_error:
                   type: boolean
-                  description: Whether the agent's reply indicated an error.
+                  description: 智能体回复是否为错误。

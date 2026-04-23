@@ -1,27 +1,25 @@
 ---
 title: Go SDK
-description: Install and use the github.com/beeos-ai/sdk-go Go client.
+description: 安装和使用 github.com/beeos-ai/sdk-go Go 客户端。
 ---
 
-The Go SDK is an auto-generated client for the BeeOS Platform API
-(`openapi.beeos.ai`). It covers **instance lifecycle management** and
-**agent invocation** — the core platform operations you need to deploy
-agents and send them messages programmatically.
+Go SDK 是 BeeOS 平台 API（`openapi.beeos.ai`）的自动生成客户端，
+覆盖**实例生命周期管理**和**智能体消息调用**——以编程方式部署智能体并向其
+发送消息所需的核心平台操作。
 
 <Info>
-  The SDK targets the **Platform API** only. The [A2A protocol](/a2a/overview)
-  (`a2a.beeos.ai`) and [MCP protocol](/mcp/overview) (`mcp.beeos.ai`) are
-  separate protocol entry points with their own authentication and are **not**
-  included in this SDK.
+  SDK 仅覆盖**平台 API**。[A2A 协议](/zh/a2a/overview)（`a2a.beeos.ai`）和
+  [MCP 协议](/zh/mcp/overview)（`mcp.beeos.ai`）是独立的协议入口，拥有各自的
+  认证方式，**不包含**在此 SDK 中。
 </Info>
 
-## Installation
+## 安装
 
 ```bash
 go get github.com/beeos-ai/sdk-go@latest
 ```
 
-## Configuration
+## 配置
 
 ```go
 package main
@@ -49,7 +47,7 @@ func main() {
     client := beeos.NewAPIClient(cfg)
     ctx := context.Background()
 
-    // Use client...
+    // 使用 client...
     _ = ctx
     _ = client
 }
@@ -66,12 +64,12 @@ func (t *authTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 ```
 
 <Note>
-  For local development, set the server URL to `http://localhost:8095`.
+  本地开发时，将服务器 URL 设为 `http://localhost:8095`。
 </Note>
 
-## Catalog
+## 目录
 
-### List providers
+### 列出 Provider
 
 ```go
 providers, _, err := client.DeployAPI.ListProviders(ctx).Execute()
@@ -83,7 +81,7 @@ for _, p := range providers.Data {
 }
 ```
 
-### List regions
+### 列出区域
 
 ```go
 regions, _, err := client.DeployAPI.ListDeployRegions(ctx).
@@ -91,7 +89,7 @@ regions, _, err := client.DeployAPI.ListDeployRegions(ctx).
     Execute()
 ```
 
-### List deploy models
+### 列出部署模型
 
 ```go
 models, _, err := client.DeployAPI.ListDeployModels(ctx).
@@ -99,9 +97,9 @@ models, _, err := client.DeployAPI.ListDeployModels(ctx).
     Execute()
 ```
 
-## Instances
+## 实例
 
-### Deploy an instance
+### 部署实例
 
 ```go
 inst, _, err := client.InstancesAPI.DeployInstance(ctx).
@@ -112,10 +110,10 @@ inst, _, err := client.InstancesAPI.DeployInstance(ctx).
     }).
     Execute()
 
-fmt.Println("ID:", inst.Data.Id, "Status:", inst.Data.Status)
+fmt.Println("ID:", inst.Data.Id, "状态:", inst.Data.Status)
 ```
 
-### List instances
+### 列出实例
 
 ```go
 list, _, err := client.InstancesAPI.ListInstances(ctx).
@@ -129,13 +127,13 @@ for _, inst := range list.Data {
 }
 ```
 
-### Get instance
+### 获取实例
 
 ```go
 inst, _, err := client.InstancesAPI.GetInstance(ctx, "inst_abc123").Execute()
 ```
 
-### Lifecycle operations
+### 生命周期操作
 
 ```go
 _, _, _ = client.InstancesAPI.StartInstance(ctx, "inst_abc123").Execute()
@@ -144,9 +142,9 @@ _, _, _ = client.InstancesAPI.RestartInstance(ctx, "inst_abc123").Execute()
 _, _, _ = client.InstancesAPI.DestroyInstance(ctx, "inst_abc123").Execute()
 ```
 
-## Agents
+## 智能体
 
-### List agents
+### 列出智能体
 
 ```go
 agents, _, err := client.AgentsAPI.ListAgents(ctx).
@@ -161,7 +159,7 @@ for _, a := range agents.Data {
 }
 ```
 
-### Get agent details
+### 获取智能体详情
 
 ```go
 agent, _, err := client.AgentsAPI.GetAgent(ctx, "agent_abc123").Execute()
@@ -171,12 +169,12 @@ if err != nil {
 fmt.Println(agent.Data.Name, agent.Data.Visibility)
 ```
 
-### Invoke an agent (blocking)
+### 调用智能体（阻塞）
 
 ```go
 reply, _, err := client.AgentsAPI.InvokeAgent(ctx, "agent_abc123").
     InvokeAgentRequest(beeos.InvokeAgentRequest{
-        Message: "Hello, what can you do?",
+        Message: "你好，你能做什么？",
     }).
     Execute()
 if err != nil {
@@ -185,10 +183,10 @@ if err != nil {
 fmt.Println(reply.Data.Reply)
 ```
 
-### Invoke with streaming (raw HTTP)
+### 流式调用（原生 HTTP）
 
 ```go
-body := strings.NewReader(`{"message":"Hello!"}`)
+body := strings.NewReader(`{"message":"你好！"}`)
 req, _ := http.NewRequest("POST",
     "https://openapi.beeos.ai/api/v1/agents/agent_abc123/invoke", body)
 req.Header.Set("Authorization", "Bearer oag_YOUR_KEY")
@@ -207,24 +205,23 @@ for scanner.Scan() {
 }
 ```
 
-## Error handling
+## 错误处理
 
 ```go
 inst, resp, err := client.InstancesAPI.GetInstance(ctx, "nonexistent").Execute()
 if err != nil {
     if resp != nil {
-        fmt.Println("HTTP status:", resp.StatusCode)
+        fmt.Println("HTTP 状态码:", resp.StatusCode)
     }
-    fmt.Println("Error:", err)
+    fmt.Println("错误:", err)
 }
 ```
 
-## Source and generation
+## 源码与生成
 
-The SDK is auto-generated from
+SDK 从
 [`beeos-platform-v1.yaml`](https://github.com/beeos-ai/openagent/blob/main/backend/openapi/beeos-platform-v1.yaml)
-using OpenAPI Generator (`go`). The published module mirrors the generated
-output from the monorepo.
+使用 OpenAPI Generator（`go`）自动生成。发布的模块镜像 monorepo 中的生成输出。
 
 - **Go module:** `github.com/beeos-ai/sdk-go`
 - **GitHub:** [beeos-ai/sdk-go](https://github.com/beeos-ai/sdk-go)

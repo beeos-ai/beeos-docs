@@ -1,0 +1,128 @@
+---
+title: REST 调用
+description: 完整 A2A JSON-RPC 协议的简化 REST 替代方案。
+---
+
+对于不需要完整 A2A 任务生命周期的调用方，BeeOS 提供简化的 **REST 调用**端点。
+它发送一条聊天消息并返回智能体的回复 — 无需任务 ID，无需状态机。
+
+## 端点
+
+```
+POST https://a2a.beeos.ai/{agentId}/v1/invoke
+```
+
+此端点在
+[Agent Integration OpenAPI 规范](/openapi/beeos-agent-integration-v1.yaml)
+中定义，与 A2A JSON-RPC 使用相同的认证方式。
+
+## 请求
+
+```bash
+curl -s -X POST "https://a2a.beeos.ai/${AGENT_ID}/v1/invoke" \
+  -H "X-Agent-API-Key: bak_YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "法国的首都是什么？",
+    "context_id": "conv_abc123"
+  }'
+```
+
+### 请求体
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `message` | string | 是 | 发送给智能体的消息 |
+| `context_id` | string | 否 | 用于多轮对话的上下文 ID。省略则开启新对话。 |
+| `timeout_ms` | integer | 否 | 端到端超时（毫秒） |
+
+## 阻塞响应
+
+默认情况下，端点阻塞等待智能体回复：
+
+```json
+{
+  "message": "ok",
+  "text": "法国的首都是巴黎。",
+  "context_id": "ch_xyz789",
+  "is_error": false
+}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `message` | string | 状态指示器（成功时为 `"ok"`） |
+| `text` | string | 智能体的回复文本 |
+| `context_id` | string | 用于继续对话的通道 ID |
+| `is_error` | boolean | 智能体是否返回了错误 |
+
+## 流式响应
+
+设置 `Accept: text/event-stream` 获取流式增量：
+
+```bash
+curl -N -X POST "https://a2a.beeos.ai/${AGENT_ID}/v1/invoke" \
+  -H "X-Agent-API-Key: bak_YOUR_KEY" \
+  -H "Accept: text/event-stream" \
+  -H "Content-Type: application/json" \
+  -d '{"message": "写一首关于 AI 的诗"}'
+```
+
+响应是 SSE 流：
+
+```
+data: {"type":"agent_reply_delta","text":"玫瑰是红的，"}
+
+data: {"type":"agent_reply_delta","text":"电路是蓝的..."}
+
+data: {"type":"agent_reply","text":"玫瑰是红的，电路是蓝的...","context_id":"ch_xyz789"}
+```
+
+## 多轮对话
+
+使用 `context_id` 在多次调用间保持对话：
+
+```bash
+# 第一轮 — 创建新通道
+RESP=$(curl -s -X POST "https://a2a.beeos.ai/${AGENT_ID}/v1/invoke" \
+  -H "X-Agent-API-Key: bak_YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"message": "记住：我叫 Alice"}')
+
+CONTEXT_ID=$(echo $RESP | jq -r '.context_id')
+
+# 第二轮 — 复用同一通道
+curl -s -X POST "https://a2a.beeos.ai/${AGENT_ID}/v1/invoke" \
+  -H "X-Agent-API-Key: bak_YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d "{\"message\": \"我叫什么名字？\", \"context_id\": \"${CONTEXT_ID}\"}"
+```
+
+## REST 调用 vs A2A JSON-RPC 的选择
+
+| 特性 | REST 调用 | A2A JSON-RPC |
+|------|-----------|--------------|
+| 简单请求/回复 | 是 | 是 |
+| 任务生命周期（获取、取消、列表） | 否 | 是 |
+| Agent Card 发现 | 否 | 是 |
+| 多轮上下文 | 是（`context_id`） | 是（通过任务） |
+| 流式传输 | 是（SSE） | 是（SSE） |
+| 复杂度 | 低 | 中等 |
+
+当你只需要发消息并获取回复时，使用 **REST 调用**。
+当你需要任务跟踪、取消或完整的 A2A 协议语义时，使用 **A2A JSON-RPC**。
+
+## 与 MCP tools/call 的关系
+
+REST 调用和 [MCP `tools/call`](/zh/mcp/tools) 底层使用相同的消息传输机制。
+两者都是向智能体发送消息并等待回复，区别仅在于协议封装方式。
+
+## 认证
+
+与 A2A JSON-RPC 相同：
+
+| 方式 | 头部 |
+|------|------|
+| 智能体 API Key | `X-Agent-API-Key: bak_...` 或 `Authorization: Bearer bak_...` |
+| 用户 API Key | `Authorization: Bearer oag_...` |
+| JWT | `Authorization: Bearer eyJ...` |

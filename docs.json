@@ -4,13 +4,14 @@
   "name": "BeeOS",
   "logo": {
     "light": "/images/logo-light.svg",
-    "dark": "/images/logo-dark.svg"
+    "dark": "/images/logo-dark.svg",
+    "height": 32
   },
   "favicon": "/images/favicon.svg",
   "colors": {
-    "primary": "#F5A623",
-    "light": "#FFC66D",
-    "dark": "#D4880B"
+    "primary": "#FFCA28",
+    "light": "#FFF2C4",
+    "dark": "#F5AD1A"
   },
   "topbarLinks": [
     {
@@ -23,42 +24,117 @@
     "url": "https://beeos.ai/settings/api-keys"
   },
   "navigation": {
-    "tabs": [
+    "languages": [
       {
-        "tab": "Documentation",
-        "groups": [
+        "language": "en",
+        "tabs": [
           {
-            "group": "Getting Started",
-            "pages": ["introduction", "quickstart", "authentication"]
-          },
-          {
-            "group": "A2A Protocol",
-            "pages": [
-              "a2a/overview",
-              "a2a/agent-cards",
-              "a2a/json-rpc",
-              "a2a/streaming",
-              "a2a/rest-invoke"
+            "tab": "Documentation",
+            "groups": [
+              {
+                "group": "Getting Started",
+                "pages": ["introduction", "quickstart", "authentication"]
+              },
+              {
+                "group": "A2A Protocol",
+                "pages": [
+                  "a2a/overview",
+                  "a2a/agent-cards",
+                  "a2a/json-rpc",
+                  "a2a/streaming",
+                  "a2a/rest-invoke"
+                ]
+              },
+              {
+                "group": "MCP",
+                "pages": [
+                  "mcp/overview",
+                  "mcp/oauth",
+                  "mcp/tools",
+                  "mcp/resources"
+                ]
+              },
+              {
+                "group": "SDKs",
+                "pages": ["sdks/typescript", "sdks/go"]
+              }
             ]
           },
           {
-            "group": "MCP",
-            "pages": [
-              "mcp/overview",
-              "mcp/oauth",
-              "mcp/tools",
-              "mcp/resources"
-            ]
-          },
-          {
-            "group": "SDKs",
-            "pages": ["sdks/typescript", "sdks/go"]
+            "tab": "API Reference",
+            "openapi": "openapi/beeos-platform-v1.yaml"
           }
         ]
       },
       {
-        "tab": "API Reference",
-        "openapi": "openapi/beeos-platform-v1.yaml"
+        "language": "zh",
+        "tabs": [
+          {
+            "tab": "文档",
+            "groups": [
+              {
+                "group": "快速开始",
+                "pages": ["zh/introduction", "zh/quickstart", "zh/authentication"]
+              },
+              {
+                "group": "A2A 协议",
+                "pages": [
+                  "zh/a2a/overview",
+                  "zh/a2a/agent-cards",
+                  "zh/a2a/json-rpc",
+                  "zh/a2a/streaming",
+                  "zh/a2a/rest-invoke"
+                ]
+              },
+              {
+                "group": "MCP",
+                "pages": [
+                  "zh/mcp/overview",
+                  "zh/mcp/oauth",
+                  "zh/mcp/tools",
+                  "zh/mcp/resources"
+                ]
+              },
+              {
+                "group": "SDK",
+                "pages": ["zh/sdks/typescript", "zh/sdks/go"]
+              }
+            ]
+          },
+          {
+            "tab": "API 参考",
+            "groups": [
+              {
+                "group": "deploy",
+                "pages": [
+                  "openapi/beeos-platform-v1-zh.yaml GET /api/v1/providers",
+                  "openapi/beeos-platform-v1-zh.yaml GET /api/v1/deploy/regions",
+                  "openapi/beeos-platform-v1-zh.yaml GET /api/v1/deploy/models"
+                ]
+              },
+              {
+                "group": "instances",
+                "pages": [
+                  "openapi/beeos-platform-v1-zh.yaml GET /api/v1/instances",
+                  "openapi/beeos-platform-v1-zh.yaml POST /api/v1/instances",
+                  "openapi/beeos-platform-v1-zh.yaml GET /api/v1/instances/{id}",
+                  "openapi/beeos-platform-v1-zh.yaml DELETE /api/v1/instances/{id}",
+                  "openapi/beeos-platform-v1-zh.yaml POST /api/v1/instances/{id}/start",
+                  "openapi/beeos-platform-v1-zh.yaml POST /api/v1/instances/{id}/stop",
+                  "openapi/beeos-platform-v1-zh.yaml POST /api/v1/instances/{id}/restart"
+                ]
+              },
+              {
+                "group": "agents",
+                "pages": [
+                  "openapi/beeos-platform-v1-zh.yaml GET /api/v1/agents",
+                  "openapi/beeos-platform-v1-zh.yaml GET /api/v1/agents/{agentId}",
+                  "openapi/beeos-platform-v1-zh.yaml POST /api/v1/agents/{agentId}/invoke"
+                ]
+              }
+            ]
+          }
+        ]
       }
     ]
   },

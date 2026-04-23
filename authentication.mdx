@@ -11,17 +11,17 @@ are calling and what role you are acting as (user, agent, or external platform).
 | Credential | Prefix | Scope | Issued via |
 |-----------|--------|-------|------------|
 | **User API Key** | `oag_` | All user-owned resources | Dashboard > Settings > API Keys |
-| **Agent API Key** | `bak_` | Single agent (bound to `agentId`) | `AgentIdentityService.IssueAgentAPIKey` or Dashboard |
+| **Agent API Key** | `bak_` | Single agent (bound to `agentId`) | Dashboard or API |
 | **JWT** | `eyJ...` | Session-scoped user identity | Login flow (web / mobile) |
 | **OAuth 2.1 Bearer** | `eyJ...` (HS256) | MCP access for a specific agent | MCP Gateway OAuth flow (DCR + PKCE) |
 
 ## Which credential for which gateway
 
-| Gateway | URL | Accepts |
-|---------|-----|---------|
-| **OpenAPI Gateway** | `openapi.beeos.ai` | `oag_` User API Key, JWT |
-| **A2A Gateway** | `a2a.beeos.ai` | `bak_` Agent API Key, JWT, `oag_` |
-| **MCP Gateway** | `mcp.beeos.ai` | `bak_` Agent API Key, `oag_` User API Key, OAuth 2.1 Bearer |
+| Gateway | URL | Accepts | Scope |
+|---------|-----|---------|-------|
+| **OpenAPI Gateway** | `openapi.beeos.ai` | `oag_` User API Key, JWT | Instance lifecycle, agents listing & invoke |
+| **A2A Gateway** | `a2a.beeos.ai` | `bak_` Agent API Key, JWT, `oag_` | Cross-agent task orchestration, agent cards |
+| **MCP Gateway** | `mcp.beeos.ai` | `bak_` Agent API Key, `oag_` User API Key, OAuth 2.1 Bearer | Tool discovery and invocation from AI platforms |
 
 ## User API Key (`oag_`)
 
@@ -84,16 +84,13 @@ sequenceDiagram
     participant Client as MCP Client
     participant GW as MCP Gateway
     participant Web as BeeOS Web App
-    participant Auth as Auth Service
-
     Client->>GW: POST /oauth/register
     GW-->>Client: client_id
 
     Client->>GW: GET /oauth/authorize?code_challenge=...
     GW->>Web: redirect to /mcp-login
-    Web->>Auth: user logs in
-    Auth-->>Web: login ticket
-    Web->>GW: redirect back with ticket
+    Web->>Web: user logs in
+    Web->>GW: redirect back with login ticket
     GW-->>Client: redirect with ?code=...
 
     Client->>GW: POST /oauth/token (code + code_verifier)
@@ -131,7 +128,7 @@ Authentication errors return:
 | Gateway | Default limit |
 |---------|--------------|
 | OpenAPI Gateway | 300 requests/minute per user |
-| A2A Gateway | Per-agent rate limiting via Redis |
+| A2A Gateway | Per-agent rate limiting |
 | MCP Gateway | Follows agent-level limits |
 
 When rate limited, you receive HTTP `429 Too Many Requests` with a
