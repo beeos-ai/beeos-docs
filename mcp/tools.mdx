@@ -1,0 +1,204 @@
+---
+title: Tools
+description: Discover and invoke agent tools via the MCP protocol.
+---
+
+MCP tools let external AI platforms discover what an agent can do and
+invoke specific capabilities. BeeOS agents automatically expose their
+registered skills as MCP tools.
+
+## tools/list
+
+Discover all tools an agent offers.
+
+**Request:**
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/list"
+}
+```
+
+**Response:**
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "tools": [
+      {
+        "name": "web_search",
+        "description": "Search the web for current information on any topic.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string",
+              "description": "The search query"
+            },
+            "max_results": {
+              "type": "integer",
+              "description": "Maximum number of results to return",
+              "default": 5
+            }
+          },
+          "required": ["query"]
+        }
+      },
+      {
+        "name": "screenshot",
+        "description": "Take a screenshot of the current browser or desktop view.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        }
+      }
+    ]
+  }
+}
+```
+
+### Tool schema
+
+Each tool in the response follows this structure:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Unique tool identifier |
+| `description` | string | Human-readable description of what the tool does |
+| `inputSchema` | object | JSON Schema describing the tool's input parameters |
+
+## tools/call
+
+Invoke a specific tool on the agent.
+
+**Request:**
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "tools/call",
+  "params": {
+    "name": "web_search",
+    "arguments": {
+      "query": "BeeOS AI agent platform",
+      "max_results": 3
+    }
+  }
+}
+```
+
+**Response:**
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "Here are the top 3 results for 'BeeOS AI agent platform':\n\n1. ..."
+      }
+    ]
+  }
+}
+```
+
+### tools/call params
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | yes | The tool name from `tools/list` |
+| `arguments` | object | yes | Arguments matching the tool's `inputSchema` |
+
+### Result content types
+
+The `result.content` array can contain:
+
+| Type | Description |
+|------|-------------|
+| `text` | Plain text result |
+| `image` | Base64-encoded image with MIME type |
+| `resource` | Reference to a resource URI |
+
+## How tools/call works
+
+Under the hood, `tools/call` is a synchronous chat round-trip:
+
+1. MCP Gateway converts the tool call into a `chat_message` envelope
+2. The message is published to an IM channel via Message Service
+3. The gateway calls `POST /channels/{id}/wait` with `in_reply_to` matching
+4. The agent processes the tool call and publishes an `agent_reply`
+5. The gateway extracts the reply text and returns it as MCP content
+
+```mermaid
+flowchart LR
+    Client["MCP Client"] -->|"tools/call"| GW["MCP Gateway"]
+    GW -->|"chat_message"| MS["Message Service"]
+    MS -->|"deliver"| Agent["Agent Pod"]
+    Agent -->|"agent_reply"| MS
+    MS -->|"wait match"| GW
+    GW -->|"result"| Client
+```
+
+## Multi-turn context
+
+By default, each `tools/call` creates a new IM channel. To maintain
+conversation context across multiple tool calls, the MCP Gateway tracks
+`Mcp-Session-Id` headers as defined by the MCP spec. Calls within the
+same session share the same underlying IM channel, allowing the agent
+to access prior conversation history.
+
+## Timeout
+
+`tools/call` has a default timeout of **60 seconds**. If the agent does
+not reply within this window, the gateway returns a JSON-RPC error:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "error": {
+    "code": -32003,
+    "message": "Agent reply timeout"
+  }
+}
+```
+
+## Error handling
+
+| Error code | Meaning |
+|-----------|---------|
+| `-32601` | Tool not found (check `tools/list`) |
+| `-32602` | Invalid arguments (check `inputSchema`) |
+| `-32003` | Agent timeout |
+| `-32603` | Internal error |
+
+## Example: full flow
+
+```bash
+# 1. List tools
+curl -s -X POST "https://mcp.beeos.ai/${AGENT_ID}/mcp" \
+  -H "X-Agent-API-Key: bak_YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | jq '.result.tools[].name'
+
+# 2. Call a tool
+curl -s -X POST "https://mcp.beeos.ai/${AGENT_ID}/mcp" \
+  -H "X-Agent-API-Key: bak_YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc":"2.0",
+    "id":2,
+    "method":"tools/call",
+    "params":{
+      "name":"web_search",
+      "arguments":{"query":"BeeOS"}
+    }
+  }' | jq '.result.content[0].text'
+```

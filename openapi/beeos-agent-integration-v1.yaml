@@ -1,0 +1,123 @@
+openapi: 3.1.0
+info:
+  title: BeeOS Agent integration API
+  version: 1.0.0
+  description: |
+    **Public integration surface** for a single target agent. Transport options:
+
+    1. **A2A JSON-RPC** — `POST /{agentId}` (same public base URL as the A2A
+       Gateway) with an `A2A-Version` header and a JSON-RPC body. This remains
+       the full protocol for tasks, cards, and streaming.
+    2. **REST invoke (thin)** — `POST /{agentId}/v1/invoke` with a JSON body.
+       Same Message Service / channel-primitives and authentication as
+       [MCP Gateway `tools/call`](../services/mcp-gateway/README.md), implemented
+       via the shared [chatinvoke](https://github.com/beeos-ai/beeos/tree/main/server/pkg/chatinvoke) package.
+    3. **MCP** — public MCP base URL, agent scope `POST {mcpBase}/agents/{agentId}/mcp`
+       (see product UI / agent object fields `mcpAgentEndpoint`).
+
+    **Auth (same as MCP / A2A):**
+    - `X-Agent-API-Key: bak_…` **or** `Authorization: Bearer bak_…` (Agent
+      API key bound to the URL’s `{agentId}`), **or**
+    - User JWT or **`oag_`** (User API Key) for agents owned by the caller
+      (A2A Gateway enforces owner access on the REST path).
+
+    **CORS / headers:** set `Accept: text/event-stream` for SSE streaming
+    (delta events) on the REST path; else the response is a single JSON
+    object.
+
+servers:
+  - url: https://a2a.beeos.ai
+    description: Production A2A / integration host (example)
+  - url: http://localhost:8092
+    description: Local A2A Gateway (Procfile / staging)
+tags:
+  - name: a2aRest
+    description: Optional REST entry on the A2A host (automation, OpenAPI)
+paths:
+  /{agentId}/v1/invoke:
+    post:
+      operationId: invokeAgent
+      tags: [a2aRest]
+      summary: Send a chat turn and block until a reply (or stream via SSE)
+      description: |
+        Publishes a `chat_message` to Message Service, then waits for the
+        agent’s `agent_reply` on the same IM channel, or streams deltas
+        (Accept `text/event-stream`).
+      parameters:
+        - name: agentId
+          in: path
+          required: true
+          schema:
+            type: string
+            maxLength: 128
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RestInvokeRequest'
+      responses:
+        '200':
+          description: |
+            **Blocking:** `application/json` with `message: ok`, `text`,
+            `context_id` (IM channel for multi-turn), and `is_error` when
+            the agent published an error string.
+
+            **Streaming:** `text/event-stream` — one JSON object per `data:`
+            line; `agent_reply_delta` for partials; final `agent_reply` (or
+            `error` on failure) closes the turn.
+        '401': { $ref: '#/components/responses/AuthError' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ServerError' }
+      security: [{ AgentApiKey: [] }, { BearerOrUser: [] }]
+components:
+  securitySchemes:
+    AgentApiKey:
+      type: apiKey
+      in: header
+      name: X-Agent-API-Key
+    BearerOrUser:
+      type: http
+      scheme: bearer
+      description: |
+        `Authorization: Bearer bak_…` (agent key) or a user JWT or `oag_`
+        User API Key, depending on policy for the same route.
+  responses:
+    AuthError:
+      description: Missing or invalid credentials
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/StripeError' }
+    Forbidden:
+      description: Caller is not allowed to use this agent
+    NotFound:
+      description: Agent not found
+    RateLimited:
+      description: Too many requests
+    ServerError:
+      description: Server error
+  schemas:
+    StripeError:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+    RestInvokeRequest:
+      type: object
+      required: [message]
+      properties:
+        message:
+          type: string
+        context_id:
+          type: string
+          description: |
+            If set, pins the same Message Service channel as an ongoing
+            conversation; otherwise a new channel is created (same contract as
+            MCP `conversation_id` / A2A context).
+        timeout_ms:
+          type: integer
+          format: int64
+          description: End-to-end budget for this invoke+wait; optional.

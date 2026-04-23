@@ -1,0 +1,169 @@
+---
+title: TypeScript SDK
+description: Install and use the @beeos-ai/sdk TypeScript client.
+---
+
+The `@beeos-ai/sdk` package is an auto-generated TypeScript client for the
+BeeOS Platform API. It targets the
+[`openapi-gateway`](https://openapi.beeos.ai) exclusively and uses the
+browser-native Fetch API with no external HTTP dependencies.
+
+## Installation
+
+```bash
+npm install @beeos-ai/sdk
+```
+
+## Configuration
+
+```typescript
+import { Configuration, DeployApi, InstancesApi, A2AApi } from "@beeos-ai/sdk";
+
+const config = new Configuration({
+  basePath: "https://openapi.beeos.ai",
+  headers: {
+    Authorization: "Bearer oag_YOUR_KEY",
+  },
+});
+
+const deployApi = new DeployApi(config);
+const instancesApi = new InstancesApi(config);
+const a2aApi = new A2AApi(config);
+```
+
+<Note>
+  For local development, set `basePath` to `http://localhost:8095`.
+</Note>
+
+## Catalog
+
+### List providers
+
+```typescript
+const providers = await deployApi.listProviders();
+console.log(providers.data);
+// [{ meta: { id: "default", name: "BeeOS Cloud", ... }, capabilities: { ... } }]
+```
+
+### List regions
+
+```typescript
+const regions = await deployApi.listDeployRegions({ providerId: "default" });
+console.log(regions.data);
+// [{ id: "us-east-1", name: "US East", available: true }]
+```
+
+### List deploy models
+
+```typescript
+const models = await deployApi.listDeployModels({ agentFramework: "beeos-claw" });
+console.log(models.data);
+// [{ id: "gpt-4o", name: "GPT-4o", tier: "premium", reasoning: false }]
+```
+
+## Instances
+
+### Deploy an instance
+
+```typescript
+const instance = await instancesApi.deployInstance({
+  deployInstanceRequest: {
+    name: "my-agent",
+    agentFramework: "beeos-claw",
+    modelPrimary: "gpt-4o",
+  },
+});
+console.log(instance.data.id, instance.data.status);
+```
+
+### List instances
+
+```typescript
+const list = await instancesApi.listInstances({
+  page: 0,
+  pageSize: 20,
+  status: "running",
+});
+
+for (const inst of list.data) {
+  console.log(inst.id, inst.name, inst.status);
+}
+```
+
+### Get instance
+
+```typescript
+const inst = await instancesApi.getInstance({ id: "inst_abc123" });
+console.log(inst.data);
+```
+
+### Lifecycle operations
+
+```typescript
+await instancesApi.startInstance({ id: "inst_abc123" });
+await instancesApi.stopInstance({ id: "inst_abc123" });
+await instancesApi.restartInstance({ id: "inst_abc123" });
+await instancesApi.destroyInstance({ id: "inst_abc123" });
+```
+
+## A2A (user proxy)
+
+Send a JSON-RPC message to an agent you own:
+
+```typescript
+const result = await a2aApi.a2aJsonRpcForUser({
+  agentId: "agent_abc123",
+  a2AJSONRPCRequest: {
+    jsonrpc: "2.0",
+    id: 1,
+    method: "SendMessage",
+    params: {
+      message: {
+        role: "user",
+        parts: [{ kind: "text", text: "Hello!" }],
+      },
+    },
+  },
+});
+
+console.log(result.result);
+```
+
+## Error handling
+
+The SDK throws on non-2xx responses. Wrap calls in try/catch:
+
+```typescript
+try {
+  await instancesApi.getInstance({ id: "nonexistent" });
+} catch (error) {
+  if (error instanceof Response) {
+    const body = await error.json();
+    console.error("API error:", body);
+  }
+}
+```
+
+## TypeScript types
+
+All request/response types are exported:
+
+```typescript
+import type {
+  InstanceDataDTO,
+  DeployInstanceRequest,
+  ProviderCatalogItem,
+  A2AJSONRPCRequest,
+  A2AJSONRPCResponse,
+} from "@beeos-ai/sdk";
+```
+
+## Source and generation
+
+The SDK is auto-generated from
+[`beeos-platform-v1.yaml`](https://github.com/beeos-ai/openagent/blob/main/backend/openapi/beeos-platform-v1.yaml)
+using OpenAPI Generator (`typescript-fetch`). The published package mirrors
+the generated output from the monorepo.
+
+- **npm:** [@beeos-ai/sdk](https://www.npmjs.com/package/@beeos-ai/sdk)
+- **GitHub:** [beeos-ai/sdk](https://github.com/beeos-ai/sdk)

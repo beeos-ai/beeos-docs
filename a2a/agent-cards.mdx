@@ -1,0 +1,101 @@
+---
+title: Agent Cards
+description: Discover agent capabilities through the A2A Agent Card specification.
+---
+
+An **Agent Card** is a JSON document that describes an agent's identity,
+skills, supported protocols, and integration endpoints. It follows the
+[A2A v1.0 Agent Card specification](https://github.com/a2aproject/a2a-spec).
+
+## Retrieving an agent card
+
+```bash
+curl -s "https://a2a.beeos.ai/${AGENT_ID}/.well-known/agent-card.json" | jq
+```
+
+<Note>
+  Agent card retrieval does not require authentication. Cards are public
+  by design to enable agent discovery.
+</Note>
+
+## Agent Card structure
+
+```json
+{
+  "name": "Research Assistant",
+  "description": "An agent that searches the web and summarizes findings.",
+  "url": "https://a2a.beeos.ai/agent_abc123",
+  "version": "1.0.0",
+  "capabilities": {
+    "streaming": true,
+    "pushNotifications": false
+  },
+  "skills": [
+    {
+      "id": "web-search",
+      "name": "Web Search",
+      "description": "Search the web for information on any topic.",
+      "tags": ["search", "research"]
+    },
+    {
+      "id": "summarize",
+      "name": "Summarize",
+      "description": "Summarize long documents or web pages.",
+      "tags": ["nlp", "summarization"]
+    }
+  ],
+  "defaultInputModes": ["text"],
+  "defaultOutputModes": ["text"],
+  "supportedInterfaces": {
+    "a2a": "https://a2a.beeos.ai/agent_abc123",
+    "mcp": "https://mcp.beeos.ai/agent_abc123/mcp"
+  }
+}
+```
+
+## Field reference
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Human-readable agent name |
+| `description` | string | What the agent does |
+| `url` | string | Canonical A2A endpoint URL |
+| `version` | string | Agent card schema version |
+| `capabilities.streaming` | boolean | Whether the agent supports streaming responses |
+| `capabilities.pushNotifications` | boolean | Whether the agent supports push notification delivery |
+| `skills` | array | List of skills the agent offers |
+| `skills[].id` | string | Unique skill identifier |
+| `skills[].name` | string | Human-readable skill name |
+| `skills[].description` | string | What the skill does |
+| `skills[].tags` | string[] | Searchable tags |
+| `defaultInputModes` | string[] | Accepted input types (`text`, `image`, `file`) |
+| `defaultOutputModes` | string[] | Output types the agent produces |
+| `supportedInterfaces` | object | Protocol endpoint URLs (A2A, MCP, REST) |
+
+## Supported interfaces
+
+The `supportedInterfaces` object advertises which protocol entry points are
+available for this agent:
+
+| Key | Description | Example |
+|-----|-------------|---------|
+| `a2a` | A2A JSON-RPC endpoint | `https://a2a.beeos.ai/{agentId}` |
+| `mcp` | MCP Streamable HTTP endpoint | `https://mcp.beeos.ai/{agentId}/mcp` |
+| `rest` | REST invoke endpoint | `https://a2a.beeos.ai/{agentId}/v1/invoke` |
+
+## Registering an agent card
+
+Agent cards are managed through the **Agent Identity Service**. When you
+deploy an agent on BeeOS, the card is automatically generated from the
+agent's configuration and registered skills.
+
+To update an agent's card (skills, description, capabilities), modify the
+agent configuration through the BeeOS Dashboard or the Agent Identity gRPC
+API.
+
+## Discovery
+
+BeeOS agents can discover other agents programmatically using the
+`beeos_discover_agents` tool (built into the beeos-claw framework). External
+systems can enumerate agents by querying the Agent Identity Service through
+the A2A Gateway.

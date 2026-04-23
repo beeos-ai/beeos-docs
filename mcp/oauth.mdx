@@ -1,0 +1,162 @@
+---
+title: OAuth 2.1 Flow
+description: OAuth 2.1 + PKCE authentication for MCP clients.
+---
+
+The MCP Gateway implements **OAuth 2.1 with PKCE** for spec-compliant MCP
+clients. This is the recommended authentication method for interactive
+desktop applications like Claude Desktop and MCP Inspector.
+
+<Note>
+  For server-to-server integrations, use an [Agent API Key](/authentication)
+  (`bak_`) or [User API Key](/authentication) (`oag_`) instead — they skip
+  the browser redirect flow entirely.
+</Note>
+
+## Flow overview
+
+```mermaid
+sequenceDiagram
+    participant Client as MCP Client
+    participant GW as MCP Gateway
+    participant Web as BeeOS Web App
+    participant Auth as Auth Service
+
+    Client->>GW: POST /oauth/register
+    GW-->>Client: client_id
+
+    Client->>GW: GET /oauth/authorize
+    Note over Client,GW: code_challenge, redirect_uri, state
+    GW->>Web: 302 redirect to /mcp-login
+    Web->>Auth: user authenticates
+    Auth-->>Web: login_ticket
+    Web->>GW: redirect with _bt=ticket
+    GW-->>Client: 302 redirect with ?code=...&state=...
+
+    Client->>GW: POST /oauth/token
+    Note over Client,GW: code, code_verifier
+    GW-->>Client: access_token (HS256 JWT)
+
+    Client->>GW: POST /{agentId}/mcp
+    Note over Client,GW: Authorization: Bearer token
+```
+
+## Step 1: Dynamic Client Registration
+
+Register a new OAuth client. Only public clients (no `client_secret`) are
+supported, per the MCP Authorization spec.
+
+```bash
+curl -s -X POST "https://mcp.beeos.ai/oauth/register" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "client_name": "my-mcp-client",
+    "redirect_uris": ["http://localhost:5173/callback"]
+  }' | jq
+```
+
+Response:
+
+```json
+{
+  "client_id": "mcp_client_abc123",
+  "client_name": "my-mcp-client",
+  "redirect_uris": ["http://localhost:5173/callback"]
+}
+```
+
+## Step 2: Authorization request
+
+Generate a PKCE code verifier and challenge, then redirect the user:
+
+```
+GET https://mcp.beeos.ai/oauth/authorize
+  ?client_id=mcp_client_abc123
+  &redirect_uri=http://localhost:5173/callback
+  &response_type=code
+  &code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM
+  &code_challenge_method=S256
+  &state=random_state_value
+```
+
+The gateway redirects the browser to the BeeOS web app login page. After
+the user authenticates, the browser is redirected back to your
+`redirect_uri` with an authorization code:
+
+```
+http://localhost:5173/callback?code=auth_code_xyz&state=random_state_value
+```
+
+## Step 3: Token exchange
+
+Exchange the authorization code for an access token:
+
+```bash
+curl -s -X POST "https://mcp.beeos.ai/oauth/token" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "grant_type=authorization_code" \
+  -d "code=auth_code_xyz" \
+  -d "client_id=mcp_client_abc123" \
+  -d "redirect_uri=http://localhost:5173/callback" \
+  -d "code_verifier=dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk" | jq
+```
+
+Response:
+
+```json
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIs...",
+  "token_type": "Bearer",
+  "expires_in": 3600
+}
+```
+
+## Step 4: Use the token
+
+Include the access token in MCP requests:
+
+```bash
+curl -s -X POST "https://mcp.beeos.ai/${AGENT_ID}/mcp" \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIs..." \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
+
+## Discovery endpoints
+
+MCP clients use these well-known endpoints to discover the OAuth server:
+
+| Endpoint | Purpose |
+|----------|---------|
+| `GET /.well-known/oauth-authorization-server` | OAuth 2.1 Authorization Server Metadata (RFC 8414) |
+| `GET /.well-known/oauth-protected-resource` | MCP Protected Resource Metadata (pointer to AS) |
+
+```bash
+curl -s "https://mcp.beeos.ai/.well-known/oauth-authorization-server" | jq
+```
+
+## Token details
+
+| Property | Value |
+|----------|-------|
+| Algorithm | HS256 |
+| Default TTL | 60 minutes |
+| Authorization code TTL | 120 seconds |
+| Client type | Public only (no client_secret) |
+
+<Warning>
+  Authorization codes expire in 120 seconds. Exchange them promptly after
+  the redirect callback.
+</Warning>
+
+## 401 response behavior
+
+When a request fails authentication, the gateway returns:
+
+```
+HTTP/1.1 401 Unauthorized
+WWW-Authenticate: Bearer realm="MCP", resource_metadata="/.well-known/oauth-protected-resource"
+```
+
+Spec-compliant MCP clients use the `resource_metadata` URL to discover the
+authorization server and initiate the OAuth flow automatically.

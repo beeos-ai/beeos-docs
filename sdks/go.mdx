@@ -1,0 +1,180 @@
+---
+title: Go SDK
+description: Install and use the github.com/beeos-ai/sdk-go Go client.
+---
+
+The Go SDK is an auto-generated client for the BeeOS Platform API. It
+targets [`openapi-gateway`](https://openapi.beeos.ai) exclusively.
+
+## Installation
+
+```bash
+go get github.com/beeos-ai/sdk-go@latest
+```
+
+## Configuration
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "net/http"
+
+    beeos "github.com/beeos-ai/sdk-go"
+)
+
+func main() {
+    cfg := beeos.NewConfiguration()
+    cfg.Servers = beeos.ServerConfigurations{
+        {URL: "https://openapi.beeos.ai"},
+    }
+    cfg.HTTPClient = &http.Client{
+        Transport: &authTransport{
+            key:  "oag_YOUR_KEY",
+            base: http.DefaultTransport,
+        },
+    }
+
+    client := beeos.NewAPIClient(cfg)
+    ctx := context.Background()
+
+    // Use client...
+    _ = ctx
+    _ = client
+}
+
+type authTransport struct {
+    key  string
+    base http.RoundTripper
+}
+
+func (t *authTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+    req.Header.Set("Authorization", "Bearer "+t.key)
+    return t.base.RoundTrip(req)
+}
+```
+
+<Note>
+  For local development, set the server URL to `http://localhost:8095`.
+</Note>
+
+## Catalog
+
+### List providers
+
+```go
+providers, _, err := client.DeployAPI.ListProviders(ctx).Execute()
+if err != nil {
+    log.Fatal(err)
+}
+for _, p := range providers.Data {
+    fmt.Println(p.Meta.Id, p.Meta.Name)
+}
+```
+
+### List regions
+
+```go
+regions, _, err := client.DeployAPI.ListDeployRegions(ctx).
+    ProviderId("default").
+    Execute()
+```
+
+### List deploy models
+
+```go
+models, _, err := client.DeployAPI.ListDeployModels(ctx).
+    AgentFramework("beeos-claw").
+    Execute()
+```
+
+## Instances
+
+### Deploy an instance
+
+```go
+inst, _, err := client.InstancesAPI.DeployInstance(ctx).
+    DeployInstanceRequest(beeos.DeployInstanceRequest{
+        Name:           "my-agent",
+        AgentFramework: beeos.PtrString("beeos-claw"),
+        ModelPrimary:   beeos.PtrString("gpt-4o"),
+    }).
+    Execute()
+
+fmt.Println("ID:", inst.Data.Id, "Status:", inst.Data.Status)
+```
+
+### List instances
+
+```go
+list, _, err := client.InstancesAPI.ListInstances(ctx).
+    Page(0).
+    PageSize(20).
+    Status("running").
+    Execute()
+
+for _, inst := range list.Data {
+    fmt.Println(inst.Id, inst.Name, inst.Status)
+}
+```
+
+### Get instance
+
+```go
+inst, _, err := client.InstancesAPI.GetInstance(ctx, "inst_abc123").Execute()
+```
+
+### Lifecycle operations
+
+```go
+_, _, _ = client.InstancesAPI.StartInstance(ctx, "inst_abc123").Execute()
+_, _, _ = client.InstancesAPI.StopInstance(ctx, "inst_abc123").Execute()
+_, _, _ = client.InstancesAPI.RestartInstance(ctx, "inst_abc123").Execute()
+_, _, _ = client.InstancesAPI.DestroyInstance(ctx, "inst_abc123").Execute()
+```
+
+## A2A (user proxy)
+
+```go
+result, _, err := client.A2AAPI.A2aJsonRpcForUser(ctx, "agent_abc123").
+    A2AJSONRPCRequest(beeos.A2AJSONRPCRequest{
+        Jsonrpc: "2.0",
+        Id:      beeos.PtrString("1"),
+        Method:  "SendMessage",
+        Params: map[string]interface{}{
+            "message": map[string]interface{}{
+                "role": "user",
+                "parts": []map[string]interface{}{
+                    {"kind": "text", "text": "Hello!"},
+                },
+            },
+        },
+    }).
+    Execute()
+
+fmt.Println(result.Result)
+```
+
+## Error handling
+
+```go
+inst, resp, err := client.InstancesAPI.GetInstance(ctx, "nonexistent").Execute()
+if err != nil {
+    if resp != nil {
+        fmt.Println("HTTP status:", resp.StatusCode)
+    }
+    fmt.Println("Error:", err)
+}
+```
+
+## Source and generation
+
+The SDK is auto-generated from
+[`beeos-platform-v1.yaml`](https://github.com/beeos-ai/openagent/blob/main/backend/openapi/beeos-platform-v1.yaml)
+using OpenAPI Generator (`go`). The published module mirrors the generated
+output from the monorepo.
+
+- **Go module:** `github.com/beeos-ai/sdk-go`
+- **GitHub:** [beeos-ai/sdk-go](https://github.com/beeos-ai/sdk-go)

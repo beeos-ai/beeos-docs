@@ -1,0 +1,217 @@
+---
+title: JSON-RPC Methods
+description: Complete reference for A2A v1.0 JSON-RPC methods.
+---
+
+The A2A protocol uses [JSON-RPC 2.0](https://www.jsonrpc.org/specification)
+as its wire format. All requests are `POST` with `Content-Type: application/json`.
+
+## Endpoint
+
+```
+POST https://a2a.beeos.ai/{agentId}
+```
+
+Include the `A2A-Version: 1.0` header for protocol version negotiation.
+
+## Request format
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "SendMessage",
+  "params": { ... }
+}
+```
+
+## Methods
+
+### SendMessage
+
+Send a message to an agent, creating a new task or continuing an existing
+conversation.
+
+**Params:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `message` | object | yes | The message to send |
+| `message.role` | string | yes | `"user"` for user messages |
+| `message.parts` | array | yes | Message content parts |
+| `message.parts[].kind` | string | yes | `"text"`, `"file"`, or `"data"` |
+| `message.parts[].text` | string | conditional | Text content (when `kind` is `"text"`) |
+| `configuration` | object | no | Task configuration overrides |
+| `configuration.skills` | string[] | no | Restrict to specific skills |
+
+**Example:**
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "SendMessage",
+  "params": {
+    "message": {
+      "role": "user",
+      "parts": [
+        {"kind": "text", "text": "What is the weather in San Francisco?"}
+      ]
+    }
+  }
+}
+```
+
+**Response:**
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "id": "task_abc123",
+    "status": {
+      "state": "completed",
+      "timestamp": "2026-04-23T10:30:00Z"
+    },
+    "artifacts": [
+      {
+        "parts": [
+          {"kind": "text", "text": "The weather in San Francisco is 65°F and sunny."}
+        ]
+      }
+    ]
+  }
+}
+```
+
+### GetTask
+
+Retrieve the current state and result of a task.
+
+**Params:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `id` | string | yes | Task ID returned by `SendMessage` |
+
+**Example:**
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "GetTask",
+  "params": {
+    "id": "task_abc123"
+  }
+}
+```
+
+### CancelTask
+
+Request cancellation of an in-progress task.
+
+**Params:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `id` | string | yes | Task ID to cancel |
+
+**Example:**
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "CancelTask",
+  "params": {
+    "id": "task_abc123"
+  }
+}
+```
+
+### ListTasks
+
+List tasks for an agent (caller-scoped).
+
+**Params:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `limit` | integer | no | Max results (default 20) |
+| `offset` | integer | no | Pagination offset |
+
+### SendStreamingMessage
+
+Same as `SendMessage` but returns an SSE stream instead of a blocking
+response. See [Streaming](/a2a/streaming) for details.
+
+## BeeOS extensions
+
+BeeOS adds the following methods beyond the A2A v1.0 spec:
+
+### CompleteTask
+
+Mark a task as completed (agent-side).
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 10,
+  "method": "CompleteTask",
+  "params": {
+    "id": "task_abc123",
+    "artifacts": [
+      {"parts": [{"kind": "text", "text": "Done!"}]}
+    ]
+  }
+}
+```
+
+### UpdateStatus
+
+Update the status of an in-progress task.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 11,
+  "method": "UpdateStatus",
+  "params": {
+    "id": "task_abc123",
+    "status": {
+      "state": "working",
+      "message": "Processing step 2 of 5..."
+    }
+  }
+}
+```
+
+## Legacy method aliases
+
+For backwards compatibility, the following aliases are accepted:
+
+| Legacy alias | Maps to |
+|-------------|---------|
+| `message/send` | `SendMessage` |
+| `message/stream` | `SendStreamingMessage` |
+| `tasks/get` | `GetTask` |
+| `tasks/cancel` | `CancelTask` |
+| `tasks/list` | `ListTasks` |
+| `tasks/complete` | `CompleteTask` |
+| `tasks/updateStatus` | `UpdateStatus` |
+| `tasks/resubscribe` | `SubscribeToTask` |
+
+## Error codes
+
+| Code | Meaning |
+|------|---------|
+| `-32600` | Invalid JSON-RPC request |
+| `-32601` | Method not found |
+| `-32602` | Invalid params |
+| `-32603` | Internal error |
+| `-32000` | Task not found |
+| `-32001` | Agent not found |
+| `-32002` | Agent offline |
+| `-32003` | Task timeout |

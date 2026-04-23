@@ -1,0 +1,151 @@
+---
+title: Quickstart
+description: Deploy your first agent and invoke it in 5 minutes.
+---
+
+## Prerequisites
+
+- A BeeOS account at [beeos.ai](https://beeos.ai)
+- A **User API Key** (`oag_...`) from **Settings > API Keys**
+
+## 1. Install the SDK
+
+<CodeGroup>
+
+```bash npm
+npm install @beeos-ai/sdk
+```
+
+```bash go
+go get github.com/beeos-ai/sdk-go
+```
+
+```bash curl
+# No installation needed — use curl directly
+```
+
+</CodeGroup>
+
+## 2. List available providers
+
+<CodeGroup>
+
+```typescript TypeScript
+import { BeeOS } from "@beeos-ai/sdk";
+
+const client = new BeeOS({ apiKey: "oag_YOUR_KEY" });
+const providers = await client.providers.list();
+
+for (const p of providers) {
+  console.log(p.meta.id, p.meta.name);
+}
+```
+
+```go Go
+package main
+
+import (
+    "context"
+    "fmt"
+    beeos "github.com/beeos-ai/sdk-go"
+)
+
+func main() {
+    client := beeos.New(beeos.WithAPIKey("oag_YOUR_KEY"))
+    providers, _ := client.Providers.List(context.Background())
+    for _, p := range providers {
+        fmt.Println(p.Meta.ID, p.Meta.Name)
+    }
+}
+```
+
+```bash curl
+curl -s https://openapi.beeos.ai/api/v1/providers \
+  -H "Authorization: Bearer oag_YOUR_KEY" | jq '.data'
+```
+
+</CodeGroup>
+
+## 3. Deploy an agent instance
+
+<CodeGroup>
+
+```typescript TypeScript
+const instance = await client.instances.deploy({
+  name: "my-first-agent",
+  agentFramework: "beeos-claw",
+  modelPrimary: "gpt-4o",
+});
+
+console.log("Instance ID:", instance.id);
+console.log("Status:", instance.status);
+```
+
+```go Go
+inst, _ := client.Instances.Deploy(context.Background(), beeos.DeployInstanceRequest{
+    Name:           "my-first-agent",
+    AgentFramework: "beeos-claw",
+    ModelPrimary:   "gpt-4o",
+})
+fmt.Println("Instance ID:", inst.ID)
+```
+
+```bash curl
+curl -s -X POST https://openapi.beeos.ai/api/v1/instances \
+  -H "Authorization: Bearer oag_YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "my-first-agent",
+    "agentFramework": "beeos-claw",
+    "modelPrimary": "gpt-4o"
+  }' | jq '.data'
+```
+
+</CodeGroup>
+
+## 4. Invoke the agent via A2A
+
+Once the instance is `running`, you can send it a message through the A2A
+JSON-RPC user proxy:
+
+<CodeGroup>
+
+```typescript TypeScript
+const result = await client.a2a.sendMessage(instance.identityId, {
+  message: "Hello! What can you do?",
+});
+
+console.log("Reply:", result);
+```
+
+```bash curl
+curl -s -X POST "https://openapi.beeos.ai/api/v1/a2a/${AGENT_ID}/jsonrpc" \
+  -H "Authorization: Bearer oag_YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "SendMessage",
+    "params": {
+      "message": {
+        "parts": [{"kind": "text", "text": "Hello! What can you do?"}]
+      }
+    }
+  }' | jq
+```
+
+</CodeGroup>
+
+## 5. Clean up
+
+```bash
+curl -s -X DELETE "https://openapi.beeos.ai/api/v1/instances/${INSTANCE_ID}" \
+  -H "Authorization: Bearer oag_YOUR_KEY" | jq
+```
+
+## Next steps
+
+- [Authentication](/authentication) — understand all auth methods
+- [A2A Protocol](/a2a/overview) — build agent-to-agent workflows
+- [MCP Integration](/mcp/overview) — connect agents to Claude, Cursor, and more
+- [API Reference](/api-reference) — explore all endpoints interactively

@@ -1,0 +1,133 @@
+---
+title: REST Invoke
+description: Simplified REST alternative to the full A2A JSON-RPC protocol.
+---
+
+For callers that don't need the full A2A task lifecycle, BeeOS provides a
+simplified **REST invoke** endpoint. It sends a single chat message and
+returns the agent's reply — no task IDs, no state machines.
+
+## Endpoint
+
+```
+POST https://a2a.beeos.ai/{agentId}/v1/invoke
+```
+
+This endpoint is defined in the
+[Agent Integration OpenAPI spec](/openapi/beeos-agent-integration-v1.yaml)
+and shares the same authentication as A2A JSON-RPC.
+
+## Request
+
+```bash
+curl -s -X POST "https://a2a.beeos.ai/${AGENT_ID}/v1/invoke" \
+  -H "X-Agent-API-Key: bak_YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "What is the capital of France?",
+    "context_id": "conv_abc123"
+  }'
+```
+
+### Request body
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `message` | string | yes | The message to send to the agent |
+| `context_id` | string | no | IM channel ID for multi-turn conversations. Omit to start a new conversation. |
+| `timeout_ms` | integer | no | End-to-end timeout in milliseconds |
+
+## Blocking response
+
+By default, the endpoint blocks until the agent replies:
+
+```json
+{
+  "message": "ok",
+  "text": "The capital of France is Paris.",
+  "context_id": "ch_xyz789",
+  "is_error": false
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `message` | string | Status indicator (`"ok"` on success) |
+| `text` | string | The agent's reply text |
+| `context_id` | string | Channel ID for continuing the conversation |
+| `is_error` | boolean | Whether the agent returned an error |
+
+## Streaming response
+
+Set `Accept: text/event-stream` to receive streaming deltas:
+
+```bash
+curl -N -X POST "https://a2a.beeos.ai/${AGENT_ID}/v1/invoke" \
+  -H "X-Agent-API-Key: bak_YOUR_KEY" \
+  -H "Accept: text/event-stream" \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Write a poem about AI"}'
+```
+
+The response is an SSE stream:
+
+```
+data: {"type":"agent_reply_delta","text":"Roses "}
+
+data: {"type":"agent_reply_delta","text":"are red, "}
+
+data: {"type":"agent_reply_delta","text":"circuits are blue..."}
+
+data: {"type":"agent_reply","text":"Roses are red, circuits are blue...","context_id":"ch_xyz789"}
+```
+
+## Multi-turn conversations
+
+Use `context_id` to continue a conversation across multiple invocations:
+
+```bash
+# First turn — creates a new channel
+RESP=$(curl -s -X POST "https://a2a.beeos.ai/${AGENT_ID}/v1/invoke" \
+  -H "X-Agent-API-Key: bak_YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Remember: my name is Alice"}')
+
+CONTEXT_ID=$(echo $RESP | jq -r '.context_id')
+
+# Second turn — reuses the same channel
+curl -s -X POST "https://a2a.beeos.ai/${AGENT_ID}/v1/invoke" \
+  -H "X-Agent-API-Key: bak_YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d "{\"message\": \"What is my name?\", \"context_id\": \"${CONTEXT_ID}\"}"
+```
+
+## When to use REST invoke vs A2A JSON-RPC
+
+| Feature | REST invoke | A2A JSON-RPC |
+|---------|-------------|--------------|
+| Simple request/reply | Yes | Yes |
+| Task lifecycle (get, cancel, list) | No | Yes |
+| Agent card discovery | No | Yes |
+| Multi-turn context | Yes (`context_id`) | Yes (via task) |
+| Streaming | Yes (SSE) | Yes (SSE) |
+| Complexity | Low | Medium |
+
+Use **REST invoke** when you just need to send a message and get a reply.
+Use **A2A JSON-RPC** when you need task tracking, cancellation, or the full
+A2A protocol semantics.
+
+## Shared transport
+
+Under the hood, REST invoke uses the same `pkg/chatinvoke` transport as
+[MCP `tools/call`](/mcp/tools). Both publish a `chat_message` to Message
+Service, then wait for the agent's `agent_reply` on the same IM channel.
+
+## Authentication
+
+Same as A2A JSON-RPC:
+
+| Method | Header |
+|--------|--------|
+| Agent API Key | `X-Agent-API-Key: bak_...` or `Authorization: Bearer bak_...` |
+| User API Key | `Authorization: Bearer oag_...` |
+| JWT | `Authorization: Bearer eyJ...` |

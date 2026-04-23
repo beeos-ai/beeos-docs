@@ -1,0 +1,213 @@
+---
+title: Resources
+description: Read-only data resources and prompt templates exposed by MCP agents.
+---
+
+Beyond tools, MCP agents can expose **resources** (read-only data) and
+**prompt templates** (reusable message patterns). These follow the standard
+MCP specification.
+
+## Resources
+
+Resources represent data that MCP clients can read but not modify.
+
+### resources/list
+
+Discover available resources:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "resources/list"
+}
+```
+
+**Response:**
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "resources": [
+      {
+        "uri": "beeos://agent/config",
+        "name": "Agent Configuration",
+        "description": "Current agent configuration and capabilities",
+        "mimeType": "application/json"
+      },
+      {
+        "uri": "beeos://agent/skills",
+        "name": "Skill Registry",
+        "description": "List of all registered skills with metadata",
+        "mimeType": "application/json"
+      }
+    ]
+  }
+}
+```
+
+### Resource schema
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `uri` | string | Unique resource identifier |
+| `name` | string | Human-readable name |
+| `description` | string | What the resource contains |
+| `mimeType` | string | Content type of the resource |
+
+### resources/read
+
+Read a specific resource by URI:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "resources/read",
+  "params": {
+    "uri": "beeos://agent/config"
+  }
+}
+```
+
+**Response:**
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+    "contents": [
+      {
+        "uri": "beeos://agent/config",
+        "mimeType": "application/json",
+        "text": "{\"name\":\"Research Assistant\",\"model\":\"gpt-4o\",\"skills\":[\"web_search\",\"summarize\"]}"
+      }
+    ]
+  }
+}
+```
+
+## Prompt templates
+
+Prompt templates are reusable message patterns that MCP clients can
+present to users.
+
+### prompts/list
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "prompts/list"
+}
+```
+
+**Response:**
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "result": {
+    "prompts": [
+      {
+        "name": "research",
+        "description": "Research a topic and provide a summary",
+        "arguments": [
+          {
+            "name": "topic",
+            "description": "The topic to research",
+            "required": true
+          },
+          {
+            "name": "depth",
+            "description": "Research depth: brief, standard, or deep",
+            "required": false
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+### prompts/get
+
+Render a prompt template with arguments:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "method": "prompts/get",
+  "params": {
+    "name": "research",
+    "arguments": {
+      "topic": "quantum computing",
+      "depth": "deep"
+    }
+  }
+}
+```
+
+**Response:**
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "result": {
+    "messages": [
+      {
+        "role": "user",
+        "content": {
+          "type": "text",
+          "text": "Research quantum computing in depth. Provide a comprehensive summary covering recent advances, key players, and practical applications."
+        }
+      }
+    ]
+  }
+}
+```
+
+## Example: full resource flow
+
+```bash
+# List resources
+curl -s -X POST "https://mcp.beeos.ai/${AGENT_ID}/mcp" \
+  -H "X-Agent-API-Key: bak_YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"resources/list"}' | jq '.result.resources'
+
+# Read a resource
+curl -s -X POST "https://mcp.beeos.ai/${AGENT_ID}/mcp" \
+  -H "X-Agent-API-Key: bak_YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"resources/read","params":{"uri":"beeos://agent/config"}}' | jq
+
+# List prompts
+curl -s -X POST "https://mcp.beeos.ai/${AGENT_ID}/mcp" \
+  -H "X-Agent-API-Key: bak_YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":3,"method":"prompts/list"}' | jq '.result.prompts'
+```
+
+## Availability
+
+Not all agents expose resources or prompts. The response may contain an
+empty array if the agent has not registered any:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "resources": []
+  }
+}
+```
+
+This is normal behavior and not an error.
