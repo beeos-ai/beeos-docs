@@ -1,0 +1,205 @@
+---
+title: Error Reference
+description: "Every error.code returned by the BeeOS public surfaces, the HTTP status that wraps it, and the recovery hint."
+---
+
+Every BeeOS OpenAPI response that isn't a 2xx (and every SSE `event:
+error` / `event: done` with `is_error: true`) carries a **stable
+machine-readable `code`** field. This page is the single source of
+truth for that code; the wire envelopes only differ in shape, not
+in vocabulary.
+
+The complete catalogue is generated from
+[`backend/shared/types/apierror/`](https://github.com/beeos-ai/openagent/blob/main/backend/shared/types/apierror/)
+which is shared across Gateway, Agent Gateway, A2A Gateway, MCP
+Gateway, OpenAPI Gateway and the internal services. Codes in this
+table are **public contract** — they will not change shape during the
+1.x line. Adding new codes is a minor version bump; renaming or
+removing a code is a major version bump.
+
+---
+
+## How errors are encoded
+
+### Blocking JSON response (any 4xx / 5xx)
+
+```json
+{
+  "success": false,
+  "error": {
+    "type": "api_error",
+    "code": "agent_not_found",
+    "message": "Agent not found.",
+    "details": {}
+  }
+}
+```
+
+The HTTP status line carries the same information as `error.code`
+(see the table below). The `type` field is the RFC 9457 problem-type
+("api_error" / "invalid_request_error" / "authentication_error" /
+"permission_error" / "rate_limit_error" / "not_found_error" /
+"conflict_error" / "validation_error"); SDKs typically key on `code`
+rather than `type`.
+
+### SSE `event: error` frame (streaming invoke + task events)
+
+```
+event: error
+data: {"type":"error","code":"service_timeout","status_code":504,"message":"agent invocation timed out"}
+```
+
+The `code` / `status_code` are exactly what the blocking JSON path
+would have returned for the same condition. See
+[Streaming](/guides/streaming) (P1-F, planned) for full SSE frame
+semantics.
+
+### SSE `event: done` terminal frame
+
+When a stream ends in error, `done.code` mirrors the error frame's
+code so a client that only consumes `done` is still able to dispatch:
+
+```
+event: done
+data: {"type":"done","text":"","context_id":"ch-...","is_error":true,"error":"agent invocation timed out","code":"service_timeout"}
+```
+
+There is one **streaming-specific code** that never appears in
+blocking JSON:
+
+- **`agent_reply_error`** — the agent itself returned an in-band
+  error message (`agent_reply` with `is_error: true`). The HTTP /
+  SSE transport succeeded; the agent reported a domain-level failure.
+  `done.text` carries the agent's error text.
+
+---
+
+## Code catalogue
+
+### 4xx — client errors
+
+| `code` | HTTP | Wire envelope | Cause | Recovery |
+|---|---|---|---|---|
+| `invalid_json` | 400 | JSON | Request body isn't valid JSON | Fix client serialiser |
+| `invalid_body` | 400 | JSON | Body parsed but failed schema validation | Inspect `message` for which field |
+| `invalid_param` | 400 | JSON, SSE error | Query / path / body parameter rejected (e.g. `taskId` empty, `deadline_ms` > 7 days) | Fix the offending parameter |
+| `missing_param` | 400 | JSON | A required parameter is absent | Add the parameter |
+| `unauthorized` | 401 | JSON | `Authorization` header missing or invalid | Refresh / re-issue credential — see [Authentication & API Keys](/authentication) |
+| `invalid_token` | 401 | JSON | JWT / `oag_` failed signature or hash check | Same as `unauthorized` |
+| `missing_token` | 401 | JSON | `Authorization` header is empty | Add the header |
+| `forbidden` | 403 | JSON, SSE error | Caller doesn't own the agent (and it isn't public) | Use a credential that owns the resource |
+| `insufficient_scope` | 403 | JSON | API key is missing the required scope for this route — see [scopes table](/authentication#scopes). `error.metadata.required_scope` echoes the comma-separated set of acceptable scopes (any one is sufficient). JWT callers never hit this | Mint a new key with the right scope; rotate callers |
+| `agent_not_found` | 404 | JSON, SSE error | `agentId` (or `taskId`) unknown to the caller's ACL | Verify ownership / visibility |
+| `conflict` | 409 | JSON, SSE error | Agent rejected the call (busy / refused), or duplicate idempotency key on a changed payload, or task is terminal | Inspect `message`: `agent rejected the request` / `task is already closed` / `duplicate idempotency key`. Retry only on transient rejections |
+| `payload_too_large` | 413 | JSON | Request body exceeds the per-route size limit | catalog/instances/webhook routes cap at 64 KiB; `invoke` / `tasks` / `conversations` cap at 1 MiB. For large attachments use `POST /api/v1/files/presign-upload` (P1-A) instead of inlining bytes |
+| `rate_limited` | 429 | JSON | Per-caller × endpoint quota exceeded | Honour `Retry-After`; quotas listed in the [operator runbook](https://github.com/beeos-ai/openagent/blob/main/backend/docs/runbooks/0.5-unified-task-core-validation.md#reference-rate-limit-quotas-t5) |
+| `login_rejected` | 422 | JSON | Login credentials wrong (NOT a refresh-token failure) | Re-prompt user; do **not** clear existing session |
+
+### 5xx — server errors
+
+| `code` | HTTP | Wire envelope | Cause | Recovery |
+|---|---|---|---|---|
+| `internal_error` | 500 | JSON, SSE error | Unexpected server fault (panic, marshalling failure, etc.) | Retry with exponential backoff; file a bug if persistent |
+| `agent_offline` | 503 | JSON, SSE error | Agent record exists but no live session | Retry briefly; if persistent the agent pod is down |
+| `agent_service_unavailable` | 503 | JSON, SSE error | OpenAPI Gateway lost connection to Message Service / chatinvoke (e.g. `MESSAGE_SERVICE_URL` unset, MS dead) | Retry; check platform health |
+| `auth_unavailable` | 503 | JSON | Auth Service unreachable | Retry; **do not** force logout |
+| `auth_transient` | 503 | JSON | Auth gRPC blip (timeout / replica failover) | Retry; **do not** force logout — wire-level signal "session not killed" |
+| `refresh_transient` | 503 | JSON | JWT refresh failed due to transient server fault | Retry; **do not** force logout |
+| `session_unavailable` | 503 | JSON | Session store unreachable on cookie-based login | Retry login |
+| `service_timeout` | 504 | JSON, SSE error | OpenAPI Gateway gave up waiting for the agent. `timeout_ms` defaults to 120000 (legacy) and is server-clamped at 115000 so the response always has budget to flush before the underlying `http.Server.WriteTimeout` (120 s) fires | Use the async [`tasks`](/guides/calling-agents#3-async-task-recommended-for-long-work) API for long work; do not retry the same blocking invoke since the agent may still be running |
+
+### Streaming-only codes
+
+| `code` | Frame | Cause |
+|---|---|---|
+| `agent_reply_error` | `done.code` only | Agent returned an `agent_reply` with `is_error: true`. **Transport succeeded** — the agent itself failed. Inspect `done.text` for the agent's explanation. |
+
+---
+
+## Mapping `chatinvoke` sentinels → wire codes
+
+The OpenAPI Gateway's `invokeErrToAPIError`
+([handlers_agents.go](https://github.com/beeos-ai/openagent/blob/main/backend/services/openapi-gateway/internal/http/handlers_agents.go))
+collapses the [`pkg/chatinvoke`](https://github.com/beeos-ai/openagent/blob/main/backend/pkg/chatinvoke/invoker.go)
+sentinel errors into wire-level codes:
+
+| chatinvoke sentinel | Wire `code` | HTTP |
+|---|---|---|
+| `ErrInvokerAgentNotFound` | `agent_not_found` | 404 |
+| `ErrInvokerTaskNotFound` | `agent_not_found` | 404 |
+| `ErrInvokerAgentOffline` | `agent_service_unavailable` (msg = "agent is offline") | 503 |
+| `ErrInvokerMisconfigured` | `agent_service_unavailable` (msg = "message service not configured") | 503 |
+| `ErrInvokerStreamUnavailable` | `agent_service_unavailable` (msg = "streaming not configured") | 503 |
+| `ErrInvokerTimeout` | `service_timeout` | 504 |
+| `ErrInvokerTaskRejected` | `conflict` (msg = "agent rejected the request") | 409 |
+| `ErrInvokerTaskClosed` | `conflict` (msg = "task is already closed") | 409 |
+| `ErrInvokerDuplicate` | `conflict` (msg = "duplicate idempotency key") | 409 |
+| `ErrInvokerPermissionDenied` | `forbidden` | 403 |
+| anything else | `internal_error` | 500 |
+
+<Note>
+**Note**: pre-P0-B versions of this contract used distinct `code`
+values `task_rejected` / `agent_busy` / `agent_unavailable` in
+client-facing docs. Those were never the wire codes — the actual
+wire has always been `conflict` / `agent_service_unavailable` with
+the discriminator in `message`. SDK clients **must** key on the
+code values in this table, not on the older doc values.
+</Note>
+
+---
+
+## TypeScript SDK recipe
+
+```ts
+try {
+  const reply = await agents.invokeAgent({ agentId, invokeAgentRequest: { message } });
+  // ... use reply
+} catch (e) {
+  if (e instanceof ResponseError && e.response.status === 504) {
+    // service_timeout — switch to async tasks
+  } else if (e instanceof ResponseError) {
+    const body = await e.response.json();
+    switch (body.error?.code) {
+      case "agent_not_found":     /* surface "agent not found" */ break;
+      case "forbidden":           /* user lacks permission     */ break;
+      case "conflict":            /* agent busy / duplicate    */ break;
+      case "agent_service_unavailable":
+      case "agent_offline":       /* retry later               */ break;
+      default:                    /* generic error             */ break;
+    }
+  }
+}
+```
+
+## Go SDK recipe
+
+```go
+_, _, err := client.AgentsAPI.InvokeAgent(ctx, agentID).
+    InvokeAgentRequest(req).Execute()
+if err != nil {
+    if apiErr, ok := err.(*beeos.GenericOpenAPIError); ok {
+        var env struct {
+            Error struct {
+                Code    string `json:"code"`
+                Message string `json:"message"`
+            } `json:"error"`
+        }
+        _ = json.Unmarshal(apiErr.Body(), &env)
+        switch env.Error.Code {
+        case "agent_not_found":
+            // ...
+        case "service_timeout":
+            // fall back to async tasks
+        }
+    }
+}
+```
+
+---
+
+## See also
+
+- [Authentication & API Keys](/authentication)
+- [Calling Agents](/guides/calling-agents)
+- [OpenAPI contract](https://github.com/beeos-ai/openagent/blob/main/backend/openapi/beeos-platform-v1.yaml) — every operation's `4XX` / `5XX` responses will reference these codes once P0-D lands
+- [`backend/shared/types/apierror/`](https://github.com/beeos-ai/openagent/blob/main/backend/shared/types/apierror/) — the canonical Go definitions

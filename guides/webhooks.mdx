@@ -1,0 +1,428 @@
+---
+title: Webhooks
+description: "Receive terminal-state task notifications with HMAC-signed payloads, exponential-backoff retry, and audit log."
+---
+
+Webhooks let you receive task lifecycle updates by POST instead of
+polling. Register a callback URL on a task and BeeOS will hit it
+whenever the task transitions state.
+
+<Note>
+**Status — P2-A fully landed**: callbacks are
+(1) **signable** with HMAC-SHA256 (`X-BeeOS-Signature`),
+(2) **retried** on failure with the documented exponential
+    backoff schedule (1m → 5m → 30m → 2h → 12h, then dead-letter), and
+(3) **auditable + replayable** through
+    `GET .../deliveries` and `POST .../deliveries/{id}/redeliver`.
+</Note>
+>
+<Note>
+The single-attempt 10 s timeout still applies **per attempt**, but
+failed attempts now survive a process crash and are picked up by
+the background retry worker.
+</Note>
+
+---
+
+## 1. Lifecycle
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant openapi-gw
+    participant A2A
+    participant YourReceiver
+
+    Client->>openapi-gw: POST /agents/{agentId}/tasks/{taskId}/webhooks {url, token?}
+    openapi-gw->>A2A: SetPushNotificationConfig (gRPC)
+    A2A-->>openapi-gw: webhook_id
+    openapi-gw-->>Client: 201 {webhook_id, url, task_id, created_at}
+
+    Note over A2A: ... task progresses ...
+    A2A->>YourReceiver: POST {url} (state transition)
+    YourReceiver-->>A2A: 200 (best-effort; ignored on 5xx)
+    Note over A2A: terminal state → final delivery
+    A2A->>YourReceiver: POST {url} (final: true)
+```
+
+---
+
+## 2. Registering a webhook
+
+### Request
+
+```http
+POST /api/v1/agents/agent_abc123/tasks/ch-uuid/webhooks
+Authorization: Bearer oag_...
+Content-Type: application/json
+
+{
+  "url": "https://example.com/beeos/hook",
+  "token": "optional-bearer-shared-secret",
+  "secret": "wh_sec_a3b1...4f"
+}
+```
+
+| Field | Required | Description |
+|---|---|---|
+| `url` | yes | Absolute `http://` or `https://`. No path validation beyond scheme. |
+| `token` | no | Shared secret. If set, BeeOS sends `Authorization: Bearer <token>` on every callback. If empty, the callback is anonymous. |
+| `secret` | no | **P2-A** HMAC-SHA256 signing key (16-256 chars). When set, every callback carries `X-BeeOS-Signature` (format `t=<unix>,v1=<hex>` — see [§6 HMAC signing](#6-hmac-signing-p2-a)). Write-only — never returned on Get / List. |
+
+### Response (201)
+
+```json
+{
+  "success": true,
+  "data": {
+    "webhook_id": "wh-uuid",
+    "task_id": "ch-uuid",
+    "url": "https://example.com/beeos/hook",
+    "has_secret": true,
+    "created_at": "2026-05-14T18:00:00Z"
+  }
+}
+```
+
+`token` and `secret` are **never** returned in any list / get
+response — once registered they're only used server-side. The
+`has_secret` boolean lets the UI / SDK surface "signing enabled"
+without exposing the secret itself. To rotate a secret, Set the
+webhook again with a fresh value (passing `""` leaves the existing
+secret untouched — use DELETE + re-register to clear).
+
+### Listing / deleting
+
+```http
+GET    /api/v1/agents/{agentId}/tasks/{taskId}/webhooks
+DELETE /api/v1/agents/{agentId}/tasks/{taskId}/webhooks/{webhookId}
+```
+
+A task can hold any number of webhooks (no explicit cap today).
+Deletion is immediate — no in-flight delivery cancellation, but no
+new attempts after delete.
+
+---
+
+## 3. Current limitations
+
+Things that constrain the delivery contract today:
+
+| Limitation | Behaviour | Workaround |
+|---|---|---|
+| **10 s per-attempt timeout** | If your receiver takes > 10 s the request is cancelled. With retry enabled it will be re-attempted on the backoff schedule. | Keep handlers fast (< 1 s). Queue the payload to a background worker and ACK with 200 immediately. |
+| **No redirect following** | HTTP 3xx responses are treated as final and **not** followed. The retry scheduler treats them like any other non-2xx (will retry). | Register the actual destination URL, not a redirector. |
+| **Concurrency cap of 5** | At most 5 webhook deliveries fan out in parallel per `firePushWebhooks` call. Tasks with many subscribers can see fan-out queueing. | Avoid registering > 5 webhooks per task; consolidate at your edge. |
+| **No payload schema versioning** | The payload format depends on which renderer your webhook was registered under (see §4). Renderer is fixed at registration time. | Stamp your own version into the receiver code; if BeeOS changes a renderer it'll be additive (extra fields) per ADR-0017. |
+| **At-most-6 attempts** | After the 1m / 5m / 30m / 2h / 12h schedule runs out, the row moves to `dead_letter`. | Manually replay via [§7 deliveries / redeliver](#7-delivery-audit-log--manual-replay-p2-a-part-3) once you've fixed the receiver. |
+
+---
+
+## 4. Payload format
+
+BeeOS supports three renderers, selected by the `protocol_filter`
+column at registration time. Webhooks registered via this OpenAPI
+endpoint always use the **`openapi`** renderer.
+
+### `openapi` renderer — TaskEvent envelope
+
+Matches the SSE-stream payload from `GET /tasks/{id}/events` so you
+can share decoders. Emitted on every status transition (intermediate
+and terminal).
+
+```http
+POST {your-url}
+Content-Type: application/json
+X-BeeOS-Webhook-Format: openapi
+Authorization: Bearer <your-token>       ← only if you set `token` on register
+```
+
+```json
+{
+  "type": "task_status",
+  "task_id": "ch-uuid",
+  "context_id": "ch-uuid",
+  "status": "succeeded",
+  "final": true,
+  "timestamp": "2026-05-14T18:01:23.456Z"
+}
+```
+
+Possible `status` values: `queued`, `running`, `input_required`,
+`auth_required`, `succeeded`, `failed`, `canceled`, `timeout`,
+`rejected` (see [Calling Agents §3e](/guides/calling-agents#3e-task-status-reference)).
+`final: true` only on terminal states.
+
+### `a2a` and `generic` renderers
+
+Used by A2A JSON-RPC clients and by generic / legacy subscribers that
+registered without a protocol filter. Not selectable from the
+OpenAPI Gateway — documented for reference only. See
+[`webhook_renderer.go`](https://github.com/beeos-ai/openagent/blob/main/backend/services/a2a/pkg/application/webhook_renderer.go).
+
+---
+
+## 5. Receiver checklist
+
+A production-grade receiver for the **current** delivery semantics
+needs to:
+
+1. **Run over HTTPS.** No exceptions — `token` and `secret` are
+   both sensitive over the wire.
+2. **Verify the signature first** (`X-BeeOS-Signature`) when you've
+   registered a `secret`. Use the recipe in [§6](#6-hmac-signing-p2-a).
+   Reject `401` on mismatch or stale timestamp.
+3. **Then verify the optional `Authorization` bearer token** when
+   you've registered a `token`. Reject `401` on mismatch.
+4. **ACK within 1 s** (10 s upper bound). Queue the payload
+   internally; don't run business logic inline.
+5. **Be idempotent** — the retry scheduler can introduce
+   duplicates (at-least-once delivery). Key on
+   `(task_id, status, timestamp)` and drop duplicates server-side.
+6. **Poll `GET /tasks/{id}` periodically** for any task whose
+   terminal-state webhook you must not lose (e.g. billing-relevant).
+   The webhook is "fast notification"; the API is "truth".
+7. **Discard unknown `type` values** — additions to the renderer
+   are additive (extra fields / new types) per ADR-0017; never
+   crash on a new event type.
+
+```ts
+app.post("/beeos/hook", express.json(), async (req, res) => {
+  const expected = `Bearer ${process.env.BEEOS_WEBHOOK_TOKEN}`;
+  if (req.header("authorization") !== expected) return res.sendStatus(401);
+  await queue.add(req.body);          // fast ACK, real work later
+  res.sendStatus(200);
+});
+```
+
+---
+
+## 6. HMAC signing (P2-A)
+
+Opt into HMAC-SHA256 body signing by setting `secret` on register
+(see §2). The deliverer then sends two extra headers on every
+callback:
+
+- `X-BeeOS-Event: task.state`
+- `X-BeeOS-Task-Id: ch-uuid`
+- `X-BeeOS-Signature: t=<unix>,v1=<hex>` where
+  `hex = hmac_sha256(secret, "<unix>." || body)`
+
+Other headers (`X-BeeOS-Webhook-Format`, the optional `Authorization:
+Bearer <token>`) are unchanged. You can use signing **in addition to**
+the bearer token during rotation.
+
+### Verification recipe — Python
+
+```python
+import hmac, hashlib, time, json
+from flask import abort, request
+
+WEBHOOK_SECRET = open("/etc/secrets/beeos-webhook").read().strip().encode()
+CLOCK_SKEW_SEC = 300                                # ±5 min
+
+def verify_signature() -> None:
+    sig_header = request.headers.get("X-BeeOS-Signature", "")
+    parts = dict(p.split("=", 1) for p in sig_header.split(",") if "=" in p)
+    try:
+        ts = int(parts.get("t", ""))
+    except ValueError:
+        abort(400, "malformed signature header")
+    if abs(time.time() - ts) > CLOCK_SKEW_SEC:
+        abort(401, "stale or future-dated signature")
+    body = request.get_data()
+    expected = hmac.new(
+        WEBHOOK_SECRET,
+        f"{ts}.".encode() + body,
+        hashlib.sha256,
+    ).hexdigest()
+    if not hmac.compare_digest(expected, parts.get("v1", "")):
+        abort(401, "bad signature")
+```
+
+### Verification recipe — Node.js / Express
+
+```typescript
+import crypto from "node:crypto";
+
+const WEBHOOK_SECRET = process.env.BEEOS_WEBHOOK_SECRET!;
+const CLOCK_SKEW_SEC = 300;
+
+app.post("/beeos/hook",
+  express.raw({ type: "application/json" }),       // raw bytes for HMAC
+  (req, res, next) => {
+    const sig = String(req.header("x-beeos-signature") ?? "");
+    const parts = Object.fromEntries(sig.split(",").map((p) => p.split("=")));
+    const ts = Number(parts.t);
+    if (!Number.isFinite(ts) || Math.abs(Date.now() / 1000 - ts) > CLOCK_SKEW_SEC) {
+      return res.sendStatus(401);
+    }
+    const body = req.body as Buffer;
+    const expected = crypto
+      .createHmac("sha256", WEBHOOK_SECRET)
+      .update(`${ts}.`)
+      .update(body)
+      .digest("hex");
+    if (!crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(parts.v1 ?? ""))) {
+      return res.sendStatus(401);
+    }
+    // Now safe to JSON.parse(body.toString()).
+    next();
+  },
+  // ...your handler...
+);
+```
+
+**Critical**: hash the **raw request bytes**, not a re-serialised
+JSON object. Re-serialising changes whitespace / key order and the
+HMAC will not match.
+
+### Why the ±5 min skew check?
+
+Without a timestamp check, an attacker who captures one valid
+callback can replay it forever. Rejecting old or future-dated
+timestamps narrows the replay window. ±5 minutes is BeeOS's
+recommendation; receivers in closed networks may go tighter.
+
+---
+
+## 7. Delivery audit log + manual replay (P2-A part 3)
+
+Every callback attempt is now recorded as a durable row that you
+can list and replay through two REST endpoints. The rows survive
+process crashes (the retry worker picks them up after the lease
+expires), so a transient deploy / rolling restart no longer drops
+in-flight callbacks.
+
+### Retry schedule
+
+After a failed attempt the row is rescheduled per a fixed backoff:
+
+| Attempt | Delay before next try |
+|---|---|
+| 1 → 2 | 1 minute |
+| 2 → 3 | 5 minutes |
+| 3 → 4 | 30 minutes |
+| 4 → 5 | 2 hours |
+| 5 → 6 | 12 hours |
+| 6 → ✗ | Move to `dead_letter` |
+
+A row stays in `pending` between attempts (the worker flips it
+back to `pending` from `failed` when the schedule fires). Manual
+replay via [`POST .../redeliver`](#post-redeliver) clones the row
+into a fresh `pending` attempt regardless of how many automatic
+retries already ran.
+
+### Lifecycle states
+
+| Status | Meaning | Terminal? |
+|---|---|---|
+| `pending` | Queued for the first attempt or awaiting a scheduled retry. | No |
+| `succeeded` | Receiver returned 2xx. | Yes |
+| `failed` | Last attempt errored / non-2xx; next attempt is scheduled. | No (intermediate) |
+| `dead_letter` | Exhausted the schedule. Requires manual `redeliver` to retry. | Yes |
+
+### `GET .../deliveries`
+
+```http
+GET /api/v1/agents/{agentId}/tasks/{taskId}/webhooks/{webhookId}/deliveries?limit=50
+Authorization: Bearer oag_...
+```
+
+Returns the most recent delivery rows, newest first. `limit` is
+clamped to `[1, 200]`, default 50.
+
+```json
+{
+  "success": true,
+  "data": {
+    "deliveries": [
+      {
+        "delivery_id": "del-uuid",
+        "webhook_id": "wh-uuid",
+        "task_id": "ch-uuid",
+        "renderer": "openapi",
+        "status": "succeeded",
+        "attempt_num": 1,
+        "last_response_status": 200,
+        "last_error": "",
+        "next_attempt_at": "2026-05-19T10:00:00Z",
+        "last_attempted_at": "2026-05-19T10:00:00Z",
+        "created_at": "2026-05-19T10:00:00Z",
+        "completed_at": "2026-05-19T10:00:00Z"
+      },
+      {
+        "delivery_id": "del-uuid-2",
+        "webhook_id": "wh-uuid",
+        "task_id": "ch-uuid",
+        "renderer": "openapi",
+        "status": "dead_letter",
+        "attempt_num": 6,
+        "last_response_status": 502,
+        "last_error": "http_status: 502",
+        "next_attempt_at": "2026-05-19T22:00:00Z",
+        "last_attempted_at": "2026-05-19T22:00:00Z",
+        "created_at": "2026-05-19T08:00:00Z",
+        "completed_at": "2026-05-19T22:00:00Z"
+      }
+    ]
+  }
+}
+```
+
+The raw payload bytes, bearer `token`, and HMAC `secret` are
+NEVER returned — only diagnostic fields. If you need to verify
+what the receiver should have seen, consult your own log of the
+originating task transition; the `renderer` field tells you
+which payload schema applied.
+
+### `POST .../redeliver`
+
+```http
+POST /api/v1/agents/{agentId}/tasks/{taskId}/webhooks/{webhookId}/deliveries/{deliveryId}/redeliver
+Authorization: Bearer oag_...
+```
+
+Clones a `failed` or `dead_letter` row into a fresh `pending`
+row. The clone re-fires the **exact** payload bytes (and HMAC
+signature) the receiver should have seen — receivers can treat
+manually-replayed callbacks identically to automatic retries.
+
+Returns `202` with the new pending row:
+
+```json
+{
+  "success": true,
+  "data": {
+    "delivery_id": "del-uuid-new",
+    "status": "pending",
+    "attempt_num": 0,
+    "...": "..."
+  }
+}
+```
+
+Errors:
+
+| Status | Code | When |
+|---|---|---|
+| `404` | `not_found` | Delivery doesn't exist or doesn't belong to the named webhook. |
+| `409` | `conflict` | Source row is `pending` or `succeeded` — only `failed` / `dead_letter` rows are replayable. |
+| `403` | `forbidden` | Caller doesn't own the task. |
+
+Each redeliver call enqueues a NEW pending row — repeated calls
+produce repeated deliveries. Treat this endpoint as a manual
+rescue, not a caller-side retry-on-network-error.
+
+---
+
+---
+
+## See also
+
+- [Calling Agents](/guides/calling-agents) — submit the tasks that webhooks fire on
+- [Error Reference](/reference/errors) — the codes returned by webhook CRUD endpoints
+- [Authentication & API Keys](/authentication) — credentials for the registration endpoints
+- [`backend/services/a2a/pkg/application/webhook_renderer.go`](https://github.com/beeos-ai/openagent/blob/main/backend/services/a2a/pkg/application/webhook_renderer.go) — payload renderer source
+- [`backend/services/a2a/pkg/application/task_service.go`](https://github.com/beeos-ai/openagent/blob/main/backend/services/a2a/pkg/application/task_service.go) `firePushWebhooks` — delivery loop
+- [`backend/services/a2a/pkg/application/webhook_delivery_worker.go`](https://github.com/beeos-ai/openagent/blob/main/backend/services/a2a/pkg/application/webhook_delivery_worker.go) — retry queue worker

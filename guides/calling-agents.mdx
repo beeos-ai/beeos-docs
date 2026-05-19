@@ -1,0 +1,521 @@
+---
+title: Calling Agents
+description: "Three invocation modes — synchronous blocking, streaming SSE, and asynchronous tasks — across OpenAPI, A2A, and MCP."
+---
+
+The BeeOS OpenAPI lets you invoke any agent you own (or any
+public-visibility agent) in three modes from one unified contract. The
+modes share the same authentication (JWT or `oag_` User API Key — see
+[Authentication & API Keys](/authentication) for how to obtain one),
+the same agent identifier (`agentId`), and the same task lifecycle
+semantics — only the wire shape differs.
+
+| Mode | Endpoint | When to use |
+|---|---|---|
+| **Blocking invoke** | `POST /api/v1/agents/{agentId}/invoke` | Short prompt, expect reply within seconds; you want a single JSON response. |
+| **Streaming invoke (SSE)** | `POST /api/v1/agents/{agentId}/invoke` with `Accept: text/event-stream` | Long-running prompt, you want token-by-token rendering. |
+| **Async task** | `POST /api/v1/agents/{agentId}/tasks` + poll / `SSE /events` | Fire-and-forget, agent may take minutes to hours, you need a `task_id` for cancel / resume / audit. |
+
+Pick whichever fits your UX. Behind the scenes all three converge on
+the same `chatinvoke` core (see [ADR
+0017](https://github.com/beeos-ai/openagent/blob/main/backend/docs/adr/0017-unified-task-core.md)) so result
+shape, status semantics, and SSE wire format are consistent across
+modes.
+
+---
+
+## 1. Blocking invoke
+
+The simplest mode. Returns a single JSON response once the agent
+finishes (or the gateway times out, default 120s).
+
+### Request
+
+```http
+POST /api/v1/agents/agent_abc123/invoke
+Authorization: Bearer oag_...
+Content-Type: application/json
+
+{
+  "message": "Summarise the latest BeeOS release notes.",
+  "context_id": "ch-optional-conversation-pin"
+}
+```
+
+### Response (200)
+
+```json
+{
+  "success": true,
+  "data": {
+    "text": "BeeOS 1.0.x ships unified task core …",
+    "context_id": "ch-resolved-channel-id",
+    "is_error": false
+  }
+}
+```
+
+### TypeScript SDK
+
+```ts
+import { Configuration, AgentsApi } from "@beeos-ai/sdk";
+
+const cfg = new Configuration({
+  basePath: "https://openapi.beeos.ai",
+  accessToken: process.env.BEEOS_API_KEY,
+});
+const agents = new AgentsApi(cfg);
+
+const reply = await agents.invokeAgent({
+  agentId: "agent_abc123",
+  invokeAgentRequest: { message: "Summarise the latest BeeOS release notes." },
+});
+console.log(reply.data.text);
+```
+
+### Go SDK
+
+```go
+import beeos "github.com/beeos-ai/sdk-go"
+
+cfg := beeos.NewConfiguration()
+cfg.Servers = beeos.ServerConfigurations{{URL: "https://openapi.beeos.ai"}}
+cfg.AddDefaultHeader("Authorization", "Bearer "+os.Getenv("BEEOS_API_KEY"))
+client := beeos.NewAPIClient(cfg)
+
+req := beeos.InvokeAgentRequest{Message: "Summarise the latest BeeOS release notes."}
+resp, _, err := client.AgentsAPI.InvokeAgent(ctx, "agent_abc123").InvokeAgentRequest(req).Execute()
+fmt.Println(resp.Data.Text)
+```
+
+---
+
+## 2. Streaming invoke (SSE)
+
+Same endpoint, different `Accept` header. The response body is an SSE
+stream with `delta` events (incremental text) and a terminal `done`
+event.
+
+### Request
+
+```http
+POST /api/v1/agents/agent_abc123/invoke
+Authorization: Bearer oag_...
+Accept: text/event-stream
+Content-Type: application/json
+
+{ "message": "Write a 500-word essay about agents." }
+```
+
+### Response (SSE)
+
+The stream is one of three frame shapes, modelled in the contract as
+`InvokeEventStream` (a `oneOf` of `InvokeAgentSSEDelta` /
+`InvokeAgentSSEError` / `InvokeAgentSSEDone`):
+
+```
+event: delta
+data: {"type":"delta","text":"Agents are"}
+
+event: delta
+data: {"type":"delta","text":" autonomous"}
+
+event: done
+data: {"type":"done","text":"Agents are autonomous …","context_id":"ch-...","is_error":false}
+```
+
+If the gateway gives up before the agent produces a terminal reply
+(timeout, agent rejection, internal error), a single `event: error`
+frame is emitted **before** the final `event: done`:
+
+```
+event: error
+data: {"type":"error","code":"service_timeout","status_code":504,"message":"agent invocation timed out"}
+
+event: done
+data: {"type":"done","text":"","context_id":"ch-...","is_error":true,"error":"agent invocation timed out","code":"service_timeout"}
+```
+
+`timeout_ms` is **server-clamped at 115 s** (see the OpenAPI spec's
+`InvokeAgentRequest.timeout_ms.maximum`). Above that the clamp is
+silent — the gateway still emits `service_timeout` if the agent
+doesn't reply within the effective window. For work that may exceed
+~2 minutes, switch to the [async task API](#3-async-task-recommended-for-long-work)
+which returns immediately and lets you observe progress over SSE.
+
+#### SSE frame fields
+
+| Frame | Field | Type | Description |
+|---|---|---|---|
+| `delta` | `type` | `"delta"` | Frame discriminator |
+| `delta` | `text` | string | Incremental token chunk; concatenate in order |
+| `error` | `type` | `"error"` | Frame discriminator |
+| `error` | `code` | string | Stable machine code (see [Error code reference](#error-code-reference)) |
+| `error` | `status_code` | integer | Equivalent HTTP status if this were a blocking call |
+| `error` | `message` | string | Human-readable explanation |
+| `done` | `type` | `"done"` | Frame discriminator; always the terminal frame |
+| `done` | `text` | string | Full concatenated reply (matches blocking response) |
+| `done` | `context_id` | string | MS channel id; reuse to keep a conversation pinned |
+| `done` | `is_error` | boolean | `true` if the run ended in error; `error` / `code` populated then |
+| `done` | `error` | string | Human-readable error message when `is_error=true` |
+| `done` | `code` | string | Stable error code (mirrors `error.code` for streamed errors, or maps from a synchronous `apierror` for never-streamed-an-error cases) |
+
+#### Error code reference
+
+The same codes show up in `error.code` / `done.code` and in blocking
+JSON error envelopes. Use them as your switch keys — the
+`status_code` / `message` fields are presentation, not contract.
+
+The full table lives in **[Error Reference](/reference/errors)** —
+one source of truth for HTTP status × wire `code` × SSE frame across
+the entire OpenAPI surface. Common ones you'll need to handle on the
+invoke path:
+
+- `agent_not_found` (404) — verify ownership / visibility
+- `agent_service_unavailable` / `agent_offline` (503) — retry briefly
+- `conflict` (409) — agent busy / refused / duplicate idempotency key (inspect `message` to discriminate)
+- `service_timeout` (504) — switch to async `tasks`
+- `forbidden` (403) — use a credential that owns the agent
+- `rate_limited` (429) — honour `Retry-After`
+
+### TypeScript (raw fetch)
+
+The generated SDK's blocking `invokeAgent` cannot stream — for SSE use
+`fetch` directly:
+
+```ts
+const res = await fetch("https://openapi.beeos.ai/api/v1/agents/agent_abc123/invoke", {
+  method: "POST",
+  headers: {
+    Authorization: `Bearer ${process.env.BEEOS_API_KEY}`,
+    Accept: "text/event-stream",
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({ message: "Write a 500-word essay about agents." }),
+});
+
+const reader = res.body!.getReader();
+const decoder = new TextDecoder();
+let buffer = "";
+while (true) {
+  const { value, done } = await reader.read();
+  if (done) break;
+  buffer += decoder.decode(value, { stream: true });
+  for (const event of buffer.split("\n\n")) {
+    // parse "event: delta\ndata: {...}" frames; emit to UI
+  }
+}
+```
+
+---
+
+## 3. Async task (recommended for long work)
+
+The canonical task core. Submit returns 202 immediately with a
+`task_id`. Use `GET /tasks/{taskId}` to poll, or subscribe to
+`GET /tasks/{taskId}/events` (SSE) for live updates. The lifecycle
+supports cancel and continue.
+
+### 3a. Submit
+
+```http
+POST /api/v1/agents/agent_abc123/tasks
+Authorization: Bearer oag_...
+Content-Type: application/json
+
+{
+  "message": "Index every PDF in our drive and produce a knowledge graph.",
+  "deadline_ms": 1800000,
+  "idempotency_key": "indexer-2026-05-14"
+}
+```
+
+```json
+{
+  "success": true,
+  "data": {
+    "task_id": "ch-uuid",
+    "agent_id": "agent_abc123",
+    "status": "queued",
+    "created_at": "2026-05-14T18:00:00Z"
+  }
+}
+```
+
+### 3b. Poll for state
+
+```http
+GET /api/v1/agents/agent_abc123/tasks/ch-uuid
+```
+
+```json
+{
+  "success": true,
+  "data": {
+    "task_id": "ch-uuid",
+    "agent_id": "agent_abc123",
+    "status": "running",
+    "started_at": "2026-05-14T18:00:02Z"
+  }
+}
+```
+
+When the task reaches a terminal state, `status` flips to one of
+`succeeded` / `failed` / `canceled` / `timeout` / `rejected` and
+`result` (success) or `error` (failure) is populated. Terminal states
+are leaf nodes in the state machine — polling can short-circuit.
+
+### 3c. Live SSE event stream
+
+```http
+GET /api/v1/agents/agent_abc123/tasks/ch-uuid/events
+Accept: text/event-stream
+```
+
+```
+event: message
+data: {"type":"agent_message_chunk","offset":3,"payload":{"text":"Scanning page 12 …"}}
+
+event: message
+data: {"type":"agent_reply","offset":8,"payload":{"text":"Done. 312 pages indexed.","is_error":false}}
+
+event: end
+data: {"reason":"task_terminal"}
+```
+
+The terminal `event: end` always fires once. Its `reason` field is one
+of:
+
+| `reason` | Meaning |
+|---|---|
+| `task_terminal` | Task reached a terminal `TaskStatus` (`succeeded` / `failed` / `canceled` / `timeout` / `rejected`). The preceding `event: message` is the terminal reply. |
+| `channel_closed` | Underlying Message Service channel was closed externally (e.g. by an admin or reaper). Treat as terminal. |
+| `stream_closed` | Client-side close, or gateway dropping the stream due to idle timeout. Re-subscribe to resume. |
+
+See the [`TaskEventStream`
+schema](https://github.com/beeos-ai/openagent/blob/main/backend/openapi/beeos-platform-v1.yaml) for the full
+list of `type` values inside individual `event: message` frames.
+
+### 3d. Cancel
+
+```http
+POST /api/v1/agents/agent_abc123/tasks/ch-uuid/cancel
+Content-Type: application/json
+
+{ "reason": "user_aborted" }
+```
+
+Cancel is idempotent — calling it on an already-terminal task is a
+no-op and returns the current snapshot.
+
+### 3e. Continue (resume input_required / auth_required)
+
+Some agents pause mid-task to request additional input or an
+OAuth-style permission grant. The state flips to `input_required` (or
+`auth_required`). Resume with:
+
+```http
+POST /api/v1/agents/agent_abc123/tasks/ch-uuid/continue
+Content-Type: application/json
+
+{ "input": { "approval": "yes" } }
+```
+
+For an `auth_required` pause set `"auth_grant": true` to send the
+`user.auth_grant` envelope instead.
+
+### TypeScript SDK
+
+```ts
+import { TasksApi } from "@beeos-ai/sdk";
+const tasks = new TasksApi(cfg);
+
+const created = await tasks.createTask({
+  agentId: "agent_abc123",
+  createTaskRequest: { message: "Long indexing task", deadlineMs: 1800000 },
+});
+
+// Poll
+let state = await tasks.getTask({ agentId: "agent_abc123", taskId: created.data!.taskId! });
+while (!["succeeded", "failed", "canceled", "timeout", "rejected"].includes(state.data!.status!)) {
+  await new Promise(r => setTimeout(r, 2000));
+  state = await tasks.getTask({ agentId: "agent_abc123", taskId: created.data!.taskId! });
+}
+```
+
+### 3f. List your tasks
+
+Page through tasks you've submitted to a particular agent. The list is
+backed by Message Service channel metadata, so it is consistent with
+the `GetTask` snapshot you get from §3b.
+
+```http
+GET /api/v1/agents/agent_abc123/tasks?state=active&limit=50
+Authorization: Bearer oag_...
+```
+
+```json
+{
+  "success": true,
+  "data": {
+    "tasks": [
+      {
+        "task_id": "ch-uuid-1",
+        "agent_id": "agent_abc123",
+        "caller_owner_id": "user_xyz",
+        "state": "active",
+        "metadata": { "protocol": "openapi" },
+        "created_at": "2026-05-14T18:00:00Z",
+        "deadline_at": "2026-05-14T18:30:00Z"
+      }
+    ],
+    "next_since": "2026-05-14T17:00:00Z"
+  }
+}
+```
+
+Query parameters:
+
+| Name | Type | Default | Description |
+|---|---|---|---|
+| `state` | `active \| closed \| all` | `active` | Filter by channel lifecycle. `active` matches open tasks; `closed` matches terminal tasks. |
+| `since` | RFC3339 timestamp | unset | Only return tasks created on or after this instant. Combine with the `next_since` cursor for forward pagination. |
+| `limit` | integer | `50` (max 200) | Maximum rows per page. |
+
+The endpoint returns only tasks where the channel metadata's
+`protocol` is `openapi` — conversation channels live under
+`GET /api/v1/agents/{agentId}/conversations`.
+
+#### Cross-agent variant — `GET /api/v1/tasks`
+
+If you've submitted tasks to multiple agents and want a unified
+"my tasks" view (common for multi-agent UIs), call the
+cross-agent endpoint instead:
+
+```http
+GET /api/v1/tasks?state=active&limit=50
+Authorization: Bearer oag_...
+```
+
+The wire shape is identical to the per-agent variant — same
+`tasks[]` rows, same `next_since` cursor — so SDKs can share the
+decode + pagination code. The optional `agent_id` query param
+narrows back down to a single agent without forcing a different
+endpoint path. Use this when you don't know in advance which
+agents the caller has submitted against.
+
+### 3g. Replay task messages
+
+Fetch the full message log for a single task. Useful for surfacing
+the agent's intermediate steps after the SSE event stream has already
+closed.
+
+```http
+GET /api/v1/agents/agent_abc123/tasks/ch-uuid/messages?since=0&limit=200
+Authorization: Bearer oag_...
+```
+
+```json
+{
+  "success": true,
+  "data": {
+    "messages": [
+      { "offset": 1, "type": "chat_message",        "payload": {"text": "Index every PDF …"} },
+      { "offset": 2, "type": "agent_reply_delta",   "payload": {"text": "Scanning page 1 …"} },
+      { "offset": 3, "type": "agent_reply_delta",   "payload": {"text": " Done page 1."} },
+      { "offset": 4, "type": "agent_reply",         "payload": {"text": "All pages indexed.", "is_error": false} }
+    ],
+    "next_since": 5
+  }
+}
+```
+
+Query parameters:
+
+| Name | Type | Default | Description |
+|---|---|---|---|
+| `since` | integer (offset) | `0` | Only return messages with `offset > since`. Use `next_since` from the previous response. |
+| `limit` | integer | `200` (max 500) | Maximum rows per page. |
+
+### TypeScript SDK (list helpers)
+
+```ts
+import { TasksApi } from "@beeos-ai/sdk";
+const tasks = new TasksApi(cfg);
+
+// List active tasks for an agent
+const active = await tasks.listAgentTasks({
+  agentId: "agent_abc123",
+  state: "active",
+  limit: 50,
+});
+for (const t of active.data.tasks ?? []) {
+  console.log(t.taskId, t.state, t.createdAt);
+}
+
+// Replay one task's history
+const log = await tasks.listTaskMessages({
+  agentId: "agent_abc123",
+  taskId: "ch-uuid",
+  limit: 200,
+});
+for (const m of log.data.messages ?? []) {
+  console.log(m.offset, m.type, m.payload);
+}
+```
+
+---
+
+## Comparison summary
+
+| | `invoke` (blocking) | `invoke` (SSE) | `tasks` (async) |
+|---|---|---|---|
+| HTTP shape | Single JSON | SSE stream | 202 + poll / SSE |
+| Cancel | No (caller disconnects) | No (caller disconnects) | Yes (explicit) |
+| Continue | No | No | Yes (input_required / auth_required) |
+| Server timeout | 120s default | 120s default | `deadline_ms` (max 7 days) |
+| Status visibility | Only final | Streaming + final | Per-poll + per-event |
+| `task_id` to track | No (use `context_id`) | No (use `context_id`) | Yes |
+| Idempotency | No | No | Yes (`idempotency_key`) |
+| Best for | Quick lookup, RAG | Chat UX | Long jobs, batch, headless |
+
+---
+
+## Status reference (ADR-0017)
+
+| status | terminal | meaning |
+|---|---|---|
+| `queued` | no | Submitted, not yet picked up |
+| `running` | no | Agent producing output |
+| `input_required` | no | Paused, waiting for `user.continue` |
+| `auth_required` | no | Paused, waiting for `user.auth_grant` |
+| `succeeded` | yes | Terminal success; `result` populated |
+| `failed` | yes | Terminal error; `error` populated |
+| `canceled` | yes | Cancelled by caller |
+| `timeout` | yes | Deadline elapsed before terminal |
+| `rejected` | yes | Agent refused (e.g. `agent_busy` on single-turn devices) |
+
+State transitions are documented in the [TaskStatus
+schema](https://github.com/beeos-ai/openagent/blob/main/backend/openapi/beeos-platform-v1.yaml) component.
+
+## See also
+
+- [Conversations vs Tasks](/guides/conversations) — multi-turn dialog
+  API, when to reach for it instead of `invoke` / `tasks`, and the
+  full SSE `since`-cursor contract
+- [Streaming (SSE)](/guides/streaming) — canonical SSE framing /
+  reconnect / drop-compensation reference for the three streaming
+  surfaces
+- [Error Reference](/reference/errors) — every wire `code`
+  this surface can return
+- [Authentication & API Keys](/authentication) — JWT vs `oag_`
+  and the scope table
+- [OpenAPI contract](https://github.com/beeos-ai/openagent/blob/main/backend/openapi/beeos-platform-v1.yaml) — the source of truth
+- [ADR 001 — openapi-gateway as the sole OpenAPI implementer](https://github.com/beeos-ai/openagent/blob/main/backend/docs/adr/001-openapi-gateway-bff.md)
+- [ADR 0017 — Unified Task Core](https://github.com/beeos-ai/openagent/blob/main/backend/docs/adr/0017-unified-task-core.md)
+- [ADR 0017 follow-up — audit-v4 quick wins + pre-existing bug fixes](https://github.com/beeos-ai/openagent/blob/main/backend/docs/adr/0017-followup-audit-v4.md)
+- [ADR 0013 — MS is IM, not a task state machine](https://github.com/beeos-ai/openagent/blob/main/backend/docs/adr/0013-ms-is-im-not-task-state-machine.md)
+- SDK validation runbook
+- [Operator validation matrix](https://github.com/beeos-ai/openagent/blob/main/backend/docs/runbooks/0.5-unified-task-core-validation.md)
+- [@beeos-ai/sdk on npm](https://www.npmjs.com/package/@beeos-ai/sdk)
+- [github.com/beeos-ai/sdk-go](https://github.com/beeos-ai/sdk-go)

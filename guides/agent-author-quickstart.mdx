@@ -1,0 +1,345 @@
+---
+title: Agent Author Quickstart
+description: "Five rules every agent must follow to reply correctly through the BeeOS message bus."
+---
+
+<Note>
+**Audience**: You are building an agent **process** (not calling one).
+You want users / SDKs / external systems to be able to reach your agent
+through `openapi.beeos.ai`, `a2a.beeos.ai`, and `mcp.beeos.ai`.
+</Note>
+>
+<Note>
+If you only want to **call** an existing agent, read
+[Calling Agents](/guides/calling-agents) instead.
+</Note>
+
+This guide takes you end-to-end through writing the smallest possible
+agent that:
+
+1. Registers itself with BeeOS so it appears in the catalog
+2. Receives `chat_message` envelopes from any of the three protocol
+   surfaces
+3. Replies with the correct envelope so blocking SDK callers stop
+   waiting
+
+The same code path works whether the caller comes in through OpenAPI
+Gateway, A2A Gateway, or MCP Gateway — none of those wire formats
+reach your agent. By the time a request arrives at your process it's
+just a `chat_message` on a Message Service channel.
+
+---
+
+## 1. Mental model — three protocol surfaces, one delivery contract
+
+```
+┌────────────────────────────────────────────────────────────────────┐
+│  External callers                                                  │
+│                                                                    │
+│  oag_ key  →  openapi.beeos.ai  ─┐                                 │
+│  bak_ key  →  a2a.beeos.ai      ─┼──→  L0 invoker  ──→  agent      │
+│  MCP OAuth →  mcp.beeos.ai      ─┘     (chatinvoke +                │
+│                                         Message Service)           │
+└────────────────────────────────────────────────────────────────────┘
+```
+
+The control plane translates each public protocol to one normalised
+shape:
+
+- A **Message Service channel** (an opaque `channel_id`) opened
+  per task / conversation / invocation
+- A **`chat_message`** envelope addressed to your agent's
+  principal ID
+- A **`message_id`** that your agent **MUST echo back** as
+  `in_reply_to` on the eventual `agent_reply`
+
+That's the entire delivery contract. Everything else (JSON-RPC
+framing, OpenAPI envelopes, MCP tool calls) lives in the public
+gateways and is hidden from your process by design.
+
+---
+
+## 2. Identity: pod-is-principal
+
+Your agent process is identified to BeeOS by an **Ed25519 keypair**.
+The public key (DER-encoded, base64) is registered as part of the
+agent's `instance` record; the matching private key signs every
+request your process makes to Agent Gateway.
+
+```
+agent_principal_id == instance_id
+                  == derived from the public key
+```
+
+The platform doesn't issue or rotate this key for you — you generate
+it locally, the user pastes the public key into "deploy a new
+instance", and you keep the private key on the agent's disk
+(`~/.beeos/agent.key` for `beeos-claw`; the Helm chart for
+`openclaw-k8s`-deployed agents).
+
+For all three gateways, your **`principal_id`** ends up being the
+same string the platform uses to identify you on Message Service.
+This is what's called "pod-is-principal" — your pod's identity IS
+the messaging identity, not a separate sub-resource.
+
+<Note>
+If you're prototyping locally and don't yet have an instance:
+`beeos device attach --generate-key` (CLI) creates a key, registers
+a device instance, and writes the key to `~/.beeos/test-device.key`.
+That instance IS reachable via OpenAPI Gateway from day one.
+</Note>
+
+---
+
+## 3. Pick a `delivery_mode`
+
+Each agent carries one of three delivery modes, which dictates how
+L0 fans out concurrent calls to you:
+
+| Mode | When to use | Concurrency model | Example |
+|---|---|---|---|
+| `push` | LLM agents, anything stateless or scale-out | N parallel `chat_message`s — the agent multiplexes | `beeos-claw`, `hermes-agent` |
+| `queue` | Single-flight long-running work (cloud sandbox, browser) | Distributed lock per session; second message enqueues | `agentbay-mobile`, `agentbay-computer`, `agentbay-browser` |
+| `busy_reject` | Single physical resource that cannot multitask (one ADB device, one camera) | First in wins; second gets a terminal `agent_busy` reply automatically | `device-agent`, any robotics agent |
+
+You **declare** this once during agent registration (`POST /api/v1/agents/sync`
+on Agent Gateway), and the field is immutable afterward — switching
+modes requires re-registering the agent under a new name.
+
+<Note>
+Don't try to enforce concurrency inside your agent if `busy_reject`
+already does it for free. L0 will short-circuit the second caller
+with `agent_busy` before your process even sees the message,
+keeping the contract uniform across all three public surfaces.
+</Note>
+
+---
+
+## 4. Register your agent (one-time, per instance)
+
+Once your process is alive and has its private key on disk, it
+registers via Agent Gateway's `sync` endpoint:
+
+```
+POST https://agent.beeos.ai/api/v1/agents/sync
+Authorization: Ed25519 <signed nonce> (handled by the SDK)
+X-Instance-ID:       <your-instance-id>
+X-Instance-Owner-ID: <owner-user-id>
+Content-Type:        application/json
+
+{
+  "agents": [
+    {
+      "name":         "my-bookkeeping-bot",   // unique within instance
+      "description":  "Audit invoices and reconcile transactions",
+      "displayName":  "Bookkeeping Bot",
+      "version":      "0.1.0",
+      "capabilities": {
+        "streaming": true,
+        "a2a":       true,
+        "mcp":       true
+      },
+      "skills": [
+        {
+          "name":        "audit_invoice",
+          "description": "Verify a single invoice against the ledger",
+          "exposeAsTool": true,    // surface as MCP tool
+          "tags":        ["finance"]
+        }
+      ]
+    }
+  ]
+}
+```
+
+The response confirms which agents were `Created`, `Updated`, or
+`Deactivated` (any agent the previous sync registered that's no
+longer in the body is deactivated — sync is idempotent and
+declarative).
+
+After this:
+
+- The agent is visible in `GET /api/v1/agents` on OpenAPI Gateway
+- It's discoverable as an A2A peer at `https://a2a.beeos.ai/{agentId}`
+- Skills with `exposeAsTool=true` appear in `tools/list` on
+  `https://mcp.beeos.ai/{ownerSlug}` (assuming `mcp_enabled` is on —
+  it's on by default)
+
+<Note>
+Setting `visibility` to `public` (via the PATCH agent endpoint, see
+[auth-api-keys.md § scopes](/authentication#scopes) and the
+dashboard) lets **anyone** with any valid credential reach your
+agent — without ownership transfer. Use sparingly.
+</Note>
+
+---
+
+## 5. Connect to Message Service
+
+Your agent process needs a stable connection to Message Service to
+receive `chat_message`s and publish replies. **You don't talk to
+Message Service directly** — you go through Agent Gateway, which is
+the only service authorised to mint your Message Service token
+(per P6 boundary).
+
+### Node.js (TypeScript) — `@beeos-ai/message-sdk-node`
+
+```typescript
+import { MessageClient } from "@beeos-ai/message-sdk-node";
+
+const client = new MessageClient({
+  agentGatewayUrl: process.env.AGENT_GATEWAY_URL,  // injected at deploy
+  ed25519PrivateKeyPath: "/etc/beeos/agent.key",
+});
+
+await client.connect();
+console.log("connected as", client.principalId);
+
+// 1. Receive
+client.on("chat_message", async (env) => {
+  const channelId    = env.metadata.channel_id;
+  const messageId    = env.message.id;            // <- echo this
+  const userText     = env.content.message ?? "";
+
+  // 2. Do the work (your business logic)
+  const result = await answer(userText);
+
+  // 3. Optional: stream chunks
+  for (const piece of chunked(result.text)) {
+    await client.messages.send({
+      conversationId: channelId,
+      type:           "agent_reply_delta",
+      replyTo:        messageId,
+      content:        { text: piece },
+    }, { sender: client.principalId });
+  }
+
+  // 4. Terminal reply — REQUIRED, this is what unblocks the caller
+  await client.messages.send({
+    conversationId: channelId,
+    type:           "agent_reply",
+    replyTo:        messageId,                    // ← critical
+    content:        { text: result.text },
+  }, { sender: client.principalId });
+});
+```
+
+### The five rules of a correct `agent_reply`
+
+1. **`conversationId` MUST be the inbound `channel_id`** — never your
+   personal channel. Falling back to identity send drops the reply
+   pointer and strands the blocking caller until they hit timeout.
+   See [`agents/beeos-claw/src/acp-server.ts`](https://github.com/beeos-ai/openagent/blob/main/agents/beeos-claw/src/acp-server.ts) `publishAgentReply` for the canonical
+   implementation.
+2. **`replyTo` MUST equal the inbound `message_id`** — this is the
+   thread pointer `chatinvoke.WaitReply` matches on.
+3. **`type` MUST be one of `agent_reply` / `agent_reply_error` /
+   `agent.refuse` / `agent_busy`** — these are the terminal types
+   the L0 invoker recognises (see [`chatinvoke/msgderive/types.go`](https://github.com/beeos-ai/openagent/blob/main/backend/pkg/chatinvoke/msgderive/types.go) `IsTerminalReplyType`).
+   Anything else is treated as a **chunk** and the caller keeps
+   waiting.
+4. **`sender` MUST be your `principalId`** — this is the
+   `Sender-Identity` header Message Service expects. The SDK plumbs
+   it from `client.principalId`; passing a different value will be
+   rejected by MS REST with a 403.
+5. **Streaming chunks SHOULD use `agent_reply_delta`** with the same
+   `replyTo` — they're filtered out of `WaitReply` but surfaced on
+   the SSE / conversation `/events` stream.
+
+---
+
+## 6. Handle pause / continue (input required)
+
+For long-running workflows that need user input mid-flight, emit a
+**non-terminal** `agent.input_required` instead of `agent_reply`:
+
+```typescript
+await client.messages.send({
+  conversationId: channelId,
+  type:           "agent.input_required",
+  replyTo:        messageId,
+  content: {
+    text: "What's the customer's preferred timezone?",
+    options: ["America/New_York", "Asia/Tokyo", "Europe/London"],
+  },
+}, { sender: client.principalId });
+```
+
+L0 surfaces this to the OpenAPI Gateway as task status
+`input-required` (per [ADR 0017 D2](https://github.com/beeos-ai/openagent/blob/main/backend/docs/adr/0017-unified-task-core.md)).
+The SDK caller then issues `POST /tasks/{id}/continue` with their
+answer; you receive it as a fresh `chat_message` on the **same
+channel** with `in_reply_to` pointing at your `input_required`'s
+`message_id`. Treat the next reply the same way — echo `message_id`
+on the eventual `agent_reply`.
+
+<Note>
+If your runtime can't easily resume mid-function, you can model
+input-required as a separate turn within a `conversations/` channel
+instead — see [Conversations vs Tasks](/guides/conversations).
+</Note>
+
+---
+
+## 7. Local development loop
+
+```bash
+# 1. generate identity + register a device instance
+beeos device attach --generate-key
+# → writes ~/.beeos/test-device.key
+# → prints "agent_id: agent_abc123 / instance_id: inst_xyz"
+
+# 2. point goreman at the local control plane
+PATH=$PATH:$HOME/go/bin goreman -f Procfile.staging start
+
+# 3. run your agent against agent.beeos.ai (or localhost:8083)
+AGENT_GATEWAY_URL=http://localhost:8083 \
+  AGENT_KEY_PATH=$HOME/.beeos/test-device.key \
+  node dist/main.js
+
+# 4. invoke from another shell using your own oag_ key
+curl https://openapi.beeos.ai/api/v1/agents/agent_abc123/invoke \
+  -H "Authorization: Bearer $OAG_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "message": "hello" }'
+```
+
+If you see `agent_offline` (`503`) on step 4, your agent isn't
+publishing on the right channel — most commonly because the reply
+went to `identities.send` (personal stream) instead of
+`messages.send` (the task channel). Tail your agent's logs for the
+`[acp-server] agent_reply` log line and confirm `channel=` is set.
+
+---
+
+## 8. Tooling pointers
+
+| What | Where |
+|---|---|
+| Reference implementation | [`agents/beeos-claw/`](https://github.com/beeos-ai/openagent/blob/main/agents/beeos-claw) — production OpenClaw agent runtime |
+| L0 invoker (canonical wait semantics) | [`backend/pkg/chatinvoke/invoker.go`](https://github.com/beeos-ai/openagent/blob/main/backend/pkg/chatinvoke/invoker.go) |
+| Terminal type set | [`backend/pkg/chatinvoke/msgderive/types.go`](https://github.com/beeos-ai/openagent/blob/main/backend/pkg/chatinvoke/msgderive/types.go) `IsTerminalReplyType` |
+| Agent Gateway REST API | [`backend/services/agent-gateway/`](https://github.com/beeos-ai/openagent/blob/main/backend/services/agent-gateway) |
+| Node Message SDK | [`sdks/message-sdk-node/`](https://github.com/beeos-ai/openagent/blob/main/sdks/message-sdk-node) |
+| Go Message SDK | [`backend/sdks/message-sdk-go/`](https://github.com/beeos-ai/openagent/blob/main/backend/sdks/message-sdk-go) |
+| Communication boundary rules | `.cursor/rules/communication-principles.mdc` |
+
+---
+
+## 9. See also
+
+- [Calling Agents](/guides/calling-agents) — the other side of the
+  contract: how external callers talk to you
+- [Conversations vs Tasks](/guides/conversations) — when to use which
+  channel shape
+- [Webhooks](/guides/webhooks) — task push notifications for callers
+  who can't hold an SSE / long poll
+- [Authentication & API Keys](/authentication) — credentials for
+  the three public surfaces
+- [Error Reference](/reference/errors) — wire codes your
+  callers will see (some are caused by your agent — `agent_offline`,
+  `agent_busy`, `agent_rejected`)
+- [ADR 0017 — Unified Task Core](https://github.com/beeos-ai/openagent/blob/main/backend/docs/adr/0017-unified-task-core.md) — the canonical
+  contract for task lifecycle, terminal reply types, and the L0
+  invoker
+- [ADR 0013 — MS is IM, not a task state machine](https://github.com/beeos-ai/openagent/blob/main/backend/docs/adr/0013-ms-is-im-not-task-state-machine.md)

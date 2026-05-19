@@ -1,0 +1,270 @@
+---
+title: Public Architecture Overview
+description: "The four public BeeOS hosts (openapi, a2a, mcp, agent) and how requests flow through each into the control plane."
+---
+
+<Note>
+Audience: integration engineers, platform architects, and ops
+teams that need a single source of truth for which BeeOS services
+are publicly reachable, what credentials each one accepts, and
+how callers, gateways, and agent pods are wired together.
+</Note>
+
+This document is the canonical map of BeeOS from outside the
+platform. It deliberately skips the internal control plane wiring
+(that lives in `backend/.cursor/rules/communication-principles.mdc`
+and the ADR set under [`backend/docs/adr/`](https://github.com/beeos-ai/openagent/blob/main/backend/docs/adr/));
+the goal here is "everything you can hit from the public internet,
+and what to expect when you do."
+
+If you're a **caller** trying to decide which surface to use, jump
+to [Choosing a Protocol](/guides/choosing-a-protocol) — that
+guide is the prescriptive companion to this descriptive overview.
+
+---
+
+## 1. The four public hosts
+
+BeeOS exposes four public hostnames. Every other ingress that
+looks public is either a CDN-fronted asset host (`docs.beeos.ai`,
+`status.beeos.ai`) or a data-plane bridge used by browsers
+(`ws.beeos.ai`, the `bridge-*` shards).
+
+| Host | Purpose | Auth | Primary Audience |
+|---|---|---|---|
+| `openapi.beeos.ai` | REST + SSE control plane for users / app backends | JWT or `oag_` User API Key | Humans, app backends, batch jobs, SDK clients |
+| `a2a.beeos.ai` | A2A v1.0 JSON-RPC for agent-to-agent collaboration | `bak_` Agent API Key (JWT fallback) | Other agents, agent ecosystems |
+| `mcp.beeos.ai` | MCP protocol for LLM tool hosts | OAuth 2.0 authorization code | Claude Desktop, Cursor, OpenAI, n8n, … |
+| `agent.beeos.ai` | Inbound for agent pods (Ed25519-signed) | Ed25519 signatures | **Agent processes only**, never external integrators |
+
+The first three are caller-facing; the fourth is the boundary an
+**agent pod** uses to phone home. If you're building integration
+code outside an agent process, you'll never talk to
+`agent.beeos.ai` directly — your code uses one of the three caller
+surfaces, and BeeOS handles the agent-side wiring for you.
+
+### Why four hosts, not one?
+
+Each surface has a distinct auth model and access-control unit:
+
+- **OpenAPI** is the human / per-user surface. JWT (web / mobile)
+  or `oag_` (server-side API key, scoped per user × endpoint).
+- **A2A** is the per-target-agent surface. `bak_` is bound to a
+  caller agent and the call is rate-limited per `bak_ × target`.
+- **MCP** is the per-tool-host surface. OAuth makes the granted
+  agent set scope to the chosen LLM session.
+- **Agent Gateway** is the per-pod-instance surface. Ed25519 keys
+  are derived from the instance's pod identity, never copyable
+  outside the pod.
+
+Mixing these on one host would create credential confusion (a
+user's JWT must NOT be able to impersonate an agent; an agent's
+Ed25519 key must NOT be usable from the public internet for
+arbitrary RPC). Different DNS names enforce different middleware
+stacks without runtime branching.
+
+See [Authentication & API Keys](/authentication) for
+the credential rotation / scope / lifetime details.
+
+---
+
+## 2. Mental model — one agent, three callable surfaces, one delivery contract
+
+Every agent on BeeOS is a single **process** ("pod" in K8s
+parlance) that talks to Message Service. The three caller-facing
+hosts above translate their respective wire formats (REST, A2A
+JSON-RPC, MCP) into the **one** internal contract that pod ever
+sees:
+
+```
+       ┌────────────────────┐     ┌────────────────────┐     ┌────────────────────┐
+       │ OpenAPI Gateway    │     │ A2A Gateway        │     │ MCP Gateway        │
+       │ openapi.beeos.ai   │     │ a2a.beeos.ai       │     │ mcp.beeos.ai       │
+       │ (REST + SSE)       │     │ (JSON-RPC 2.0)     │     │ (MCP over SSE)     │
+       └──────────┬─────────┘     └─────────┬──────────┘     └──────────┬─────────┘
+                  │                          │                           │
+                  │              Translate to chat_message + chat_cancel envelopes,
+                  │              attach Message-Service idempotency keys.
+                  │                          │                           │
+                  └────────────┬─────────────┴───────────────────────────┘
+                               ▼
+                  ┌────────────────────────────┐
+                  │ Message Service            │
+                  │ Channel messages           │
+                  │ (single_shot for tasks,    │
+                  │  multi_turn for convs)     │
+                  └──────────────┬─────────────┘
+                                 │
+                                 ▼
+                  ┌────────────────────────────┐
+                  │ Agent pod                  │
+                  │ subscribed via SDK         │
+                  │ replies with agent_reply / │
+                  │ agent_reply_delta          │
+                  └────────────────────────────┘
+```
+
+For the agent author this means **one inbound message type**
+(`chat_message`) and **one reply convention** (`agent_reply` with
+matching `context_id`) regardless of which public surface the
+original call arrived on. See
+[Agent Author Quickstart §3 The five rules](/guides/agent-author-quickstart#3-the-five-rules-of-a-correct-agent_reply).
+
+---
+
+## 3. What each surface owns
+
+### 3.1 OpenAPI Gateway (`openapi.beeos.ai`)
+
+Documented in detail under [`docs/guides/calling-agents.md`](/guides/calling-agents);
+the route surface is the canonical OpenAPI 3.1 contract at
+[`backend/openapi/beeos-platform-v1.yaml`](https://github.com/beeos-ai/openagent/blob/main/backend/openapi/beeos-platform-v1.yaml).
+
+Owns:
+
+- **Catalog** — `GET /api/v1/agents`, agent metadata, deployment regions
+- **Instances** — agent deployment lifecycle (create / start / stop /
+  delete) — the surface users build "deploy + invoke" apps on
+- **Invoke** — `POST /api/v1/agents/{id}/invoke` (sync) + SSE variant
+- **Tasks** — `POST /api/v1/agents/{id}/tasks` (async with deadline) +
+  SSE event stream + cross-agent `GET /api/v1/tasks`
+- **Conversations** — multi-turn dialog channels with `since=<offset>`
+  replay semantics
+- **Webhooks** — task push notifications with HMAC signing + retry
+  + audit log (P2-A landed)
+- **Files** — `POST /api/v1/files/presign-upload` then attach by
+  `file_id` to invoke / task / conversation requests
+
+The OpenAPI Gateway is **stateless** (no DB) — it's a BFF that
+translates REST into gRPC calls to internal services. See
+[ADR 0001](https://github.com/beeos-ai/openagent/blob/main/backend/docs/adr/001-openapi-gateway-bff.md) for the
+decoupling rationale.
+
+### 3.2 A2A Gateway (`a2a.beeos.ai`)
+
+Implements Google's [A2A v1.0 spec](https://github.com/google/a2a-protocol).
+The `/{agentId}` path serves the agent's **Agent Card**; JSON-RPC
+methods (`message/send`, `message/stream`, `tasks/get`, …) are
+POSTed to the same root. Documented in the
+[A2A external integration guide](/a2a/overview).
+
+Owns:
+
+- **Agent Card resolution** — `GET /{agentId}` returns the v1.0
+  card with `supportedInterfaces` (the public URL of each protocol
+  surface) so callers can opt into a different transport mid-call.
+- **JSON-RPC method dispatch** — translates A2A messages into the
+  same chat_message envelopes the OpenAPI surface produces.
+- **Push notification config** — `tasks/pushNotificationConfig/*`
+  routes through the same A2A Service that owns webhook delivery.
+
+The A2A Gateway is the **only** way an external agent ecosystem
+(another A2A-compatible runtime) talks to BeeOS — calling OpenAPI
+from another agent works but skips the A2A-spec routing
+guarantees (request_id ↔ task_id mapping, native message_id
+idempotency, agent-card-driven endpoint discovery).
+
+### 3.3 MCP Gateway (`mcp.beeos.ai`)
+
+Speaks the [Model Context Protocol](https://modelcontextprotocol.io)
+over SSE. Each agent is surfaced as one MCP tool. Documented in
+the [MCP Gateway guide](/mcp/overview).
+
+Owns:
+
+- **OAuth 2.0 authorization code flow** — the LLM host opens a
+  consent screen, the user approves access to a subset of their
+  agents, the LLM host gets a session-scoped token.
+- **`tools/list`** — enumerates the agents the granted token can
+  reach.
+- **`tools/call`** — invokes an agent via the same internal L0
+  dispatch path as OpenAPI invoke (synchronous or streaming).
+
+MCP is intentionally **stateless-per-call** — the protocol's
+session model doesn't carry durable async semantics. For
+long-running work, MCP clients should call out to OpenAPI tasks
+in parallel; the underlying agent is the same.
+
+### 3.4 Agent Gateway (`agent.beeos.ai`)
+
+The inbound surface for **agent pods only**. Ed25519 signed
+requests from the pod identity prove the call comes from a real
+BeeOS-managed instance, not an external impersonator.
+
+Owns:
+
+- Token issuance for Message Service (the pod doesn't see
+  `MESSAGE_API_KEY` directly — Agent Gateway is the proxy that
+  signs MS tokens on its behalf)
+- File presign / upload for agent-emitted artifacts
+- A2A REST endpoints for `beeos_call_agent` and friends (the
+  beeos-claw plugin uses these to do agent-to-agent calls from
+  inside a tool)
+
+If you are NOT writing an agent process, this host is irrelevant
+to you. See
+[Agent Author Quickstart §4 Connecting to Message Service](/guides/agent-author-quickstart#4-connecting-to-message-service)
+for the agent-side wiring details.
+
+---
+
+## 4. What's NOT publicly reachable
+
+The internal control plane (Runtime, ClusterService, Auth, Agent
+Identity, Billing, Usage, A2A Service, Message Service, …) sits
+behind the four hosts above and is **never** routable from the
+public internet. Code on the outside calls one of the four hosts;
+the gateways translate to internal gRPC.
+
+This boundary is enforced by Communication Principle P5
+and reviewed on every PR. If you're proposing a change that wants
+to expose an internal service to the public network, that's
+likely a sign the change should land at one of the gateways
+instead.
+
+---
+
+## 5. Cross-protocol consistency guarantees
+
+The same agent is reachable on all three caller surfaces, and the
+following invariants hold across them:
+
+| Invariant | Detail |
+|---|---|
+| **Single source of truth for the message log** | Message Service `channel_messages` is the durable log; SSE on any surface reads from the same table. A reply visible on OpenAPI's `/events` is visible on A2A's `message/stream` for the same task. |
+| **Idempotency end-to-end** | OpenAPI `idempotency_key` → A2A `message_id` → MS `idempotency_key` are aliases for the same dedup key. Retry across surfaces is safe. |
+| **Attachments are protocol-agnostic** | `file_id` from `POST /files/presign-upload` is valid in OpenAPI requests, A2A `FilePart`s, and MCP tool arguments. The receiver always sees the same `file_id` in the inbound `chat_message`. |
+| **Status terminology** | OpenAPI status strings (`succeeded` / `failed` / `canceled` / `timeout`) are derived from the same `msgderive` resolver A2A uses for its `TaskState` enum. |
+| **Rate limits are per-credential** | A burst on OpenAPI doesn't deplete an A2A budget and vice versa. |
+
+The intentional **non-invariants** (places where the surfaces
+differ on purpose):
+
+- **Discovery vocabulary** — OpenAPI returns
+  `{success: true, data: {agents: […]}}`; A2A returns an
+  `AgentCard` per agent; MCP enumerates tools.
+- **Auth credential** — OpenAPI is per-user, A2A is per-target,
+  MCP is per-session. See [Auth & API Keys](/authentication).
+
+---
+
+## 6. See also
+
+- [Choosing a Protocol](/guides/choosing-a-protocol) — the
+  prescriptive sibling of this doc, with decision tree + worked
+  examples.
+- [Calling Agents](/guides/calling-agents) — full OpenAPI
+  invoke / task / conversation surface walkthrough.
+- [MCP Gateway](/mcp/overview) — what the MCP host
+  sees from the outside (OAuth flow, tool listing, streaming).
+- [A2A External Integration](/a2a/overview) — what
+  another A2A-compatible runtime sees (agent card, JSON-RPC).
+- [Agent Author Quickstart](/guides/agent-author-quickstart) —
+  the inside-the-pod story.
+- `backend/.cursor/rules/communication-principles.mdc`
+  — the 9 iron rules governing internal vs public boundaries.
+- [`backend/docs/adr/001-openapi-gateway-bff.md`](https://github.com/beeos-ai/openagent/blob/main/backend/docs/adr/001-openapi-gateway-bff.md)
+  — why OpenAPI Gateway is a separate process, not main Gateway.
+- [`backend/docs/adr/0017-openapi-gateway-routes.md`](https://github.com/beeos-ai/openagent/blob/main/backend/docs/adr/)
+  — the spec that pinned the OpenAPI route shape (status strings,
+  SSE frames, webhook renderers).

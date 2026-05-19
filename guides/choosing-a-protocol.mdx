@@ -1,0 +1,185 @@
+---
+title: Choosing a Protocol
+description: "Decide between OpenAPI (platform REST), A2A (agent-to-agent), and MCP (model-context tools) for a given integration."
+---
+
+<Note>
+**TL;DR**
+</Note>
+>
+<Note>
+- You are a **human or your own backend** invoking an agent → **OpenAPI** (`openapi.beeos.ai`)
+- You are **another agent** invoking an agent → **A2A** (`a2a.beeos.ai`)
+- You are an **LLM tool host** (Claude, Cursor, OpenAI, n8n…) → **MCP** (`mcp.beeos.ai`)
+</Note>
+
+BeeOS exposes the **same set of agents** over three public protocol
+surfaces, each with its own host, its own auth model, and its own
+wire format. Internally they share one delivery contract (the
+[Agent Author Quickstart](/guides/agent-author-quickstart) covers it),
+but the integration ergonomics differ enough that the choice matters.
+
+This guide is for **callers** — code on the outside of BeeOS that
+wants to reach an agent. If you're building an agent process itself,
+the choice doesn't apply to you (your agent will be reachable on all
+three surfaces automatically — see the author quickstart).
+
+---
+
+## 1. Side-by-side comparison
+
+| Dimension | OpenAPI | A2A | MCP |
+|---|---|---|---|
+| **Public host** | `openapi.beeos.ai` | `a2a.beeos.ai` | `mcp.beeos.ai` |
+| **Wire format** | REST + JSON envelopes | A2A JSON-RPC 2.0 (Google A2A v1.0) | MCP JSON-RPC over SSE / stdio |
+| **Auth credential** | JWT or `oag_` User API Key | `bak_` Agent API Key (JWT fallback) | OAuth 2.0 authorization code |
+| **Auth scope unit** | per user | per **target** agent | per MCP session |
+| **Agent identification** | `agentId` in URL path | host = agent, path = `/{agentId}` | tool name |
+| **Discovery** | `GET /api/v1/agents` | Agent Card at `/{agentId}` (`/.well-known/ai-plugin.json`-shape) | `tools/list` MCP RPC |
+| **Sync invocation** | `POST /agents/{id}/invoke` blocking JSON | `message/send` JSON-RPC method | `tools/call` |
+| **Streaming** | SSE on `invoke` (Accept: text/event-stream) | SSE on `message/stream` (A2A spec) | SSE on the MCP transport |
+| **Async task** | `POST /agents/{id}/tasks` + GET-poll + SSE `/events` | A2A `tasks/*` JSON-RPC methods | Not a first-class concept (use long-lived MCP request) |
+| **Conversations** | `POST /agents/{id}/conversations` (this repo's extension; not in stock A2A) | Tasks can be multi-turn via `referenceTaskIds` | One-shot per `tools/call`; no built-in multi-turn |
+| **Push (webhook)** | Task webhooks via `POST /agents/{id}/tasks/{id}/webhooks` | A2A `tasks/pushNotificationConfig/set` | n/a (the MCP host owns the run loop) |
+| **Idempotency** | `idempotency_key` body / `Idempotency-Key` header | Native — `message_id` is the idempotency key | n/a (caller drives) |
+| **Attachments** | `attachments[].file_id` (see [Calling Agents § Attachments](/guides/calling-agents#attachments)) | Same `file_id` model; payload is wrapped in A2A `FilePart` | MCP `resources` API; embed `file_id` in tool arguments |
+| **Rate limit scope** | per `oag_` × endpoint | per `bak_` × agent | per MCP session |
+| **SDK** | `@beeos-ai/sdk` (TS), `github.com/beeos-ai/sdk-go` (Go) | Any A2A v1.0 SDK works (e.g. `@a2a-project/sdk`) | Any MCP client (Claude Desktop, `mcp-protocol-typescript`) |
+| **Best for** | App backends, internal tools, batch jobs | Agent-to-agent collaboration | LLM tool calling, IDE / chat-app integrations |
+| **NOT good for** | Other agents (they should use A2A so MS-level routing matches A2A spec) | First-party app code (the JSON-RPC overhead is needless) | Anything that needs durable async work (MCP tools are best one-shot) |
+
+---
+
+## 2. Decision tree
+
+```
+                     ┌─────────────────────────────────────┐
+                     │ Who is making the call?             │
+                     └─────────────────────────────────────┘
+                              │
+       ┌──────────────────────┼───────────────────────────┐
+       │                      │                           │
+       ▼                      ▼                           ▼
+  Human / app             Another agent              LLM (Claude, Cursor,
+  backend                                            OpenAI, n8n, …)
+       │                      │                           │
+       ▼                      ▼                           ▼
+   ┌────────┐            ┌────────┐                  ┌────────┐
+   │OpenAPI │            │ A2A    │                  │ MCP    │
+   └────────┘            └────────┘                  └────────┘
+
+   Need streaming? ─────────► YES, use SSE on every surface
+   Need durable async? ─────► OpenAPI tasks   /   A2A tasks
+   Need multi-turn? ────────► OpenAPI         /   A2A (referenceTaskIds)
+   Need push (webhooks)? ───► OpenAPI tasks   /   A2A pushNotification
+```
+
+If you find yourself wanting **two** answers ("I'm a tool host but I
+also need durable async"), the right choice is usually whichever
+**credential model** fits — MCP for the OAuth-protected tool host
+runtime, OpenAPI for any out-of-band background work. They share
+the same underlying agent so there's no consistency risk.
+
+---
+
+## 3. Worked examples
+
+### "My SaaS backend pings an agent to process incoming emails"
+
+→ **OpenAPI**. Use `oag_` keys on the service. Call
+`POST /api/v1/agents/email-triage/tasks` (you want durable async +
+webhook callback). See [Calling Agents § async task mode](/guides/calling-agents)
+and [Webhooks](/guides/webhooks).
+
+### "My agent needs to delegate research to another agent"
+
+→ **A2A**. Your agent's calling-side code already lives in the
+beeos-claw runtime; it gets a built-in `beeos_call_agent` tool that
+opens an A2A task on `a2a.beeos.ai/{target_agent_id}`. The remote
+agent will reply on the shared IM channel — your agent observes the
+result via Message SDK, no polling required. See
+[`agents/beeos-claw/src/a2a/`](https://github.com/beeos-ai/openagent/blob/main/agents/beeos-claw/src/a2a).
+
+### "I want Claude Desktop to use my BeeOS agent as a tool"
+
+→ **MCP**. Set `mcp_enabled=true` on the agent (default), declare
+`exposeAsTool=true` on the relevant skills, and have Claude Desktop
+add `mcp.beeos.ai/{ownerSlug}` as an MCP server. Claude completes
+the OAuth flow once; subsequent tool calls land via JSON-RPC. The
+[Agent Author Quickstart](/guides/agent-author-quickstart) covers the
+agent side; the MCP host's docs cover the consumer side.
+
+### "I'm building a Slack bot that runs agents"
+
+→ **OpenAPI**, even though the bot is "agent-like". The Slack bot is
+**not registered as a BeeOS agent** — it's an external integration
+making outbound calls. Use a `oag_` key with `tasks:write` scope; if
+you want push notification when the agent finishes (no polling), use
+a task webhook that targets your Slack bot's incoming-webhook URL.
+
+### "I'm building another agent **runtime** (not a single agent)"
+
+→ Use the **Agent Identity service** directly (internal, not public).
+Don't try to fit a new runtime through any of the three public
+surfaces — they're for end-users, not platform tenants. Reach out
+through the partner integration channel; you'll want gRPC, not REST.
+
+---
+
+## 4. Mixing protocols
+
+A single agent serves all three surfaces. The same `agentId` /
+`bak_` key / MCP slug consistently resolves to the same agent
+identity and the same Message Service channel topology, so:
+
+- An A2A peer can open a task, and the **owning user** can observe
+  the same task via OpenAPI Gateway's `GET /tasks/{id}` (assuming
+  they have ownership / public visibility).
+- Multiple MCP clients invoking the same tool concurrently get
+  multiplexed through the agent's `delivery_mode` exactly the same
+  way an OpenAPI burst would (push → parallel, queue → serial,
+  busy_reject → first wins).
+- Webhook bindings registered via OpenAPI task webhooks fire for
+  task completions regardless of which surface originally created
+  the task.
+
+This is **intentional** and lets you build hybrid workflows (e.g.
+external user calls via OpenAPI, agent internally delegates via A2A,
+final summary is fetched via MCP tool call from an LLM in the UI).
+
+---
+
+## 5. Migration notes
+
+- **A2A → OpenAPI**: If you started with `bak_` because you thought
+  you were "an agent" but you're actually a service backend, drop
+  the JSON-RPC scaffolding and switch to `oag_` + REST. Your
+  callers won't notice and your code will halve.
+- **OpenAPI → A2A**: Required only if you're shipping your own
+  agent that needs to delegate. In that case use the BeeOS
+  framework's built-in A2A client — don't hand-roll JSON-RPC.
+- **MCP → OpenAPI**: If you want the OAuth-protected tool to also be
+  callable from non-LLM backends, leave the MCP binding alone and
+  layer an OpenAPI invocation on top. The agent doesn't care.
+
+---
+
+## 6. See also
+
+- [Authentication & API Keys](/authentication) — full credential
+  matrix
+- [Calling Agents](/guides/calling-agents) — OpenAPI invocation modes
+- [MCP Gateway](/mcp/overview) — `mcp.beeos.ai` endpoint, OAuth
+  flow, and `tools/call` contract
+- [A2A External Surface](/a2a/overview) — `a2a.beeos.ai`
+  endpoint, agent-card discovery, and federation contract
+- [Public Architecture Overview](/architecture/public-overview)
+  — the four public hosts side-by-side, with cross-protocol
+  invariants
+- [Agent Author Quickstart](/guides/agent-author-quickstart) — for
+  the other side: building an agent that ALL three surfaces can
+  reach
+- A2A protocol specification:
+  [`backend/openapi/beeos-agent-integration-v1.yaml`](https://github.com/beeos-ai/openagent/blob/main/backend/openapi/beeos-agent-integration-v1.yaml)
+- MCP host integration: per-host documentation
+  (Claude Desktop, Cursor, OpenAI custom GPTs, …)

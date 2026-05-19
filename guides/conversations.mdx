@@ -1,0 +1,359 @@
+---
+title: Conversations
+description: "Long-lived multi-turn dialogs with the agent. Compare against tasks (single-shot) and pick the right primitive."
+---
+
+<Note>
+**Audience**: SDK users building chat UIs, multi-turn assistants, or
+any workflow that needs to send **more than one message** to the same
+agent without re-establishing context.
+</Note>
+>
+<Note>
+If you only need a **single request/reply** or a **single long job
+with a deadline**, you want [Calling Agents](/guides/calling-agents) instead.
+</Note>
+
+---
+
+## 1. Which one do I want?
+
+```
+┌────────────────────────────────────────────────────────────────────┐
+│ Just one prompt, get one answer, walk away?                        │
+│       → POST /agents/{id}/invoke    (sync / SSE / async)           │
+│                                                                    │
+│ One big background job that should auto-close on completion?       │
+│       → POST /agents/{id}/tasks     (task API, has deadline)       │
+│                                                                    │
+│ Open-ended chat — many turns, same context, no fixed end?          │
+│       → POST /agents/{id}/conversations  (this guide)              │
+└────────────────────────────────────────────────────────────────────┘
+```
+
+Both `tasks` and `conversations` ride the **same underlying message
+channel** in Message Service — the difference is purely a gateway-level
+UX choice:
+
+| Property | Task | Conversation |
+|---|---|---|
+| `single_shot` | `true` — channel auto-closes after the first terminal reply | `false` — stays open across many turns |
+| Deadline | `deadlineMs` from create, MS auto-closes when it expires (max 7 days) | None — natural Redis 24h-since-last-touch TTL; active SSE / `POST /messages` refreshes it |
+| Status machine | `pending` → `processing` → `completed` / `failed` / `cancelled` (ADR-0017) | Plain `state` field: `open` or `closed` |
+| Lifecycle terminator | First terminal reply auto-closes channel; `POST .../cancel` aborts mid-flight | `DELETE /conversations/{id}` closes it; otherwise lives until TTL |
+| `POST /messages` semantics | N/A — the initial message is the create body | **Non-blocking 202**; reply arrives via SSE / history |
+| Webhook delivery | Yes — `POST /tasks/{id}/webhooks` (see [webhooks guide](/guides/webhooks)) | No — observe via SSE / polling |
+| SSE auto-close | Closes on terminal envelope (`agent_reply`, `agent_reply_error`, etc.) — `event: end reason=task_terminal` | Stays open until `DELETE` or client disconnect — `event: end reason=channel_closed` on delete |
+| Caller turn budget | Each retry is a separate task (or `POST /continue` resumes a paused one) | Many turns per conversation; layered concurrency is allowed |
+
+Rule of thumb:
+
+- **Chat UI** → conversation
+- **Cron job / background process / batch report** → task
+- **One-off Q&A** → blocking invoke (simplest)
+
+---
+
+## 2. Lifecycle (conversation)
+
+```
+┌────────────────┐  POST .../conversations          ┌──────────────┐
+│  (no channel)  │ ──────────────────────────────▶ │  state=open  │
+└────────────────┘   201 + conv_id                  └──────┬───────┘
+                                                            │
+              ┌─────────────────────────────────────────────┤
+              │                                             │
+              │ POST .../messages         GET .../events    │
+              │ (202, async)              (SSE, live)       │
+              │ POST .../messages         GET .../messages  │
+              │ (202, async)              (paginated)       │
+              │  ...                       ...              │
+              │                                             │
+              │ DELETE .../conversations/{id}               │
+              ▼                                             ▼
+        ┌─────────────────┐                       SSE: event: end reason=channel_closed
+        │  state=closed   │ ◀────  CloseReason="canceled"
+        └─────────────────┘
+              │
+              │ MS grace window (5 min post-close)
+              ▼
+        history still readable via GET .../messages
+              │
+              │ TTL (default Redis 24h since last touch)
+              ▼
+        channel evicted; subsequent reads → 404
+```
+
+<Note>
+**Note**: Conversations don't have a `chat_cancel` envelope. There's
+no single in-flight turn to abort — if you want to stop the agent
+from continuing the latest turn, `DELETE` the entire conversation
+(which closes the channel). The agent receives a normal channel
+close signal and stops streaming.
+</Note>
+
+---
+
+## 3. The five conversation endpoints
+
+All five require `Authorization: Bearer <JWT or oag_...>`. API-key
+callers need scope `tasks:write` for create / send / delete and
+`tasks:read` for list / get / messages / events (see
+[Authentication & API Keys](/authentication#scopes)).
+
+| Method | Path | Purpose | Body | Returns |
+|---|---|---|---|---|
+| `POST` | `/api/v1/agents/{agentId}/conversations` | Create a new dialog channel | `{ title?, metadata?: {...} }` | `201` + `Conversation` |
+| `GET` | `/api/v1/agents/{agentId}/conversations` | List **caller's** conversations with this agent | — | `200` + `{ conversations, next_since }` |
+| `GET` | `/api/v1/agents/{agentId}/conversations/{convId}` | Get one conversation | — | `200` + `Conversation` |
+| `DELETE` | `/api/v1/agents/{agentId}/conversations/{convId}` | Close the conversation | — | `204` |
+| `POST` | `/api/v1/agents/{agentId}/conversations/{convId}/messages` | Send a user turn (non-blocking) | `{ message, idempotency_key? }` | `202` + `{ message_id, created_at }` |
+| `GET` | `/api/v1/agents/{agentId}/conversations/{convId}/messages` | Paginated history | `?since=<offset>&limit=<n>` | `200` + `{ messages, latest_offset }` |
+| `GET` | `/api/v1/agents/{agentId}/conversations/{convId}/events` | SSE live stream | `?since=<offset>` | SSE stream |
+
+Authorization invariant: **caller can only see / mutate their own
+conversations**. The conversation's `metadata.caller_owner_id` is
+written at create time; every read / write call checks it. A 403
+`forbidden` (`"conversation is not owned by caller"`) is returned on
+ownership mismatch.
+
+---
+
+## 4. The `since` cursor (history + SSE)
+
+`since` is an **integer offset** on the conversation's monotonic
+message log. The wire treats it as opaque, but here's the model so
+you can reason about it:
+
+```
+offset:    1     2     3     4     5     6      latest_offset = 6
+           │     │     │     │     │     │
+        user.q1 agent agent agent user.q2 agent_reply.q2
+                ^chunk ^chunk reply.q1
+```
+
+- `since=0` (or omitted) — **start from the beginning**. Useful for
+  late-attaching SSE clients that want the full transcript.
+- `since=N` — **resume from offset `N+1`**. Pass the last offset you
+  successfully observed.
+
+### `GET /messages`
+
+```
+GET /api/v1/agents/agent_abc/conversations/conv_xyz/messages?since=4&limit=200
+{
+  "messages": [
+    { "offset": 5, "type": "chat_message", "message_id": "m_...", ... },
+    { "offset": 6, "type": "agent_reply",  "message_id": "m_...", ... }
+  ],
+  "latest_offset": 6
+}
+```
+
+Use `latest_offset` from the previous page as the next `since`. Page
+size: default 200, max 500 (Message Service limit).
+
+### `GET /events` (SSE)
+
+```
+GET /api/v1/agents/agent_abc/conversations/conv_xyz/events?since=4
+```
+
+The stream replays every message at offset `> 4`, then keeps the
+connection open for new ones. Each frame:
+
+```
+event: message
+data: {"type":"agent_message_chunk","message_id":"m_...","offset":7,
+       "in_reply_to":"m_q2","publisher_id":"agent:abc",
+       "payload":{"text":"hello"},"created_at":"2026-05-14T18:00:00Z"}
+```
+
+- `offset` is **per-frame**: track the latest one and pass it as
+  `since=<latest>` on reconnect. SSE clients that crash and reconnect
+  must NOT pass `since=0` — that re-replays the full history and
+  duplicates every event you already processed.
+- `event: end` (with `reason`) is emitted **once** before the
+  connection terminates. Possible reasons:
+  - `channel_closed` — `DELETE` was called (by you or a peer with the
+    same auth) on this conversation.
+  - `stream_closed` — Message Service closed the upstream stream
+    (rare; usually a server restart or the conversation TTL fired).
+
+<Note>
+No equivalent of the task SSE's `task_terminal` `end` reason exists
+for conversations — there's no terminal frame in the open-ended
+model. The connection only ends on close / disconnect.
+</Note>
+
+### Keepalive
+
+The connection produces no traffic during idle periods. Browsers and
+some HTTP proxies will close idle connections after ~60s. Mitigation:
+
+1. Run your client behind a proxy that doesn't kill idle SSE (most
+   CDNs handle SSE natively); or
+2. Reconnect on socket close, passing the latest observed `offset` as
+   `since=<offset>` so you don't miss any events.
+
+---
+
+## 5. Worked example — chat loop (Node.js fetch + EventSource)
+
+```typescript
+const BASE = "https://openapi.beeos.ai";
+const headers = { Authorization: `Bearer ${process.env.BEEOS_API_KEY}` };
+
+// 1. open a conversation
+const created = await fetch(
+  `${BASE}/api/v1/agents/agent_abc/conversations`,
+  {
+    method: "POST",
+    headers: { ...headers, "Content-Type": "application/json" },
+    body: JSON.stringify({ title: "Customer support — order #12345" }),
+  },
+).then((r) => r.json());
+const convId = created.data.id;
+
+// 2. start streaming agent replies
+const es = new EventSource(
+  `${BASE}/api/v1/agents/agent_abc/conversations/${convId}/events`,
+  { withCredentials: true } as any, // SDK passes the token via header
+);
+
+let latestOffset = 0;
+es.addEventListener("message", (evt) => {
+  const frame = JSON.parse(evt.data);
+  latestOffset = frame.offset ?? latestOffset;
+  if (frame.type === "agent_message_chunk") {
+    process.stdout.write(frame.payload.text);
+  } else if (frame.type === "agent_reply") {
+    console.log("\n[turn complete]\n");
+  }
+});
+es.addEventListener("end", (evt) => {
+  const { reason } = JSON.parse(evt.data);
+  console.log(`stream ended: ${reason}`);
+  es.close();
+});
+
+// 3. send turns whenever the user types
+async function send(userMsg: string) {
+  const r = await fetch(
+    `${BASE}/api/v1/agents/agent_abc/conversations/${convId}/messages`,
+    {
+      method: "POST",
+      headers: { ...headers, "Content-Type": "application/json" },
+      body: JSON.stringify({ message: userMsg }),
+    },
+  );
+  if (r.status !== 202) throw new Error(`send failed: ${r.status}`);
+  // 202 — reply arrives via the SSE stream above.
+}
+
+await send("Hi, where's my order?");
+// later...
+await send("Can you also cancel item 2?");
+```
+
+---
+
+## 6. Concurrency, idempotency, attachments
+
+### Multiple in-flight turns
+
+The conversation API explicitly allows queuing multiple turns before
+the agent has replied to the previous one. Replies arrive in the
+order the agent produces them; the `in_reply_to` field on each
+`agent_reply` points back to the originating user message_id, so
+clients can correlate even when turns interleave.
+
+### Idempotency
+
+Pass an `idempotency_key` on `POST /messages`. Message Service
+deduplicates on `(channel_id, idempotency_key)`. Resending the same
+key on a network retry returns the existing `message_id` without
+re-publishing — safe to wire into automatic retries.
+
+If omitted, the gateway generates a fresh UUID, so retries from
+different fetch attempts will be treated as **distinct** messages.
+
+### Attachments
+
+Conversations accept attachments the same way `invoke` and `tasks`
+do — upload via `POST /api/v1/files/presign-upload`, then include
+the returned `file_id` in the next `POST /messages` body:
+
+```json
+{
+  "message": "Here is the screenshot",
+  "attachments": [{ "file_id": "file_abc" }]
+}
+```
+
+The gateway resolves each `file_id` to a presigned download URL and
+embeds it in the chat envelope so the agent can fetch the bytes
+out-of-band. See [Calling Agents § Attachments](/guides/calling-agents#attachments)
+for the full flow.
+
+---
+
+## 7. Deletion semantics
+
+```
+DELETE /api/v1/agents/{agentId}/conversations/{convId}
+204 No Content
+```
+
+What happens:
+
+1. The channel is closed with `reason=canceled`.
+2. Any SSE connection on `/events` receives one final
+   `event: end\ndata: {"reason":"channel_closed"}\n\n` and the
+   stream terminates.
+3. The conversation is now `state=closed` — subsequent
+   `POST /messages` calls return `409 conflict` (`"channel closed"`).
+4. **History remains readable** via `GET /messages` for the MS 5-minute
+   grace window post-close; after that the channel is evicted and
+   reads return `404 agent_not_found` (`"conversation not found"`).
+
+If you want to keep the transcript indefinitely, **fetch all messages
+before calling DELETE** — the gateway is not a long-term archive,
+only Message Service's TTL-bounded log.
+
+---
+
+## 8. Errors
+
+The full set lives in [Error Reference](/reference/errors). The
+ones you're most likely to hit on this API:
+
+| HTTP | `code` | Cause |
+|---|---|---|
+| `400` | `invalid_param` | `convId` empty or `conv_id` belongs to a different agent than the URL path |
+| `400` | `invalid_param` | `conv_id refers to a non-conversation channel` — you tried to use a task ID on a conversation endpoint |
+| `403` | `forbidden` | The conversation isn't yours |
+| `403` | `insufficient_scope` | API key missing `tasks:read` / `tasks:write` |
+| `404` | `agent_not_found` | Conversation doesn't exist or fell off the MS TTL |
+| `409` | `conflict` | Channel is closed (e.g. `POST /messages` after `DELETE`) |
+| `413` | `payload_too_large` | Message body > 1 MiB — split into multiple turns or use [attachments](#attachments) for large blobs |
+| `503` | `agent_unavailable` | `MESSAGE_SERVICE_URL` not configured, MS dead, or agent is offline (`POST /messages` only — list / get / SSE will still work against the historical log) |
+
+---
+
+## 9. See also
+
+- [Calling Agents](/guides/calling-agents) — the three single-turn
+  invocation modes
+- [Streaming (SSE)](/guides/streaming) — full reference for the
+  `/events` endpoint's wire framing, `since` semantics, and
+  reconnect / keepalive recipes
+- [Webhooks](/guides/webhooks) — push notifications for the **task** API
+  (no equivalent for conversations)
+- [Error Reference](/reference/errors) — every `code` the
+  conversation endpoints can emit
+- [Authentication & API Keys](/authentication) — including the
+  full scope table
+- OpenAPI contract:
+  [`backend/openapi/beeos-platform-v1.yaml`](https://github.com/beeos-ai/openagent/blob/main/backend/openapi/beeos-platform-v1.yaml)
+  (search for `conversations:` in `paths`)
