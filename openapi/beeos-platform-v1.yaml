@@ -1502,32 +1502,6 @@ components:
         A missing or insufficient scope returns `403 insufficient_scope`
         with the comma-separated acceptable scope set echoed in
         `error.metadata.required_scope` (any one is sufficient).
-    agentApiKey:
-      type: apiKey
-      in: header
-      name: X-Agent-API-Key
-      description: |
-        `bak_…` **Agent API Key** bound to a specific agent. Accepted on the
-        sibling A2A Gateway (`a2a.beeos.ai`) and MCP Gateway (`mcp.beeos.ai`)
-        surfaces for the same agent — **not** by the platform OpenAPI host
-        directly. Declared here so the Mintlify "Try it" panel can render the
-        full multi-credential picker shared by `/guides/calling-agents`,
-        `/a2a/overview`, and `/mcp/overview`. Also accepted as
-        `Authorization: Bearer bak_…` on those hosts.
-    mcpOauth2:
-      type: oauth2
-      description: |
-        OAuth 2.1 + PKCE authorization-code flow used by spec-compliant MCP
-        clients (Claude Desktop, MCP Inspector) against the MCP Gateway
-        (`mcp.beeos.ai`). Server-to-server callers should use `bak_` or
-        `oag_` API keys instead — see `/mcp/oauth`.
-      flows:
-        authorizationCode:
-          authorizationUrl: https://mcp.beeos.ai/oauth/authorize
-          tokenUrl: https://mcp.beeos.ai/oauth/token
-          scopes:
-            mcp:tools:list: List the tools exposed by an MCP agent.
-            mcp:tools:call: Invoke an MCP tool against an agent.
   schemas:
     # -------- Envelope helpers --------
     SuccessEnvelope:
