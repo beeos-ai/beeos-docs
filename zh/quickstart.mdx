@@ -1,12 +1,17 @@
 ---
 title: 快速开始
-description: 5 分钟内部署并调用你的第一个智能体。
+description: "5 分钟部署你的第一个智能体并调用它 —— 涵盖类型化 SDK、curl、Go。"
 ---
 
-## 前置条件
+本指南带你从零到一个能聊天的运行中智能体，通过 BeeOS 公开 OpenAPI
+完成。同样的流程可对本地 `http://localhost:8095` 和生产
+`https://openapi.beeos.ai`。
 
-- 注册 [beeos.ai](https://beeos.ai) BeeOS 账号
-- 在 **设置 > API Keys** 中获取 **用户 API Key**（`oag_...`）
+## 准备
+
+- 一个 [beeos.ai](https://beeos.ai) 账户。
+- 一个**用户 API Key**（`oag_…`），到 **Settings &rarr; API Keys** 创建。
+  这是长期 bearer 凭证 —— 见[认证](/zh/authentication)了解作用域和轮换。
 
 ## 1. 安装 SDK
 
@@ -21,24 +26,38 @@ go get github.com/beeos-ai/sdk-go
 ```
 
 ```bash curl
-# 无需安装，直接使用 curl
+# 不需要安装 —— 直接用 curl。
 ```
 
 </CodeGroup>
 
-## 2. 列出可用 Provider
+<Note>
+  已发布的 `@beeos-ai/sdk` 由 OpenAPI Generator（`typescript-fetch`）
+  从 OpenAPI 契约自动生成。它导出一个 `Configuration` 值和每个 OpenAPI
+  tag 一个 class —— `DeployApi`、`InstancesApi`、`AgentsApi`、`TasksApi`、
+  `ConversationsApi`、`FilesApi`。**没有** `BeeOS` 顶层 client。
+</Note>
+
+## 2. 配置 client
 
 <CodeGroup>
 
 ```typescript TypeScript
-import { BeeOS } from "@beeos-ai/sdk";
+import {
+  Configuration,
+  DeployApi,
+  InstancesApi,
+  AgentsApi,
+} from "@beeos-ai/sdk";
 
-const client = new BeeOS({ apiKey: "oag_YOUR_KEY" });
-const providers = await client.providers.list();
+const config = new Configuration({
+  basePath: "https://openapi.beeos.ai",
+  headers: { Authorization: `Bearer ${process.env.BEEOS_API_KEY}` },
+});
 
-for (const p of providers) {
-  console.log(p.meta.id, p.meta.name);
-}
+const deploy = new DeployApi(config);
+const instances = new InstancesApi(config);
+const agents = new AgentsApi(config);
 ```
 
 ```go Go
@@ -47,52 +66,95 @@ package main
 import (
     "context"
     "fmt"
+    "os"
+
     beeos "github.com/beeos-ai/sdk-go"
 )
 
 func main() {
-    client := beeos.New(beeos.WithAPIKey("oag_YOUR_KEY"))
-    providers, _ := client.Providers.List(context.Background())
-    for _, p := range providers {
-        fmt.Println(p.Meta.ID, p.Meta.Name)
+    cfg := beeos.NewConfiguration()
+    cfg.Servers = beeos.ServerConfigurations{
+        {URL: "https://openapi.beeos.ai"},
     }
+    cfg.DefaultHeader["Authorization"] = "Bearer " + os.Getenv("BEEOS_API_KEY")
+
+    client := beeos.NewAPIClient(cfg)
+    ctx := context.Background()
+    _ = client
+    _ = ctx
+    fmt.Println("client ready")
 }
 ```
 
 ```bash curl
-curl -s https://openapi.beeos.ai/api/v1/providers \
-  -H "Authorization: Bearer oag_YOUR_KEY" | jq '.data'
+export BEEOS_API_KEY="oag_…"
+export BASE=https://openapi.beeos.ai
 ```
 
 </CodeGroup>
 
-## 3. 部署智能体实例
+## 3. 查看部署目录
 
 <CodeGroup>
 
 ```typescript TypeScript
-const instance = await client.instances.deploy({
-  name: "my-first-agent",
-  agentFramework: "beeos-claw",
-  modelPrimary: "gpt-4o",
-});
+const providers = await deploy.listProviders();
+console.log(providers.data?.map(p => `${p.meta?.id} — ${p.meta?.name}`));
 
-console.log("实例 ID:", instance.id);
-console.log("状态:", instance.status);
+const regions = await deploy.listDeployRegions({ providerId: "default" });
+const models = await deploy.listDeployModels({ agentFramework: "beeos-claw" });
 ```
 
 ```go Go
-inst, _ := client.Instances.Deploy(context.Background(), beeos.DeployInstanceRequest{
-    Name:           "my-first-agent",
-    AgentFramework: "beeos-claw",
-    ModelPrimary:   "gpt-4o",
-})
-fmt.Println("实例 ID:", inst.ID)
+providers, _, _ := client.DeployAPI.ListProviders(ctx).Execute()
+for _, p := range providers.GetData() {
+    fmt.Printf("%s — %s\n", p.Meta.GetId(), p.Meta.GetName())
+}
 ```
 
 ```bash curl
-curl -s -X POST https://openapi.beeos.ai/api/v1/instances \
-  -H "Authorization: Bearer oag_YOUR_KEY" \
+curl -s "$BASE/api/v1/providers" \
+  -H "Authorization: Bearer $BEEOS_API_KEY" | jq '.data'
+
+curl -s "$BASE/api/v1/deploy/regions?providerId=default" \
+  -H "Authorization: Bearer $BEEOS_API_KEY" | jq '.data'
+
+curl -s "$BASE/api/v1/deploy/models?agentFramework=beeos-claw" \
+  -H "Authorization: Bearer $BEEOS_API_KEY" | jq '.data'
+```
+
+</CodeGroup>
+
+## 4. 部署一个智能体实例
+
+<CodeGroup>
+
+```typescript TypeScript
+const created = await instances.deployInstance({
+  deployInstanceRequest: {
+    name: "my-first-agent",
+    agentFramework: "beeos-claw",
+    modelPrimary: "gpt-4o",
+  },
+});
+const instanceId = created.data!.id;
+console.log(`实例 ${instanceId} — 状态: ${created.data!.status}`);
+```
+
+```go Go
+req := beeos.DeployInstanceRequest{
+    Name:           "my-first-agent",
+    AgentFramework: "beeos-claw",
+    ModelPrimary:   "gpt-4o",
+}
+created, _, _ := client.InstancesAPI.DeployInstance(ctx).
+    DeployInstanceRequest(req).Execute()
+fmt.Printf("实例 %s — 状态: %s\n", created.Data.GetId(), created.Data.GetStatus())
+```
+
+```bash curl
+curl -s -X POST "$BASE/api/v1/instances" \
+  -H "Authorization: Bearer $BEEOS_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "my-first-agent",
@@ -103,59 +165,105 @@ curl -s -X POST https://openapi.beeos.ai/api/v1/instances \
 
 </CodeGroup>
 
-## 4. 调用智能体
+部署需要几秒钟。轮询 `GET /instances/{id}` 直到
+`status === "running"`，或在 dashboard 上看。
 
-实例状态变为 `running` 后，即可向其发送消息：
+## 5. 拿到智能体 ID
+
+一个部署的实例托管一个或多个智能体。调用要用的是智能体 ID（实例可
+以被替换而不破坏你的集成；智能体身份是稳定的）。
 
 <CodeGroup>
 
 ```typescript TypeScript
-const result = await client.agents.invoke(instance.identityId, {
-  message: "你好！你能做什么？",
-});
-
-console.log("回复:", result.text);
-console.log("上下文:", result.context_id);
+const list = await agents.listAgents({ instanceId, limit: 20 });
+const agentId = list.data![0].id;
+console.log(`调用智能体 ${agentId}`);
 ```
 
 ```go Go
-reply, _ := client.Agents.Invoke(context.Background(), agentID, beeos.InvokeAgentRequest{
-    Message: "你好！你能做什么？",
-})
-fmt.Println("回复:", reply.Text)
+list, _, _ := client.AgentsAPI.ListAgents(ctx).
+    InstanceId(instanceId).Limit(20).Execute()
+agentID := list.GetData()[0].GetId()
 ```
 
 ```bash curl
-curl -s -X POST "https://openapi.beeos.ai/api/v1/agents/${AGENT_ID}/invoke" \
-  -H "Authorization: Bearer oag_YOUR_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "message": "你好！你能做什么？"
-  }' | jq '.data'
+AGENT_ID=$(curl -s "$BASE/api/v1/agents?instanceId=$INSTANCE_ID&limit=20" \
+  -H "Authorization: Bearer $BEEOS_API_KEY" | jq -r '.data[0].id')
+echo "调用智能体 $AGENT_ID"
 ```
 
 </CodeGroup>
 
-获取流式响应，请设置 `Accept: text/event-stream`：
+## 6. 调用智能体
 
-```bash
-curl -N -X POST "https://openapi.beeos.ai/api/v1/agents/${AGENT_ID}/invoke" \
-  -H "Authorization: Bearer oag_YOUR_KEY" \
+阻塞调用在智能体完成回复后返回一个 JSON 载荷。长 prompt 见
+[流式](/zh/guides/streaming)。
+
+<CodeGroup>
+
+```typescript TypeScript
+const reply = await agents.invokeAgent({
+  agentId,
+  invokeAgentRequest: {
+    message: "你好 —— 你能做什么？",
+  },
+});
+console.log("回复:", reply.data?.reply);
+console.log("Channel:", reply.data?.context_id);
+```
+
+```go Go
+reply, _, _ := client.AgentsAPI.InvokeAgent(ctx, agentID).
+    InvokeAgentRequest(beeos.InvokeAgentRequest{
+        Message: "你好 —— 你能做什么？",
+    }).Execute()
+fmt.Println("回复:", reply.GetData().GetReply())
+```
+
+```bash curl
+curl -s -X POST "$BASE/api/v1/agents/$AGENT_ID/invoke" \
+  -H "Authorization: Bearer $BEEOS_API_KEY" \
   -H "Content-Type: application/json" \
-  -H "Accept: text/event-stream" \
-  -d '{"message": "介绍一下你自己"}'
+  -d '{"message": "你好 —— 你能做什么？"}' | jq '.data'
 ```
 
-## 5. 清理资源
+</CodeGroup>
+
+### 流式变体
+
+同一个端点设 `Accept: text/event-stream` 即可接收
+`agent_reply_delta` 分块，最后由一个 `agent_reply` 关闭。SDK 不抽象
+SSE —— 回落到 `fetch` / `http.Client`。
 
 ```bash
-curl -s -X DELETE "https://openapi.beeos.ai/api/v1/instances/${INSTANCE_ID}" \
-  -H "Authorization: Bearer oag_YOUR_KEY" | jq
+curl -N -X POST "$BASE/api/v1/agents/$AGENT_ID/invoke" \
+  -H "Authorization: Bearer $BEEOS_API_KEY" \
+  -H "Accept: text/event-stream" \
+  -H "Content-Type: application/json" \
+  -d '{"message": "讲个短故事。"}'
 ```
 
-## 下一步
+## 7. 清理
 
-- [认证](/zh/authentication) — 了解所有认证方式
-- [A2A 协议](/zh/a2a/overview) — 构建智能体间的协作流程
-- [MCP 集成](/zh/mcp/overview) — 将智能体连接到 Claude、Cursor 等平台
-- [API 参考](/api-reference) — 交互式探索所有端点
+```bash
+curl -s -X DELETE "$BASE/api/v1/instances/$INSTANCE_ID" \
+  -H "Authorization: Bearer $BEEOS_API_KEY" | jq
+```
+
+## 下一步去哪
+
+<CardGroup cols={2}>
+  <Card title="选择协议" icon="signs-post" href="/zh/guides/choosing-a-protocol">
+    在 OpenAPI（本指南）、A2A、MCP 之间做出选择。
+  </Card>
+  <Card title="调用智能体" icon="message-bot" href="/zh/guides/calling-agents">
+    幂等键、附件、任务、会话、错误处理。
+  </Card>
+  <Card title="Webhook" icon="webhook" href="/zh/guides/webhooks">
+    HMAC 签名的终态回调 + 重试 + 审计日志。
+  </Card>
+  <Card title="A2A 协议" icon="arrows-rotate" href="/zh/a2a/overview">
+    `a2a.beeos.ai` 上的 JSON-RPC + 智能体卡片。
+  </Card>
+</CardGroup>
