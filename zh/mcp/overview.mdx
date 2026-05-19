@@ -1,79 +1,173 @@
 ---
-title: MCP 概述
-description: 将 BeeOS 智能体作为 MCP 工具服务器暴露给 Claude、ChatGPT、Cursor 等平台。
+title: MCP Gateway
+description: Model Context Protocol 在 mcp.beeos.ai 的入口 —— tools/list、tools/call、OAuth 2.1 + PKCE。
 ---
 
-**Model Context Protocol（MCP）** 集成允许外部 AI 平台发现并调用 BeeOS
-智能体技能作为标准 MCP 工具。任何支持 MCP Streamable HTTP 传输的平台
-都可以连接 — 包括 Claude Desktop、ChatGPT、Cursor、n8n 和 MCP Inspector。
+<Note>
+受众：把 BeeOS 智能体集成到 LLM 工具宿主的开发者 —— Claude Desktop、
+Cursor、OpenAI 的 MCP 支持、n8n、MCP Inspector，或任何
+[Model Context Protocol](https://modelcontextprotocol.io) 客户端。
+</Note>
 
-## 架构
+MCP Gateway 把每个开启 MCP 的 BeeOS 智能体变成一个符合规范的 MCP
+工具 server。从宿主视角看，它和任何其他 MCP 端点一样：发现工具、
+调用工具，可选地流式响应。从你（智能体拥有者）这一侧看，就是
+"把 `mcp_enabled=true` 翻开就行了"。
 
-```mermaid
-flowchart LR
-    Claude["Claude Desktop"] -->|OAuth 2.1| MCPGW["MCP Gateway"]
-    Cursor["Cursor IDE"] -->|bak_ / oag_| MCPGW
-    N8N["n8n"] -->|bak_| MCPGW
+要决定**是否**该选 MCP（对比 OpenAPI 或 A2A），见
+[选择协议](/zh/guides/choosing-a-protocol)。本指南只覆盖你已经做出
+选择后的 MCP 特定集成事宜。
 
-    MCPGW --> BeeOS["BeeOS 平台"]
-    BeeOS --> Agent["智能体"]
-    Agent --> BeeOS
-    BeeOS -->|回复| MCPGW
-    MCPGW -->|响应| Claude
-```
+---
 
-## MCP 端点
+## 1. 端点位置
 
-```
-POST https://mcp.beeos.ai/{agentId}/mcp
-```
+| 项 | 值 |
+|---|---|
+| **Host** | `https://mcp.beeos.ai` |
+| **MCP 端点形状** | `POST /{agentId}/mcp` |
+| **传输** | Streamable HTTP（HTTP 上的 JSON-RPC 2.0，流式用 SSE） |
+| **OAuth metadata** | `GET /.well-known/oauth-authorization-server` |
+| **Protected resource metadata** | `GET /.well-known/oauth-protected-resource` |
+| **Health probe** | `GET /healthz` |
 
-这是一个 Streamable HTTP 端点，按照 MCP 规范接受 JSON-RPC 2.0 请求。
+本地开发：网关监听 `http://localhost:8094` 用同样的路径形状；
+goreman 接线见
+[`backend/services/mcp-gateway/README.md`](https://github.com/beeos-ai/openagent/blob/main/backend/services/mcp-gateway/README.md)。
 
-## 认证
+URL 里的 agent ID 把每个 MCP session 钉到一个 BeeOS 智能体。
+单个 MCP 宿主可以通过注册多个 `{agentId}` 不同的端点挂载多个
+BeeOS 智能体。
 
-MCP 端点接受三种凭证类型（按优先级排序）：
+---
 
-| 方式 | 头部 | 最佳场景 |
-|------|------|----------|
-| 智能体 API Key | `X-Agent-API-Key: bak_...` | 按智能体的第三方集成 |
-| 用户 API Key | `Authorization: Bearer oag_...` | 脚本、CI、自动化以用户身份执行 |
-| OAuth 2.1 Bearer | `Authorization: Bearer <JWT>` | 符合规范的 MCP 客户端（Claude Desktop） |
+## 2. 认证 —— 三种凭证、同一个端点
 
-详见 [MCP OAuth](/zh/mcp/oauth) 完整 OAuth 2.1 + PKCE 流程。
+`/{agentId}/mcp` 接受**三种**凭证类型。按你客户端的身份模型挑一个。
 
-## 快速开始
+| 凭证 | Header | 最适合 | scope |
+|---|---|---|---|
+| **OAuth 2.1 Bearer**（来自 `/oauth/token` 的 HS256 JWT） | `Authorization: Bearer <jwt>` | 规范合规 MCP 客户端（Claude Desktop、MCP Inspector） | 按 session，同意时授权的智能体集合 |
+| **用户 API Key**（`oag_…`） | `Authorization: Bearer oag_…` | 脚本、CI、以 BeeOS 用户身份代理的 n8n | 该用户拥有的所有 MCP-enabled 智能体 |
+| **智能体 API Key**（`bak_…`） | `X-Agent-API-Key: bak_…` 或 `Authorization: Bearer bak_…` | 绑定到单个智能体的第三方集成 | 一个智能体（URL 的 `{agentId}` **必须**匹配） |
 
-### 列出可用工具
+固定优先级顺序：OAuth → User → Agent。同时发**两个不同**凭证
+（如 `Authorization: Bearer oag_…` 加上不同值的
+`X-Agent-API-Key: bak_…`）返回 `401`。为绕过倔强的代理在
+`Authorization` 和 `X-Agent-API-Key` 里发同一个 `bak_` 是允许的。
+
+凭证轮换和吊销见 [认证与 API Key](/zh/authentication)。
+
+### 2.1 OAuth 2.1 流程（规范合规的 MCP 客户端）
+
+Claude Desktop / Cursor / MCP Inspector 按
+[MCP Authorization spec](https://spec.modelcontextprotocol.io/specification/server/authorization/)
+使用 Dynamic Client Registration (DCR) + Authorization Code + PKCE：
+
+1. 客户端 POST `/oauth/register` → `{client_id, …}`。
+2. 客户端打开浏览器到
+   `/oauth/authorize?client_id=…&code_challenge=…&redirect_uri=…&state=…`。
+3. MCP Gateway 重定向到 BeeOS Web 登录
+   （`MCP_WEB_LOGIN_URL/mcp-login?return_to=…`）。
+4. 用户登录 BeeOS，选择授权哪些智能体。
+5. Web 应用回调 MCP Gateway，网关再以 `?code=…&state=…` 重定向到
+   `redirect_uri`。
+6. 客户端 POST `/oauth/token` 带 `code_verifier` → access token。
+7. 此后客户端用该 token 调 `/{agentId}/mcp`。
+
+你通常不需要手写这段流程 —— Claude Desktop、MCP Inspector 等工具
+自动处理 DCR + PKCE。你**确实**需要确保：
+
+- 你的 BeeOS 账号至少有一个 **MCP-enabled** 智能体
+  （`mcp_enabled=true`）。在 OpenAPI 接入面 `GET /api/v1/agents` 里
+  查 —— catalog 响应里有 `mcp_enabled` 字段。
+- 客户端的 `redirect_uri` 浏览器能达 —— authorization-code 重定向
+  到不可路由的 host 行不通。
+- 本地开发：网关 env 里要有 `MCP_PUBLIC_URL=http://localhost:8094`，
+  并且 `localhost:3000` 的 web 应用要暴露 `/mcp-login` 路由。
+
+### 2.2 仅 API Key 流程（n8n、脚本、CI）
+
+非交互调用方完全跳过 OAuth 流程，用 `oag_`（用户 API Key）或 `bak_`
+（智能体 API Key）作为 bearer 凭证：
 
 ```bash
-curl -s -X POST "https://mcp.beeos.ai/${AGENT_ID}/mcp" \
-  -H "X-Agent-API-Key: bak_YOUR_KEY" \
+# n8n / CI: 列出该用户的 MCP-enabled 智能体
+curl -X POST https://mcp.beeos.ai/<agentId>/mcp \
+  -H "Authorization: Bearer oag_XXXXXXXXXXXXXXXX" \
   -H "Content-Type: application/json" \
-  -d '{
-    "jsonrpc": "2.0",
-    "id": 1,
-    "method": "tools/list"
-  }' | jq
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+
+# 绑定到单个智能体的第三方 app
+curl -X POST https://mcp.beeos.ai/<agentId>/mcp \
+  -H "X-Agent-API-Key: bak_XXXXXXXXXXXXXXXX" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
 ```
 
-响应：
+`bak_` 对第三方 app 是正确选择，因为：
+- Key 绑定到**一个**智能体 —— 丢失只泄露这一个集成，不连累整个用户账号。
+- 可独立于你的 `oag_` Key 吊销。
+- 智能体拥有者（你）显式签发，同意可审计追溯。
+
+---
+
+## 3. 各 MCP 方法做什么
+
+网关实现四个 JSON-RPC 方法。所有请求 POST 到 `/{agentId}/mcp`；
+响应是 JSON-RPC 2.0 信封。
+
+### 3.1 `initialize`
+
+标准 MCP 握手。网关返回它的协议版本和能力。自动重连的客户端在
+每个 session 开始时都应重发一次。
 
 ```json
 {
   "jsonrpc": "2.0",
   "id": 1,
+  "method": "initialize",
+  "params": {
+    "protocolVersion": "2024-11-05",
+    "capabilities": { "tools": {} },
+    "clientInfo": { "name": "claude-desktop", "version": "0.7.0" }
+  }
+}
+```
+
+### 3.2 `tools/list`
+
+把通过该端点能触达的**唯一**一个 BeeOS 智能体作为一个 tool 暴露
+出来。tool 的 name、description、input schema 来自智能体的
+[Agent Card](/zh/architecture/public-overview#3-各接入面拥有什么)
+（由 `pkg/agentcard` 解析）。
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "tools/list"
+}
+```
+
+响应（截断）：
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
   "result": {
     "tools": [
       {
-        "name": "web_search",
-        "description": "搜索网络信息",
+        "name": "agent_abc123",
+        "description": "Analyze CSV files and produce a chart.",
         "inputSchema": {
           "type": "object",
           "properties": {
-            "query": {"type": "string", "description": "搜索查询"}
+            "message": { "type": "string" },
+            "context_id": { "type": "string" }
           },
-          "required": ["query"]
+          "required": ["message"]
         }
       }
     ]
@@ -81,75 +175,140 @@ curl -s -X POST "https://mcp.beeos.ai/${AGENT_ID}/mcp" \
 }
 ```
 
-### 调用工具
+跨 BeeOS 智能体的形状**有意统一** —— 每个智能体在 MCP 看都是
+`message → reply` tool。如果你的智能体需要结构化输入，在智能体进程
+内部校验（`message` 字段是智能体期望的 JSON 或自然语言信封）；MCP
+本身对每智能体 schema 建模不深。
 
-```bash
-curl -s -X POST "https://mcp.beeos.ai/${AGENT_ID}/mcp" \
-  -H "X-Agent-API-Key: bak_YOUR_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "jsonrpc": "2.0",
-    "id": 2,
-    "method": "tools/call",
-    "params": {
-      "name": "web_search",
-      "arguments": {"query": "最新 AI 新闻"}
-    }
-  }' | jq
-```
+### 3.3 `tools/call`
 
-## Claude Desktop 配置
-
-在 `~/Library/Application Support/Claude/claude_desktop_config.json` 中添加：
+调用智能体。默认同步；通过支持 SSE 的 `Accept` header 让网关在
+智能体产出 `agent_reply_delta` 时流式发送 `notifications/progress`
+事件。
 
 ```json
 {
-  "mcpServers": {
-    "beeos-agent": {
-      "transport": "streamable-http",
-      "url": "https://mcp.beeos.ai/YOUR_AGENT_ID/mcp"
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "tools/call",
+  "params": {
+    "name": "agent_abc123",
+    "arguments": {
+      "message": "What's the top-selling SKU last week?",
+      "context_id": "ctx-uuid-optional"
     }
   }
 }
 ```
 
-Claude 首次连接时会自动完成 OAuth 流程（DCR、authorize、token）。
-认证后，`tools/list` 和 `tools/call` 将透明工作。
+同步响应：
 
-## tools/call 底层原理
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "result": {
+    "content": [
+      { "type": "text", "text": "Top SKU last week: BLUE-42 (1,329 units)" }
+    ]
+  }
+}
+```
 
-MCP `tools/call` 是一个同步聊天往返，使用与 [A2A REST 调用](/zh/a2a/rest-invoke)
-相同的消息传输机制：
+流式响应：同样的 JSON-RPC ID，但网关在 SSE 流上写
+`notifications/progress` 事件，随智能体产出 `agent_reply_delta`，
+最后用 `result` 终止。
 
-1. MCP Gateway 将工具调用转换为消息并发送给智能体
-2. 智能体处理请求并返回回复
-3. Gateway 将回复作为 JSON-RPC 结果返回
+### 3.4 `tools/call` 取消
 
-MCP 调用 **不会** 创建 A2A 任务，没有任务生命周期开销。
+MCP 规范目前没有标准化的取消。对一个长任务需要取消语义时，并行使用
+[OpenAPI 任务接入面](/zh/guides/calling-agents#3c-实时-sse-事件流) ——
+把同一份工作作为 BeeOS 任务提交，通过 `POST /tasks/{id}/cancel` 取消。
+MCP `tools/call` 通过底层 Message Service 通道看到智能体的终止状态。
 
-## 支持的 JSON-RPC 方法
+---
 
-| 方法 | 说明 |
-|------|------|
-| `tools/list` | 列出智能体暴露的所有工具 |
-| `tools/call` | 调用特定工具 |
-| `resources/list` | 列出可用资源 |
-| `resources/read` | 读取特定资源 |
-| `prompts/list` | 列出提示模板 |
-| `prompts/get` | 获取特定提示模板 |
+## 4. 行为契约 —— MCP 保证什么、不保证什么
 
-详见 [工具](/zh/mcp/tools) 和 [资源](/zh/mcp/resources) 方法文档。
+**保证：**
 
-## 下一步
+- `tools/list` 是**只读**且幂等。跨重连重复调用安全。
+- `tools/call` 每个 JSON-RPC ID 始终投递恰好一次 `result`（或一次
+  `error`）。服务端触发的取消（deadline、智能体崩溃）以 JSON-RPC
+  error 带一个稳定 `code` 形式暴露，详见
+  [错误参考](/zh/reference/errors)。
+- 通过 OpenAPI / A2A 触达的同一智能体在此处也能触达；响应是字节
+  一致的（来自同一 Message Service 通道的同一 `agent_reply`）。
+- 幂等：传 `params.arguments.idempotency_key`，网关在底层 L0 invoke
+  上尊重它。见 [调用智能体 § 幂等](/zh/guides/calling-agents)。
+- 附件：传 `params.arguments.attachments[]` 里的 `file_id`（来自
+  `POST /api/v1/files/presign-upload`）。智能体看到正常的多部分
+  `chat_message`。
 
-<CardGroup cols={2}>
-  <Card title="OAuth 流程" icon="key" href="/zh/mcp/oauth">
-    为符合规范的 MCP 客户端配置 OAuth 2.1 + PKCE。
-  </Card>
-  <Card title="工具" icon="wrench" href="/zh/mcp/tools">
-    工具发现与调用参考。
-  </Card>
-  <Card title="资源" icon="database" href="/zh/mcp/resources">
-    智能体暴露的只读数据资源。
-  </Card>
-</CardGroup>
+**不保证：**
+
+- **持久异步** —— MCP `tools/call` 是 request-response。需要在
+  客户端断开后存活的长任务属于 OpenAPI tasks。想用 "fire-and-forget
+  MCP tool" 通常是协议错配的信号。
+- **单次调用内多轮** —— 每次 `tools/call` 是一个新回合。要串联相关
+  回合，MCP 宿主通常把会话上下文留在客户端，在下一条 `message`
+  里包进相关历史。如果你需要服务端会话连续性，用 OpenAPI
+  [会话接入面](/zh/guides/conversations)，把 conversation ID 透传
+  到 MCP 调用的 `arguments.context_id`。
+- **Webhook push** —— MCP 对调用以外的服务端 push 事件没有概念。
+  "任务完成通知我"的语义用 OpenAPI Webhook（P2-A，参见
+  [Webhook 指南](/zh/guides/webhooks)）。
+- **限流可见性** —— 网关按凭证 × 智能体强制限流，但限流元数据以
+  标准 MCP error 形状（`code`、`message`）返回。看 `code`
+  （`rate_limited`）做退避；wire 上目前不带 `Retry-After`。
+
+---
+
+## 5. 常见失败模式
+
+| 症状 | 可能原因 | 修法 |
+|---|---|---|
+| DCR + PKCE 走完后仍 `401 unauthorized` | 智能体没开 MCP。 | `PATCH /api/v1/agents/{id}` 把 `mcp_enabled=true` 翻开。 |
+| `401` 带 `WWW-Authenticate: Bearer realm="MCP", resource_metadata="…/.well-known/oauth-protected-resource"` | 凭证缺失或过期。header 指向 OAuth metadata，让规范感知的客户端自动重试。 | 重跑 OAuth 流程（大多数客户端自动做）。 |
+| `tools/call` 上 `400 invalid_param` | `arguments.message` 为空，或 `attachments[i].file_id` 指向缺失 / 错主的文件。 | 先用你的 `oag_` 通过 `GET /api/v1/files/{id}` 校验文件 ID。 |
+| `503 agent_service_unavailable` | 智能体 pod 离线或没有 Message Service 订阅。 | 通过 `GET /api/v1/instances` 查智能体实例状态；如果 `delivery_mode=push` 且 pod 在 `STOPPED` 则重启。 |
+| 重复 `idempotency_key` 上 `409 conflict` | 同 key 的前一次调用还在飞行中。 | 等前次回复或换 key。 |
+
+---
+
+## 6. 端到端示例 —— Claude Desktop
+
+`~/Library/Application Support/Claude/claude_desktop_config.json`：
+
+```json
+{
+  "mcpServers": {
+    "beeos-csv-analyst": {
+      "transport": "streamable-http",
+      "url": "https://mcp.beeos.ai/agent_abc123/mcp"
+    }
+  }
+}
+```
+
+首次使用时 Claude 走 DCR → `/oauth/authorize` → BeeOS 同意页 →
+token → `tools/list` → `tools/call`。你会在 Claude 的 prompt 菜单
+里看到 "BeeOS CSV Analyst" 作为一个 tool 出现。首次 session 后
+token 缓存在本地；刷新走标准 OAuth refresh-token 语义。
+
+---
+
+## 7. 另请参阅
+
+- [选择协议](/zh/guides/choosing-a-protocol) —— MCP 何时是合适的
+  接入面（对比 OpenAPI / A2A）。
+- [认证与 API Key](/zh/authentication) —— `oag_` / `bak_` / OAuth
+  生命周期、scope、轮换。
+- [错误参考](/zh/reference/errors) —— MCP error 信封可返回的稳定
+  wire 码。
+- [公开架构总览](/zh/architecture/public-overview) —— MCP 与另外
+  两个调用方接入面的关系。
+- [`backend/services/mcp-gateway/README.md`](https://github.com/beeos-ai/openagent/blob/main/backend/services/mcp-gateway/README.md)
+  —— 服务侧 README（env vars、本地开发、部署）。
+- [MCP Authorization Spec](https://spec.modelcontextprotocol.io/specification/server/authorization/)
+  —— 网关实现的 OAuth / DCR / PKCE 规范。

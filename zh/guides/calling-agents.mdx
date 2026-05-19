@@ -1,0 +1,496 @@
+---
+title: 调用智能体
+description: 三种调用模式 —— 同步阻塞、流式 SSE、异步任务 —— 跨 OpenAPI / A2A / MCP 接入面。
+---
+
+BeeOS OpenAPI 让你通过同一份契约以三种模式调用任何你拥有的智能体
+（或任何公开可见的智能体）。三种模式共用同样的认证（JWT 或
+`oag_` 用户 API Key —— 获取方式参见
+[认证与 API Key](/zh/authentication)）、同样的智能体标识（`agentId`）、
+以及同样的任务生命周期语义 —— 只是 wire 格式不同。
+
+| 模式 | 端点 | 何时用 |
+|---|---|---|
+| **阻塞调用** | `POST /api/v1/agents/{agentId}/invoke` | 短 prompt、期望几秒内返回；你想要单条 JSON 响应。 |
+| **流式调用 (SSE)** | `POST /api/v1/agents/{agentId}/invoke`，`Accept: text/event-stream` | 长 prompt，你想要 token 级渲染。 |
+| **异步任务** | `POST /api/v1/agents/{agentId}/tasks` + 轮询 / `SSE /events` | 发后即走，智能体可能跑几分钟到几小时；你需要 `task_id` 用于取消 / 续传 / 审计。 |
+
+按你的 UX 需求选择。底层三者都汇集到同一个 `chatinvoke` 核心
+（参见 [ADR 0017](https://github.com/beeos-ai/openagent/blob/main/backend/docs/adr/0017-unified-task-core.md)），
+所以三种模式的 result 形状、状态语义和 SSE wire 格式是一致的。
+
+---
+
+## 1. 阻塞调用
+
+最简单的模式。智能体跑完后（或网关超时，默认 120s）返回单条 JSON。
+
+### 请求
+
+```http
+POST /api/v1/agents/agent_abc123/invoke
+Authorization: Bearer oag_...
+Content-Type: application/json
+
+{
+  "message": "总结最近的 BeeOS 发布说明。",
+  "context_id": "ch-optional-conversation-pin"
+}
+```
+
+### 响应（200）
+
+```json
+{
+  "success": true,
+  "data": {
+    "text": "BeeOS 1.0.x 发布了统一任务核心 …",
+    "context_id": "ch-resolved-channel-id",
+    "is_error": false
+  }
+}
+```
+
+### TypeScript SDK
+
+```ts
+import { Configuration, AgentsApi } from "@beeos-ai/sdk";
+
+const cfg = new Configuration({
+  basePath: "https://openapi.beeos.ai",
+  accessToken: process.env.BEEOS_API_KEY,
+});
+const agents = new AgentsApi(cfg);
+
+const reply = await agents.invokeAgent({
+  agentId: "agent_abc123",
+  invokeAgentRequest: { message: "总结最近的 BeeOS 发布说明。" },
+});
+console.log(reply.data.text);
+```
+
+### Go SDK
+
+```go
+import beeos "github.com/beeos-ai/sdk-go"
+
+cfg := beeos.NewConfiguration()
+cfg.Servers = beeos.ServerConfigurations{{URL: "https://openapi.beeos.ai"}}
+cfg.AddDefaultHeader("Authorization", "Bearer "+os.Getenv("BEEOS_API_KEY"))
+client := beeos.NewAPIClient(cfg)
+
+req := beeos.InvokeAgentRequest{Message: "总结最近的 BeeOS 发布说明。"}
+resp, _, err := client.AgentsAPI.InvokeAgent(ctx, "agent_abc123").InvokeAgentRequest(req).Execute()
+fmt.Println(resp.Data.Text)
+```
+
+---
+
+## 2. 流式调用 (SSE)
+
+同一个端点，换一下 `Accept` header。响应体是一个 SSE 流：`delta`
+事件（增量文本）+ 一个终止 `done` 事件。
+
+### 请求
+
+```http
+POST /api/v1/agents/agent_abc123/invoke
+Authorization: Bearer oag_...
+Accept: text/event-stream
+Content-Type: application/json
+
+{ "message": "写一篇关于智能体的 500 字短文。" }
+```
+
+### 响应（SSE）
+
+流由三种 frame 形状之一组成，契约里建模为 `InvokeEventStream`
+（`InvokeAgentSSEDelta` / `InvokeAgentSSEError` / `InvokeAgentSSEDone`
+的 `oneOf`）：
+
+```
+event: delta
+data: {"type":"delta","text":"智能体是"}
+
+event: delta
+data: {"type":"delta","text":"自主的"}
+
+event: done
+data: {"type":"done","text":"智能体是自主的 …","context_id":"ch-...","is_error":false}
+```
+
+如果网关在智能体产出终止回复之前放弃了（超时、智能体拒绝、内部错误），
+会在最终 `event: done` **之前**发出一个 `event: error` frame：
+
+```
+event: error
+data: {"type":"error","code":"service_timeout","status_code":504,"message":"agent invocation timed out"}
+
+event: done
+data: {"type":"done","text":"","context_id":"ch-...","is_error":true,"error":"agent invocation timed out","code":"service_timeout"}
+```
+
+`timeout_ms` 是**服务端钳制在 115s 上限的**（见 OpenAPI spec 的
+`InvokeAgentRequest.timeout_ms.maximum`）。超出该值的钳制是静默的 ——
+如果智能体没在有效窗口内回复，网关仍会发 `service_timeout`。
+对于可能超过 ~2 分钟的工作，请切到[异步任务 API](#3-异步任务-推荐用于长任务)，
+它立即返回，让你通过 SSE 观察进度。
+
+#### SSE frame 字段
+
+| Frame | 字段 | 类型 | 说明 |
+|---|---|---|---|
+| `delta` | `type` | `"delta"` | frame 标识符 |
+| `delta` | `text` | string | 增量 token 块；按序拼接 |
+| `error` | `type` | `"error"` | frame 标识符 |
+| `error` | `code` | string | 稳定机器码（见[错误码参考](#错误码参考)） |
+| `error` | `status_code` | integer | 等价的 HTTP 状态码（如果是阻塞调用的话） |
+| `error` | `message` | string | 人类可读说明 |
+| `done` | `type` | `"done"` | frame 标识符；始终是终止 frame |
+| `done` | `text` | string | 完整拼接后的回复（与阻塞响应一致） |
+| `done` | `context_id` | string | MS 通道 id；可复用以延续会话 |
+| `done` | `is_error` | boolean | run 以错误结束则为 `true`；此时 `error` / `code` 字段填充 |
+| `done` | `error` | string | `is_error=true` 时的人类可读错误消息 |
+| `done` | `code` | string | 稳定错误码（流式错误镜像 `error.code`；从未发流的同步 `apierror` 也会映射到这里） |
+
+#### 错误码参考
+
+同样的码会出现在 `error.code` / `done.code` 以及阻塞 JSON 错误信封里。
+用它们作为 switch 键 —— `status_code` / `message` 是展示，不是契约。
+
+完整表格在 **[错误参考](/zh/reference/errors)**，是
+HTTP 状态 × wire `code` × SSE frame 的单一真相源。调用路径上你最常
+处理的几个：
+
+- `agent_not_found` (404) —— 检查所有权 / 可见性
+- `agent_service_unavailable` / `agent_offline` (503) —— 短暂重试
+- `conflict` (409) —— 智能体忙 / 拒绝 / 重复 idempotency key（看 `message` 区分）
+- `service_timeout` (504) —— 切到异步 `tasks`
+- `forbidden` (403) —— 用一个拥有该智能体的凭证
+- `rate_limited` (429) —— 尊重 `Retry-After`
+
+### TypeScript（raw fetch）
+
+生成的 SDK 的阻塞 `invokeAgent` 不能流式 —— SSE 直接用 `fetch`：
+
+```ts
+const res = await fetch("https://openapi.beeos.ai/api/v1/agents/agent_abc123/invoke", {
+  method: "POST",
+  headers: {
+    Authorization: `Bearer ${process.env.BEEOS_API_KEY}`,
+    Accept: "text/event-stream",
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({ message: "写一篇关于智能体的 500 字短文。" }),
+});
+
+const reader = res.body!.getReader();
+const decoder = new TextDecoder();
+let buffer = "";
+while (true) {
+  const { value, done } = await reader.read();
+  if (done) break;
+  buffer += decoder.decode(value, { stream: true });
+  for (const event of buffer.split("\n\n")) {
+    // parse "event: delta\ndata: {...}" frames; emit to UI
+  }
+}
+```
+
+---
+
+## 3. 异步任务（推荐用于长任务）
+
+标准任务核心。Submit 立即返回 202 + `task_id`。用
+`GET /tasks/{taskId}` 轮询，或订阅 `GET /tasks/{taskId}/events`（SSE）
+获取实时更新。生命周期支持 cancel 和 continue。
+
+### 3a. 提交
+
+```http
+POST /api/v1/agents/agent_abc123/tasks
+Authorization: Bearer oag_...
+Content-Type: application/json
+
+{
+  "message": "索引盘里每一个 PDF 并产出一张知识图。",
+  "deadline_ms": 1800000,
+  "idempotency_key": "indexer-2026-05-14"
+}
+```
+
+```json
+{
+  "success": true,
+  "data": {
+    "task_id": "ch-uuid",
+    "agent_id": "agent_abc123",
+    "status": "queued",
+    "created_at": "2026-05-14T18:00:00Z"
+  }
+}
+```
+
+### 3b. 轮询状态
+
+```http
+GET /api/v1/agents/agent_abc123/tasks/ch-uuid
+```
+
+```json
+{
+  "success": true,
+  "data": {
+    "task_id": "ch-uuid",
+    "agent_id": "agent_abc123",
+    "status": "running",
+    "started_at": "2026-05-14T18:00:02Z"
+  }
+}
+```
+
+当任务到达终止态时，`status` 翻为 `succeeded` / `failed` /
+`canceled` / `timeout` / `rejected` 之一，`result`（成功）或
+`error`（失败）字段被填充。终止态是状态机的叶节点 —— 轮询可短路。
+
+### 3c. 实时 SSE 事件流
+
+```http
+GET /api/v1/agents/agent_abc123/tasks/ch-uuid/events
+Accept: text/event-stream
+```
+
+```
+event: message
+data: {"type":"agent_message_chunk","offset":3,"payload":{"text":"正在扫描第 12 页 …"}}
+
+event: message
+data: {"type":"agent_reply","offset":8,"payload":{"text":"完成。共索引 312 页。","is_error":false}}
+
+event: end
+data: {"reason":"task_terminal"}
+```
+
+终止 `event: end` 总是发生一次。它的 `reason` 字段是以下之一：
+
+| `reason` | 含义 |
+|---|---|
+| `task_terminal` | 任务到达了终止 `TaskStatus`（`succeeded` / `failed` / `canceled` / `timeout` / `rejected`）。前一个 `event: message` 是终止回复。 |
+| `channel_closed` | 底层 Message Service 通道被外部关闭（如被管理员或 reaper 关闭）。按终止态处理。 |
+| `stream_closed` | 客户端关闭，或网关因 idle 超时丢弃流。重新订阅以续传。 |
+
+每个 `event: message` frame 里 `type` 取值的完整列表见
+[`TaskEventStream` schema](https://github.com/beeos-ai/openagent/blob/main/backend/openapi/beeos-platform-v1.yaml)。
+
+### 3d. 取消
+
+```http
+POST /api/v1/agents/agent_abc123/tasks/ch-uuid/cancel
+Content-Type: application/json
+
+{ "reason": "user_aborted" }
+```
+
+Cancel 是幂等的 —— 对已经终止的任务调用是空操作，返回当前快照。
+
+### 3e. 续传（resume input_required / auth_required）
+
+某些智能体在任务中间暂停以请求额外输入或一次 OAuth 风格的授权。
+状态会翻为 `input_required`（或 `auth_required`）。用以下方式续传：
+
+```http
+POST /api/v1/agents/agent_abc123/tasks/ch-uuid/continue
+Content-Type: application/json
+
+{ "input": { "approval": "yes" } }
+```
+
+对于 `auth_required` 暂停，设 `"auth_grant": true` 以发送
+`user.auth_grant` 信封。
+
+### TypeScript SDK
+
+```ts
+import { TasksApi } from "@beeos-ai/sdk";
+const tasks = new TasksApi(cfg);
+
+const created = await tasks.createTask({
+  agentId: "agent_abc123",
+  createTaskRequest: { message: "长索引任务", deadlineMs: 1800000 },
+});
+
+// Poll
+let state = await tasks.getTask({ agentId: "agent_abc123", taskId: created.data!.taskId! });
+while (!["succeeded", "failed", "canceled", "timeout", "rejected"].includes(state.data!.status!)) {
+  await new Promise(r => setTimeout(r, 2000));
+  state = await tasks.getTask({ agentId: "agent_abc123", taskId: created.data!.taskId! });
+}
+```
+
+### 3f. 列出你的任务
+
+翻页查看你提交到某个智能体的任务。该列表由 Message Service 通道
+元数据支撑，所以和 §3b 拿到的 `GetTask` 快照是一致的。
+
+```http
+GET /api/v1/agents/agent_abc123/tasks?state=active&limit=50
+Authorization: Bearer oag_...
+```
+
+```json
+{
+  "success": true,
+  "data": {
+    "tasks": [
+      {
+        "task_id": "ch-uuid-1",
+        "agent_id": "agent_abc123",
+        "caller_owner_id": "user_xyz",
+        "state": "active",
+        "metadata": { "protocol": "openapi" },
+        "created_at": "2026-05-14T18:00:00Z",
+        "deadline_at": "2026-05-14T18:30:00Z"
+      }
+    ],
+    "next_since": "2026-05-14T17:00:00Z"
+  }
+}
+```
+
+Query 参数：
+
+| 名称 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `state` | `active \| closed \| all` | `active` | 按通道生命周期过滤。`active` 匹配开放任务；`closed` 匹配终止任务。 |
+| `since` | RFC3339 时间戳 | 不设 | 仅返回该时刻及之后创建的任务。和 `next_since` cursor 配合做前向分页。 |
+| `limit` | integer | `50`（最大 200） | 每页最大行数。 |
+
+该端点仅返回通道元数据 `protocol` 为 `openapi` 的任务 —— 会话通道在
+`GET /api/v1/agents/{agentId}/conversations`。
+
+#### 跨智能体变体 —— `GET /api/v1/tasks`
+
+如果你已经向多个智能体提交了任务，想要一份统一的"我的任务"视图
+（多智能体 UI 常见），改用跨智能体端点：
+
+```http
+GET /api/v1/tasks?state=active&limit=50
+Authorization: Bearer oag_...
+```
+
+wire 形状与单智能体变体一致 —— 同样的 `tasks[]` 行、同样的
+`next_since` cursor —— SDK 可以共享 decode + 分页代码。可选
+`agent_id` query 参数把范围收回到单个智能体，无需切换端点路径。
+当你预先不知道调用方提交到哪些智能体时，用这个。
+
+### 3g. 回放任务消息
+
+取一个任务的完整消息日志。常用于在 SSE 事件流已经关闭后，展示
+智能体的中间步骤。
+
+```http
+GET /api/v1/agents/agent_abc123/tasks/ch-uuid/messages?since=0&limit=200
+Authorization: Bearer oag_...
+```
+
+```json
+{
+  "success": true,
+  "data": {
+    "messages": [
+      { "offset": 1, "type": "chat_message",        "payload": {"text": "索引每个 PDF …"} },
+      { "offset": 2, "type": "agent_reply_delta",   "payload": {"text": "正在扫描第 1 页 …"} },
+      { "offset": 3, "type": "agent_reply_delta",   "payload": {"text": " 第 1 页完成。"} },
+      { "offset": 4, "type": "agent_reply",         "payload": {"text": "所有页索引完成。", "is_error": false} }
+    ],
+    "next_since": 5
+  }
+}
+```
+
+Query 参数：
+
+| 名称 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `since` | integer (offset) | `0` | 仅返回 `offset > since` 的消息。用上一次响应的 `next_since`。 |
+| `limit` | integer | `200`（最大 500） | 每页最大行数。 |
+
+### TypeScript SDK（列表助手）
+
+```ts
+import { TasksApi } from "@beeos-ai/sdk";
+const tasks = new TasksApi(cfg);
+
+// List active tasks for an agent
+const active = await tasks.listAgentTasks({
+  agentId: "agent_abc123",
+  state: "active",
+  limit: 50,
+});
+for (const t of active.data.tasks ?? []) {
+  console.log(t.taskId, t.state, t.createdAt);
+}
+
+// Replay one task's history
+const log = await tasks.listTaskMessages({
+  agentId: "agent_abc123",
+  taskId: "ch-uuid",
+  limit: 200,
+});
+for (const m of log.data.messages ?? []) {
+  console.log(m.offset, m.type, m.payload);
+}
+```
+
+---
+
+## 对比小结
+
+| | `invoke`（阻塞） | `invoke`（SSE） | `tasks`（异步） |
+|---|---|---|---|
+| HTTP 形状 | 单 JSON | SSE 流 | 202 + 轮询 / SSE |
+| Cancel | 无（调用方断连） | 无（调用方断连） | 有（显式） |
+| Continue | 无 | 无 | 有（input_required / auth_required） |
+| 服务端超时 | 默认 120s | 默认 120s | `deadline_ms`（最大 7 天） |
+| 状态可见性 | 仅终态 | 流式 + 终态 | per-poll + per-event |
+| 跟踪用 `task_id` | 无（用 `context_id`） | 无（用 `context_id`） | 有 |
+| 幂等 | 无 | 无 | 有（`idempotency_key`） |
+| 最适合 | 快速查询、RAG | 聊天 UX | 长任务、批处理、无头 |
+
+---
+
+## 状态参考（ADR-0017）
+
+| status | 终止态 | 含义 |
+|---|---|---|
+| `queued` | 否 | 已提交，未被拾起 |
+| `running` | 否 | 智能体正在产出 |
+| `input_required` | 否 | 暂停，等 `user.continue` |
+| `auth_required` | 否 | 暂停，等 `user.auth_grant` |
+| `succeeded` | 是 | 终止成功；`result` 填充 |
+| `failed` | 是 | 终止错误；`error` 填充 |
+| `canceled` | 是 | 调用方取消 |
+| `timeout` | 是 | deadline 在到达终态前消耗完 |
+| `rejected` | 是 | 智能体拒绝（如单回合设备上 `agent_busy`） |
+
+状态转换文档见 [TaskStatus
+schema](https://github.com/beeos-ai/openagent/blob/main/backend/openapi/beeos-platform-v1.yaml) 组件。
+
+## 另请参阅
+
+- [会话 vs 任务](/zh/guides/conversations) —— 多轮对话 API，何时
+  代替 `invoke` / `tasks`，以及 SSE `since`-cursor 的完整契约
+- [流式（SSE）](/zh/guides/streaming) —— 三个流式接入面的规范 SSE
+  framing / 重连 / 掉线补偿
+- [错误参考](/zh/reference/errors) —— 此接入面可能返回的每一个
+  wire `code`
+- [认证与 API Key](/zh/authentication) —— JWT 对 `oag_`，以及 scope 表
+- [OpenAPI 契约](https://github.com/beeos-ai/openagent/blob/main/backend/openapi/beeos-platform-v1.yaml) —— 真相源
+- [ADR 001 —— openapi-gateway 作为唯一 OpenAPI 实现者](https://github.com/beeos-ai/openagent/blob/main/backend/docs/adr/001-openapi-gateway-bff.md)
+- [ADR 0017 —— 统一任务核心](https://github.com/beeos-ai/openagent/blob/main/backend/docs/adr/0017-unified-task-core.md)
+- [ADR 0017 follow-up —— audit-v4 快速胜利 + 历史 bug 修复](https://github.com/beeos-ai/openagent/blob/main/backend/docs/adr/0017-followup-audit-v4.md)
+- [ADR 0013 —— MS 是 IM，不是任务状态机](https://github.com/beeos-ai/openagent/blob/main/backend/docs/adr/0013-ms-is-im-not-task-state-machine.md)
+- SDK 验证 runbook
+- [Operator 验证矩阵](https://github.com/beeos-ai/openagent/blob/main/backend/docs/runbooks/0.5-unified-task-core-validation.md)
+- [@beeos-ai/sdk on npm](https://www.npmjs.com/package/@beeos-ai/sdk)
+- [github.com/beeos-ai/sdk-go](https://github.com/beeos-ai/sdk-go)

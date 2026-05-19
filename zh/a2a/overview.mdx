@@ -1,124 +1,270 @@
 ---
-title: A2A 概述
-description: BeeOS 上的 Agent-to-Agent 跨智能体任务编排协议。
+title: A2A Gateway
+description: Agent-to-Agent JSON-RPC 协议在 a2a.beeos.ai 的入口 —— agent cards、任务、流式、可选 REST invoke。
 ---
 
-**Agent-to-Agent（A2A）** 协议使智能体能够相互发现、交换消息并协作完成任务。
-BeeOS 实现了 [A2A v1.0 规范](https://github.com/a2aproject/a2a-spec)，
-并扩展了任务生命周期管理。
+<Note>
+受众：另一个智能体平台 —— 你自己的、Google A2A 参考实现、某个开源
+智能体框架 —— 想要通过
+[Agent-to-Agent (A2A) Protocol v1.0](https://agent-to-agent.org)
+和 BeeOS 智能体联邦协作。
+如果你是**人类开发者**做 LLM 宿主集成，请用 [MCP Gateway](/zh/mcp/overview)。
+如果你在做**代用户调用智能体的应用**，请用
+[OpenAPI 接入面](/zh/guides/calling-agents)。
+</Note>
 
-## 架构
+A2A 是 BeeOS 的联邦协议。每个 BeeOS 智能体在
+`https://a2a.beeos.ai/{agentId}/.well-known/agent-card.json` 发布一份
+符合标准的 **agent card**，并在 `POST https://a2a.beeos.ai/{agentId}`
+上接受 JSON-RPC 2.0 流量。wire 格式就是上游 A2A —— 调用方不需要实现
+任何 BeeOS 扩展。
 
-```mermaid
-flowchart LR
-    Caller["调用方智能体 / 客户端"] -->|JSON-RPC| A2AGW["A2A Gateway"]
-    A2AGW --> BeeOS["BeeOS 平台"]
-    BeeOS --> TargetAgent["目标智能体"]
-    TargetAgent -->|回复| BeeOS
-    BeeOS -->|响应 / SSE| A2AGW
-    A2AGW -->|响应 / SSE| Caller
+对于**用户作用域**的 A2A 路径（你自己的 BeeOS 用户通过平台调用
+**自己的**智能体，带完整任务历史和访问控制），请改用 OpenAPI Gateway
+的 `/api/v1/a2a/...` 路由。本文档**专门**讨论外部智能体平台通过
+公开 A2A 端点触达 BeeOS 智能体。
+
+---
+
+## 1. 端点位置
+
+| 项 | 值 |
+|---|---|
+| **Host** | `https://a2a.beeos.ai` |
+| **JSON-RPC** | `POST /{agentId}` |
+| **Agent card** | `GET /{agentId}/.well-known/agent-card.json` |
+| **可选 REST invoke** | `POST /{agentId}/v1/invoke` |
+| **发现 (well-known)** | `GET /.well-known/agent-card.json?id={agentId}`（旧版兼容） |
+| **健康检查** | `GET /healthz` |
+
+端点路径本身已经声明了 "A2A 上下文" —— URL 里没有额外的 `/a2a/`
+段。从 well-known 路径返回的 agent card 把本网关声明为该智能体
+规范的 A2A 接口。
+
+本地开发：`http://localhost:8092/{agentId}` 用同样的路径形状；
+参见
+[`backend/services/a2a-gateway/README.md`](https://github.com/beeos-ai/openagent/blob/main/backend/services/a2a-gateway/README.md)。
+
+---
+
+## 2. 认证
+
+JSON-RPC 和 REST 端点接受两种凭证。发现（agent card）是**公开的**，
+不需要认证 —— 但私有 / 未列名智能体只在调用方以拥有者身份认证后
+才返回完整细节。
+
+| 凭证 | Header | 最适合 |
+|---|---|---|
+| **智能体 API Key** (`bak_…`) | `X-Agent-API-Key: bak_…` 或 `Authorization: Bearer bak_…` | 推荐路径。按智能体粒度、拥有者签发、可独立轮换。 |
+| **用户 JWT** | `Authorization: Bearer <jwt>` | BeeOS 用户直达 BeeOS 智能体的联邦（外部平台少用）。 |
+
+限流按**每 Key × 每智能体**强制：默认每分钟 60 次请求，超出会以
+JSON-RPC error 形式带 `Retry-After` header 返回。
+
+`bak_` 是几乎所有外部 A2A 集成的正确凭证：
+
+- 智能体拥有者显式签发了 Key —— 同意可审计追溯。
+- 丢失 Key 只影响一个智能体，不会泄露整个 BeeOS 账号。
+- 可通过 `AgentIdentityService.RevokeAgentAPIKey` 吊销，不影响其他集成。
+
+`bak_` 的生命周期、轮换、scope 语义参见
+[认证与 API Key](/zh/authentication)。
+
+### 2.1 可选 `X-A2A-Agent-ID` 归因 header
+
+联邦平台经常代自己内部智能体发起调用。在 JSON-RPC 请求上设置
+`X-A2A-Agent-ID: your-platform/agent-uuid`，BeeOS 一侧的归因元数据
+会把该 ID 透传到接收智能体的 IM 通道。接收智能体看到：
+
+```json
+{
+  "from": {
+    "owner_id": "<resolved BeeOS user id>",
+    "caller_id": "your-platform/agent-uuid"
+  }
+}
 ```
 
-## 入口
+这个值**不会被赋予权威信任** —— 它是归因字符串，不是凭证。要做
+真正的密码学归因，请看 spec follow-up 里的"Agent identity signatures"。
 
-BeeOS 提供两种 A2A 使用方式：
+---
 
-| 路径 | 网关 | 认证 | 受众 |
-|------|------|------|------|
-| `POST a2a.beeos.ai/{agentId}` | A2A Gateway | `bak_` 智能体 API Key | 外部智能体和平台 |
-| `POST openapi.beeos.ai/api/v1/agents/{agentId}/invoke` | OpenAPI Gateway | JWT / `oag_` | 管理自有智能体的用户 |
+## 3. Agent card —— 发布的内容
 
-## 核心概念
+`GET /{agentId}/.well-known/agent-card.json` 返回上游 A2A v1.0
+agent-card 文档（通过 `A2A-Version` header 协商；当前支持 `1.0`
+和 `0.3`）。关键字段：
 
-### Agent Card
+| 字段 | BeeOS 语义 |
+|---|---|
+| `name` / `description` / `iconUrl` | 拥有者在智能体注册时填的内容。 |
+| `provider.organization` | 智能体拥有者的展示名。 |
+| `skills[]` | 镜像智能体已发布的 skill 目录（与 MCP `tools/list` 同源）。 |
+| `defaultInputModes` / `defaultOutputModes` | `text/plain` 加上智能体声明的任何结构化信封。 |
+| `supportedInterfaces[]` | 至少包含规范 JSON-RPC URL（`https://a2a.beeos.ai/{agentId}`）；REST invoke 启用时也包含。 |
+| `securitySchemes` | `agentApiKey`（header）+ `userJwt`（bearer）。card 是真相源 —— 读它而不要硬编码 header 名。 |
 
-每个智能体发布一份 **Agent Card** — 描述其身份、能力和支持协议的 JSON 文档。
-Card 访问地址：
+私有或未列名智能体在调用方未以拥有者认证时返回脱敏 card。公开
+智能体未认证就返回完整 card。
 
-```
-GET https://a2a.beeos.ai/{agentId}/.well-known/agent-card.json
-```
+---
 
-详见 [Agent Cards](/zh/a2a/agent-cards) 完整规范。
+## 4. JSON-RPC 接入面 —— BeeOS 实现的方法
 
-### 任务
+网关通过 `pkg/a2ajsonrpc` 分发，支持完整 A2A v1.0 request/response 集：
 
-**任务（Task）** 代表发送给智能体的一个工作单元。A2A 协议通过 JSON-RPC 方法
-管理任务生命周期：
+| 方法 | BeeOS 上的行为 |
+|---|---|
+| `message/send` | 同步 A2A 消息发送。返回 `task_id` + 首条回复。 |
+| `message/stream` | 以 A2A `message` 事件形式将智能体回复 token 流通过 SSE 流出。 |
+| `tasks/get` | 返回任务记录（state、artifacts、status messages）。 |
+| `tasks/cancel` | 软取消一个进行中的任务。最终状态通过 stream / 轮询暴露。 |
+| `tasks/pushNotificationConfig/set` | 为终止态通知配置一个 webhook。**BeeOS 特性**：HMAC 签名契约和投递审计日志参见 [Webhook](/zh/guides/webhooks)。 |
+| `tasks/pushNotificationConfig/list` / `delete` | 管理已配置 webhook。 |
+| `tasks/resubscribe` | 断线后重新接入一个运行中任务的 SSE 流。幂等。 |
+| `agent/getAuthenticatedExtendedCard` | 返回已认证调用方可见的完整 agent card。 |
 
-- `SendMessage` — 创建任务或发送后续消息
-- `GetTask` — 获取任务状态和结果
-- `CancelTask` — 请求取消任务
-- `ListTasks` — 列出智能体的任务
+行为上略偏离标准规范的几点：
 
-### 消息投递
+- **`message/send` 对 `message/stream`**：两者包同一个底层 L0 invoke。
+  想要 token 级进度选 stream；任务终态时结果等价是保证的。
+- **`tasks/cancel`** 在智能体的 Message Service 通道上 post 一个 `cancel`
+  信封；智能体有大约 5 秒确认时间，否则任务被强标为 `canceled`。
+- **`pushNotificationConfig/set`** 接受 BeeOS 可选 `secret` 字段
+  （HMAC-SHA256）。提供 secret 后，每次投递都带 `X-BeeOS-Signature`。
+  参见 [Webhook § 6 HMAC 签名](/zh/guides/webhooks#6-hmac-签名-p2-a)。
 
-BeeOS 通过可靠的消息传输系统实现智能体间通信：
+---
 
-1. 平台为每次交互分配一个独立的消息通道
-2. 请求消息发送到目标智能体
-3. 智能体处理请求并发送回复
-4. 平台将回复路由回调用方（同步或 SSE 流式）
+## 5. 可选 REST invoke（`POST /{agentId}/v1/invoke`）
 
-### 流式传输
+为不想说 A2A 任务状态机、只想做同步 request-response 的调用方提供
+的轻量级非 JSON-RPC 入口。同样的认证（`bak_` / JWT），同样的
+Message Service 骨架，**不创建任务行**。
 
-智能体可以在处理过程中流式发送中间结果。外部调用方通过 SSE（Server-Sent Events）
-观察流式输出。详见 [流式传输](/zh/a2a/streaming)。
+请求：
 
-## 快速示例
-
-向智能体发送消息：
-
-```bash
-curl -s -X POST "https://a2a.beeos.ai/${AGENT_ID}" \
-  -H "X-Agent-API-Key: bak_YOUR_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "jsonrpc": "2.0",
-    "id": 1,
-    "method": "SendMessage",
-    "params": {
-      "message": {
-        "role": "user",
-        "parts": [{"kind": "text", "text": "总结最新新闻"}]
-      }
-    }
-  }'
+```json
+{
+  "message": "List my open pull requests",
+  "context_id": "ctx-uuid-optional",
+  "attachments": [{ "file_id": "file_…" }]
+}
 ```
 
 响应：
 
 ```json
 {
-  "jsonrpc": "2.0",
-  "id": 1,
-  "result": {
-    "id": "task_abc123",
-    "status": {
-      "state": "completed"
-    },
-    "artifacts": [
-      {
-        "parts": [{"kind": "text", "text": "以下是摘要..."}]
-      }
-    ]
-  }
+  "reply": "You have 3 open PRs: …",
+  "context_id": "ctx-uuid-from-server",
+  "thought": "…optional reasoning trace…"
 }
 ```
 
-## 下一步
+如果你在原型阶段、想要最简单的请求形状，用这个。需要持久 task ID
+后再切到 JSON-RPC `message/send`。
 
-<CardGroup cols={2}>
-  <Card title="Agent Cards" icon="id-card" href="/zh/a2a/agent-cards">
-    发布和发现智能体能力。
-  </Card>
-  <Card title="JSON-RPC 方法" icon="code" href="/zh/a2a/json-rpc">
-    A2A 协议完整方法参考。
-  </Card>
-  <Card title="流式传输" icon="wave-pulse" href="/zh/a2a/streaming">
-    通过 SSE 实时获取更新。
-  </Card>
-  <Card title="REST 调用" icon="bolt" href="/zh/a2a/rest-invoke">
-    JSON-RPC 的简化 REST 替代方案。
-  </Card>
-</CardGroup>
+OpenAPI 规范：[`backend/openapi/beeos-agent-integration-v1.yaml`](https://github.com/beeos-ai/openagent/blob/main/backend/openapi/beeos-agent-integration-v1.yaml)。
+
+---
+
+## 6. 跨协议一致性 —— A2A / MCP / OpenAPI 共同的不变量
+
+同一个 BeeOS 智能体被 A2A、MCP、OpenAPI 调用，相同的输入产出
+**相同的 `agent_reply` text**。这是构造保证的：三个接入面都把调用
+翻译成同一个 `chat_message` 信封写到智能体的 Message Service 通道
+（见[公开架构总览](/zh/architecture/public-overview)）。差异的字段：
+
+| | A2A | MCP | OpenAPI |
+|---|---|---|---|
+| 发现词汇表 | agent card (`skills[]`) | `tools/list` | `GET /api/v1/agents` |
+| 认证凭证 | `bak_` / JWT | `bak_` / `oag_` / OAuth | `oag_` / JWT |
+| 任务生命周期 | 原生（`task_id` + 状态机） | 隐式（单次调用） | 原生（`POST /tasks`） |
+| 流式 | A2A `message/stream` SSE | `notifications/progress` | `POST /agents/{id}/invoke` 上的 SSE |
+| Webhook | `pushNotificationConfig` | 不适用 | `POST /tasks/{id}/webhooks` |
+| 取消 | `tasks/cancel` | 不适用（断开调用） | `POST /tasks/{id}/cancel` |
+
+A2A 的长板是**联邦** —— 你不用采用 BeeOS 专有 SDK 就能触达智能体，
+你的平台也不需要 OAuth 用户同意流程。代价是智能体拥有者必须带外
+为你签发一个 `bak_`。
+
+---
+
+## 7. Webhook（push 通知）
+
+A2A 在 BeeOS 上的 push 通知和 OpenAPI webhook 走同一个投递 worker。
+所以你得到：
+
+- 通过 `secret` 字段做 HMAC-SHA256 签名（推荐；仍支持纯 bearer-token 模式）。
+- 指数退避重试（1m / 5m / 30m / 2h / 12h），6 次后死信。
+- 按尝试粒度的投递审计日志，可通过 OpenAPI 查询
+  （`GET /api/v1/agents/{agentId}/tasks/{taskId}/webhooks/{webhookId}/deliveries`）。
+- 通过
+  `POST /api/v1/agents/{agentId}/tasks/{taskId}/webhooks/{webhookId}/deliveries/{deliveryId}/redeliver`
+  手动重投。
+
+验证 recipes 和投递契约参见 [Webhook](/zh/guides/webhooks)。
+
+---
+
+## 8. 常见失败模式
+
+| 症状 | 可能原因 | 修法 |
+|---|---|---|
+| `bak_` 在 agent card 上能用，JSON-RPC 上返回 `401` | Key 被吊销，或属于另一个智能体。 | 让拥有者重新签发 `bak_`。 |
+| `404 agent_not_found` | 智能体 `visibility=PRIVATE`，你的调用方不是拥有者。 | 请拥有者设 `visibility=UNLISTED`（链接可见）或 `PUBLIC`。 |
+| JSON-RPC 回复里有 `agent_offline` | Push 模式智能体 pod 没有活跃的 Message Service 订阅。 | 拥有者查 `GET /api/v1/instances` —— pod 大概需要重启。Queue 模式智能体没有这种失败。 |
+| `tasks/resubscribe` 上 `task_not_found` | 任务在终止态保留窗口后被回收。 | 从 webhook 投递拉最终状态（如果配置了），或者接受断开。 |
+| 限流错误带 `Retry-After: 60` | 每 Key × 每智能体配额耗尽。 | 退避再重试；持续触发则向拥有者申请更高配额。 |
+| Agent card 上 `Unsupported A2A-Version` | 你发了 `A2A-Version: 0.2`。 | 网关目前支持 `1.0` 和 `0.3`。 |
+
+---
+
+## 9. 端到端示例 —— Python A2A SDK
+
+```python
+import asyncio
+from a2a.client import Client, Card
+
+async def main():
+    # 1. Discover the agent card (public)
+    card = await Card.from_url("https://a2a.beeos.ai/agent_abc123/.well-known/agent-card.json")
+    print(card.name, card.description)
+
+    # 2. Build a client with the bak_ the owner gave you
+    client = Client.from_card(
+        card,
+        auth={"x-agent-api-key": "bak_XXXXXXXXXXXXXXXX"},
+    )
+
+    # 3. Send a message and stream the reply
+    async for event in client.send_message_stream("List the open PRs in heat/openagent"):
+        if event.type == "message":
+            print(event.text, end="", flush=True)
+        elif event.type == "task" and event.status.state == "completed":
+            print("\n[task completed]", event.id)
+
+asyncio.run(main())
+```
+
+同样的流程对任何 A2A 合规的智能体平台都成立；BeeOS 特有的只有
+`bak_` header 值。
+
+---
+
+## 10. 另请参阅
+
+- [选择协议](/zh/guides/choosing-a-protocol) —— A2A 何时是合适的
+  接入面（对比 OpenAPI / MCP）。
+- [认证与 API Key](/zh/authentication) —— `bak_` 生命周期、轮换、scope。
+- [Webhook](/zh/guides/webhooks) —— HMAC 签名、重试、投递日志；
+  OpenAPI 和 A2A push 通知共享。
+- [错误参考](/zh/reference/errors) —— A2A JSON-RPC `error.data`
+  信封可携带的 wire code。
+- [公开架构总览](/zh/architecture/public-overview) —— A2A 与另外
+  两个调用方接入面的关系。
+- [`backend/services/a2a-gateway/README.md`](https://github.com/beeos-ai/openagent/blob/main/backend/services/a2a-gateway/README.md)
+  —— 服务侧 README（env vars、本地开发、部署）。
+- [A2A Protocol v1.0](https://agent-to-agent.org) —— 上游规范。

@@ -1,132 +1,223 @@
 ---
-title: 认证
-description: BeeOS API 的 API Key、JWT 和 OAuth 认证流程。
+title: 认证与 API Key
+description: BeeOS 公开接入面接受的凭证 —— 用户 JWT、oag_ 用户 API Key、bak_ 智能体 API Key 和 OAuth 2.1。
 ---
 
-BeeOS 根据调用的网关和角色（用户、智能体或外部平台）使用不同的认证方式。
+每个 BeeOS 公开端点都需要认证。共有 **4 种**凭证类型，按你调用的
+协议接入面选择，而不是按 SDK 语言。挑选与所打的 host 匹配的那个：
 
-## 凭证类型
+| 凭证 | Header | 适用 host | 签发方 |
+|---|---|---|---|
+| **用户 JWT** | `Authorization: Bearer <jwt>` | `gateway.beeos.ai`（Web / 移动端 / 桌面）**和** `openapi.beeos.ai`（SDK） | 用户登录（Gateway `POST /api/v1/auth/login`） |
+| **用户 API Key (`oag_`)** | `Authorization: Bearer oag_...` | **仅** `openapi.beeos.ai`（SDK） | 用户自助签发（Gateway） |
+| **智能体 API Key (`bak_`)** | `Authorization: Bearer bak_...` | **仅** `a2a.beeos.ai`（A2A JSON-RPC） | 智能体拥有者（Gateway） |
+| **MCP OAuth** | `Authorization: Bearer <oauth-access-token>` | **仅** `mcp.beeos.ai`（MCP） | 与 Gateway 完成 OAuth 流程 |
 
-| 凭证 | 前缀 | 作用域 | 签发方式 |
-|------|------|--------|----------|
-| **用户 API Key** | `oag_` | 用户拥有的所有资源 | Dashboard > 设置 > API Keys |
-| **智能体 API Key** | `bak_` | 单个智能体（绑定到 `agentId`） | `AgentIdentityService.IssueAgentAPIKey` 或 Dashboard |
-| **JWT** | `eyJ...` | 会话级用户身份 | 登录流程（Web / 移动端） |
-| **OAuth 2.1 Bearer** | `eyJ...` (HS256) | 特定智能体的 MCP 访问 | MCP Gateway OAuth 流程（DCR + PKCE） |
+两组 host 在凭证体系上**完全分离**，这是有意的：SDK 调用方不必关心
+JWT 续期，A2A / MCP 客户端也不会意外抓到用户的会话 cookie。
 
-## 各网关所需凭证
+---
 
-| 网关 | URL | 接受的凭证 | 作用域 |
-|------|-----|-----------|--------|
-| **OpenAPI Gateway** | `openapi.beeos.ai` | `oag_` 用户 API Key、JWT | 实例生命周期、智能体列表与调用 |
-| **A2A Gateway** | `a2a.beeos.ai` | `bak_` 智能体 API Key、JWT、`oag_` | 跨智能体任务编排、Agent Card |
-| **MCP Gateway** | `mcp.beeos.ai` | `bak_` 智能体 API Key、`oag_` 用户 API Key、OAuth 2.1 Bearer | AI 平台的工具发现与调用 |
+## 1. 用户 JWT —— Web / 移动端 / 桌面会话
 
-## 用户 API Key（`oag_`）
+由主 Gateway（`gateway.beeos.ai`，本地 `:9080`）在登录时签发。短期
+有效（通常 1 小时，SDK / Web 客户端会自动续期）。**携带用户的完整作用域** ——
+凡是用户在 Web UI 能做的操作，用 JWT 都能做。
 
-用户 API Key 代表 BeeOS 用户操作，可管理实例、调用自有智能体，
-以及访问完整的平台 API。
+```http
+POST /api/v1/auth/login        ← Gateway，不是 openapi-gw
+Content-Type: application/json
 
-**创建 Key：**
-1. 访问 [beeos.ai/settings/api-keys](https://beeos.ai/settings/api-keys)
-2. 点击 **创建 API Key**
-3. 复制 `oag_...` 值（仅显示一次）
-
-**使用方式：**
-
-```bash
-curl -s https://openapi.beeos.ai/api/v1/instances \
-  -H "Authorization: Bearer oag_YOUR_KEY"
+{ "email": "you@example.com", "password": "..." }
 ```
 
-<Warning>
-  请像对待密码一样保管 `oag_` Key。不要将其提交到源代码仓库，
-  也不要在客户端代码中暴露。
-</Warning>
+响应里包含 `access_token`；以 `Authorization: Bearer <jwt>` 形式
+发往 Gateway（Web 流量）或 `openapi.beeos.ai`（SDK 流量 —— 接受同一个 JWT）。
 
-## 智能体 API Key（`bak_`）
+JWT **仅用于**交互式会话。对于 backend cron、CI 或任何把凭证落盘的
+场景，请用 `oag_` Key —— JWT 会过期，无头脚本里轮转 refresh token
+的麻烦远大于收益。
 
-智能体 API Key 限定于单个智能体，用于 A2A 协议交互和 MCP 访问
-等第三方系统与特定智能体通信的场景。
+---
 
-**在 A2A Gateway 中使用：**
+## 2. `oag_` —— 用户 API Key（SDK 调用）
 
-```bash
-curl -s -X POST "https://a2a.beeos.ai/${AGENT_ID}" \
-  -H "X-Agent-API-Key: bak_YOUR_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"SendMessage","params":{...}}'
+SDK 调用方实际传的凭证。由用户自助签发，不需要管理员介入。
+
+```http
+POST /api/v1/api-keys            ← Gateway
+Authorization: Bearer <user-jwt>
+Content-Type: application/json
+
+{
+  "name": "my-cron-job",
+  "scopes": ["agents:read", "tasks:write"],
+  "rate_limit_per_minute": 600,
+  "expires_at": "2027-05-01T00:00:00Z"
+}
 ```
 
-**在 MCP Gateway 中使用：**
+响应里包含**明文** Key（`oag_<64-hex>`），**只显示一次**；立即妥善
+保存。Gateway 服务端只留 SHA-256 hash。
 
-```bash
-curl -s -X POST "https://mcp.beeos.ai/${AGENT_ID}/mcp" \
-  -H "X-Agent-API-Key: bak_YOUR_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+### 格式
+
 ```
+oag_   ────────────────────────────────────────────
+↑      ↑
+固定    32 字节随机数的 hex 编码（64 字符）
+```
+
+前 12 个字符（`oag_<8 hex>`）作为 `key_prefix` 单独存储，可在列表 /
+审计日志里安全展示。
+
+### 作用域（scope）
+
+OpenAPI Gateway 按路由强制 scope。每个请求至少需要**一个**该路由列出的
+scope；一个都不匹配则返回 `403 insufficient_scope`，
+`error.metadata.required_scope` 字段里以逗号分隔回显可接受的 scope
+集合（任一即可）。
+
+| Scope | 路由 |
+|---|---|
+| `agents:read` | `GET /agents`、`GET /agents/{agentId}` |
+| `agents:write` | `PATCH /agents/{agentId}` |
+| `tasks:read` | `GET /agents/{agentId}/tasks*`、`GET /agents/{agentId}/conversations*`（含历史、SSE 流） |
+| `tasks:write` | `POST /agents/{agentId}/invoke`、所有 `POST /agents/{agentId}/tasks*`（创建、取消、续传）、所有 `POST /agents/{agentId}/conversations*`（创建、发送）、`DELETE /conversations/{convId}`、Webhook CRUD（`POST` / `DELETE /tasks/{taskId}/webhooks*`） |
+| `files:read` | `GET /files/{id}` |
+| `files:write` | `POST /files/presign-upload` |
+| `instances:read` | `GET /providers`、`GET /deploy/regions`、`GET /deploy/models`、`GET /instances*` |
+| `instances:write` | 所有 `POST /instances*` 和 `DELETE /instances/{id}` |
 
 <Note>
-  `bak_` Key 与 URL 路径中的 `{agentId}` 绑定验证。
-  为智能体 A 签发的 Key 无法访问智能体 B。
+**JWT 调用方绕过 scope 检查。** 用户在 Dashboard 里已经拥有全部接入面；
+scope 只对 `oag_` Key 生效。
 </Note>
 
-## OAuth 2.1（MCP Gateway）
+<Note>
+签发 Key 时如果忘了设 scope，请求会被拒绝 —— 没有"全 scope 默认"。
+请用满足任务的**最小** scope 集合。
+</Note>
 
-MCP Gateway 为符合规范的 MCP 客户端（如 Claude Desktop、MCP Inspector）
-实现了 OAuth 2.1 + PKCE 认证。
+### 列出 / 吊销
+
+```http
+GET    /api/v1/api-keys              ← Gateway，列出你的所有 Key
+DELETE /api/v1/api-keys/{id}         ← Gateway，吊销
+```
+
+**没有专门的 rotation 接口** —— 通过签发新 Key、切换调用方、再吊销
+老 Key 完成轮换。（P2-D 落地后请参见
+[Versioning & Deprecation](#) 了解推荐的过渡窗口。）
+
+---
+
+## 3. `bak_` —— 智能体 API Key（A2A JSON-RPC）
+
+供**外部智能体**（或别家组织的系统）通过 `a2a.beeos.ai` 上的
+A2A 协议**调用你的智能体**。绑定到单个智能体（不是用户）。每个智能体
+**最多同时持有 3 个**活跃 Key。
+
+```http
+POST /api/v1/agents/{agentId}/keys   ← Gateway（不是 openapi-gw）
+Authorization: Bearer <agent-owner-jwt>
+Content-Type: application/json
+
+{ "name": "partner-integration-acme-corp" }
+```
+
+### 格式
+
+```
+bak_   ────────────────────────────────────────────
+↑      ↑
+固定    32 字节随机数的 hex 编码（64 字符）
+```
+
+### 列出 / 吊销
+
+```http
+GET    /api/v1/agents/{agentId}/keys                ← Gateway
+DELETE /api/v1/agents/{agentId}/keys/{keyId}        ← Gateway
+```
+
+### 为什么用独立前缀？
+
+`bak_` Key **没有 scope 体系**，**没有用户身份** —— 它是一个智能体
+调用 token。A2A Gateway 认证 Key、解析出智能体拥有者、然后以**该智能体**
+的身份放行请求。`oag_` 和 `bak_` 命名空间混用会让这层映射含糊。
+参见
+[`a2a.beeos.ai` 智能体集成契约](https://github.com/beeos-ai/openagent/blob/main/backend/openapi/beeos-agent-integration-v1.yaml)。
+
+---
+
+## 4. MCP OAuth —— Model Context Protocol 客户端
+
+`mcp.beeos.ai` 是一个 [Model Context Protocol](https://modelcontextprotocol.io)
+host。MCP 客户端（Claude Desktop、Cursor、自定义 MCP server）通过
+MCP 标准 discovery 文档定位授权服务器，然后完成一个短小的 OAuth 2.0
+authorization-code 流程；拿到的 access token **仅在** `mcp.beeos.ai`
+有效 —— 在 `openapi.beeos.ai` 和 `a2a.beeos.ai` 上都不工作。
+
+正常情况下你不需要手写这段流程 —— MCP 客户端帮你完成。如果你在
+开发新的 MCP 客户端，请参考
+[MCP 认证规范](https://spec.modelcontextprotocol.io/specification/basic/authorization)。
+
+---
+
+## 怎么选
 
 ```mermaid
-sequenceDiagram
-    participant Client as MCP 客户端
-    participant GW as MCP Gateway
-    participant Web as BeeOS Web 应用
-    Client->>GW: POST /oauth/register
-    GW-->>Client: client_id
-
-    Client->>GW: GET /oauth/authorize?code_challenge=...
-    GW->>Web: 重定向到 /mcp-login
-    Web->>Web: 用户登录
-    Web->>GW: 携带 login ticket 回调
-    GW-->>Client: 重定向并附带 ?code=...
-
-    Client->>GW: POST /oauth/token (code + code_verifier)
-    GW-->>Client: access_token (HS256 JWT)
-
-    Client->>GW: POST /{agentId}/mcp (Bearer token)
-    GW-->>Client: JSON-RPC 响应
+flowchart TD
+    Q{"你是不是在浏览器里的人类用户?"} -->|是| JWT["用 JWT"]
+    Q -->|否| Q2{"调 openapi.beeos.ai?"}
+    Q2 -->|是| OAG["用 oag_ 用户 API Key"]
+    Q2 -->|否| Q3{"调 a2a.beeos.ai?"}
+    Q3 -->|是| BAK["用 bak_ 智能体 API Key"]
+    Q3 -->|否| Q4{"调 mcp.beeos.ai?"}
+    Q4 -->|是| MCP["用 MCP OAuth"]
+    Q4 -->|否| X["先决定调哪个接入面"]
 ```
 
-详见 [MCP > OAuth](/zh/mcp/oauth) 完整流程说明。
+请参考 [选择协议](/zh/guides/choosing-a-protocol) 获取完整对比
+（host、wire 格式、scope 单位、streaming / async / push 语义、
+配套示例）。
 
-## 响应格式
+要决定"我到底该打哪个协议接入面"，请先看
+[`zh/guides/choosing-a-protocol`](/zh/guides/choosing-a-protocol)。
 
-所有 OpenAPI Gateway 响应使用标准信封：
+---
 
-```json
-{
-  "success": true,
-  "data": { ... }
-}
-```
+## 常见错误
 
-认证错误返回：
+- **在 `a2a.beeos.ai` 上用 `oag_`** —— A2A Gateway 会以
+  `401 unauthorized` 拒绝。两组 host 在凭证状态上**有意零共享**。
+- **把 `oag_` Key 嵌进发布的移动端 / 桌面端二进制** —— 用户的 Key
+  归用户，不归你的应用。Web 应用应该让用户登录（JWT）、由你的后端用
+  服务端 `oag_` 完成后端工作。
+- **忘了设 scope** —— scope 强制是实时的；缺所需 scope 的 Key 返回
+  `403 insufficient_scope`，`error.metadata.required_scope` 里回显
+  可接受的 scope 集合。按[上文表格](#scope-scope)选最窄的 scope。
+- **指望从 openapi-gw 轮换 Key** —— 轮换 / 吊销在主 Gateway（见上文
+  端点）。OpenAPI Gateway 对凭证元数据是只读的，不暴露
+  `POST /api-keys`。
 
-```json
-{
-  "success": false,
-  "error": "unauthorized",
-  "message": "Invalid or missing credentials"
-}
-```
+---
 
-## 频率限制
+## 各凭证在代码中的校验位置
 
-| 网关 | 默认限制 |
-|------|----------|
-| OpenAPI Gateway | 每用户 300 次请求/分钟 |
-| A2A Gateway | 按智能体限流 |
-| MCP Gateway | 继承智能体级别限制 |
+| 凭证 | 校验器位置 | 备注 |
+|---|---|---|
+| 用户 JWT | [`backend/pkg/infrastructure/authclient/middleware.go`](https://github.com/beeos-ai/openagent/blob/main/backend/pkg/infrastructure/authclient/middleware.go) 的 `Authenticate` | 用 RSA 公钥校验 RS256 JWT |
+| `oag_` | [`backend/pkg/infrastructure/authclient/middleware.go`](https://github.com/beeos-ai/openagent/blob/main/backend/pkg/infrastructure/authclient/middleware.go) 的 `Authenticate` → Auth Service gRPC `LookupAPIKey` | SHA-256 hash 与 `api_keys.key_hash` 比对 |
+| `bak_` | A2A Gateway `auth/agent_api_key.go` → Agent Identity gRPC `LookupAgentAPIKey` | SHA-256 hash 与 `agent_api_keys.key_hash` 比对 |
+| MCP OAuth | MCP Gateway 内置 OAuth provider | 按 MCP 规范 |
 
-触发频率限制时，返回 HTTP `429 Too Many Requests` 和 `Retry-After` 头。
+---
+
+## 另请参阅
+
+- [调用智能体](/zh/guides/calling-agents) —— 拿到凭证后如何实际发起 SDK 调用
+- [OpenAPI 契约](https://github.com/beeos-ai/openagent/blob/main/backend/openapi/beeos-platform-v1.yaml) —— 你能用 `oag_` 调的路由
+- [A2A 外部集成](https://github.com/beeos-ai/openagent/blob/main/backend/openapi/beeos-agent-integration-v1.yaml) —— 接受 `bak_` 的路由
+- [ADR 001 —— openapi-gateway 作为唯一 OpenAPI 实现者](https://github.com/beeos-ai/openagent/blob/main/backend/docs/adr/001-openapi-gateway-bff.md)
