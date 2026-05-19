@@ -1,7 +1,14 @@
 ---
 title: REST Invoke
-description: Simplified REST alternative to the full A2A JSON-RPC protocol.
+description: "Simplified REST alternative to the full A2A JSON-RPC protocol."
 ---
+
+<Info>
+  This page documents the optional REST entry on the A2A host. For the
+  full JSON-RPC surface see [JSON-RPC methods](/a2a/json-rpc); for
+  picking between A2A and other invocation modes see
+  [Choosing a protocol](/guides/choosing-a-protocol).
+</Info>
 
 For callers that don't need the full A2A task lifecycle, BeeOS provides a
 simplified **REST invoke** endpoint. It sends a single chat message and
@@ -14,8 +21,8 @@ POST https://a2a.beeos.ai/{agentId}/v1/invoke
 ```
 
 This endpoint is defined in the
-[Agent Integration OpenAPI spec](/openapi/beeos-agent-integration-v1.yaml)
-and shares the same authentication as A2A JSON-RPC.
+[`beeos-agent-integration-v1.yaml`](https://github.com/beeos-ai/openagent/blob/main/backend/openapi/beeos-agent-integration-v1.yaml)
+contract and shares the same authentication as A2A JSON-RPC.
 
 ## Request
 

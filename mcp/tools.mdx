@@ -1,11 +1,58 @@
 ---
 title: Tools
-description: Discover and invoke agent tools via the MCP protocol.
+description: "Discover and invoke agent tools via the MCP protocol — including attachments, idempotency keys, and streaming."
 ---
+
+<Info>
+  For the MCP host's auth, endpoint layout, and choice-vs-other-protocols
+  guidance, start with [MCP overview](/mcp/overview). This page is the
+  field-by-field reference for the `tools/*` methods.
+</Info>
 
 MCP tools let external AI platforms discover what an agent can do and
 invoke specific capabilities. BeeOS agents automatically expose their
 registered skills as MCP tools.
+
+## Attachments
+
+`tools/call` accepts an `attachments` array in the tool arguments —
+each element is `{ file_id, filename?, content_type? }`. The MCP
+Gateway resolves `file_id` to a presigned download URL and forwards it
+to the agent as part of the [`chat_message`](/architecture/public-overview)
+envelope (the same shape as OpenAPI `invokeAgent` and A2A `FilePart`).
+Upload the file first via
+`POST /api/v1/files/presign-upload` on `openapi.beeos.ai` (or the
+TypeScript SDK's `FilesApi`).
+
+## Idempotency
+
+Pass `idempotency_key` inside the tool arguments to make `tools/call`
+safe to retry. Repeat the same key within the TTL window
+([ADR 0021](https://github.com/beeos-ai/openagent/blob/main/backend/docs/adr/0021-idempotency-key-ttl.md))
+to receive the cached response without re-invoking the agent.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 42,
+  "method": "tools/call",
+  "params": {
+    "name": "summarize_pdf",
+    "arguments": {
+      "attachments": [{ "file_id": "file_abc123", "filename": "q3.pdf" }],
+      "idempotency_key": "user_7:q3_summary"
+    }
+  }
+}
+```
+
+## HMAC-signed callbacks
+
+When a tool invocation triggers a webhook (e.g. for long-running
+tasks), the delivery is HMAC-SHA256 signed using the secret registered
+on the webhook. See [Webhooks § HMAC signing](/guides/webhooks#6-hmac-signing-p2-a)
+for the canonical signing contract — identical across OpenAPI, A2A,
+and MCP surfaces.
 
 ## tools/list
 

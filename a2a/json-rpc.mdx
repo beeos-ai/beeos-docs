@@ -14,6 +14,31 @@ POST https://a2a.beeos.ai/{agentId}
 
 Include the `A2A-Version: 1.0` header for protocol version negotiation.
 
+<Note>
+  **Method naming.** A2A v1.0 uses namespaced lowercase names like
+  `message/send` and `tasks/get`. The BeeOS A2A Gateway accepts **both**
+  the v1.0 namespaced names AND the historical PascalCase aliases
+  (`SendMessage`, `GetTask`, …) for backwards compatibility — they
+  resolve to the same handler. New integrations should prefer the
+  namespaced names. The mapping table is at the
+  [bottom of this page](#standard-alias-mapping).
+</Note>
+
+| A2A v1.0 standard | Legacy alias (still accepted) | Description |
+|---|---|---|
+| `message/send` | `SendMessage` | Send a message; creates a task or continues a conversation |
+| `message/stream` | `SendStreamingMessage` | Same but returns an SSE stream |
+| `tasks/get` | `GetTask` | Retrieve task state and result |
+| `tasks/cancel` | `CancelTask` | Cancel an in-progress task |
+| `tasks/list` | `ListTasks` | List tasks for the calling identity |
+| `tasks/complete` | `CompleteTask` | (BeeOS) Mark a task complete from the agent side |
+| `tasks/updateStatus` | `UpdateStatus` | (BeeOS) Push an in-progress status update |
+| `tasks/resubscribe` | `SubscribeToTask` | Re-subscribe to a task's SSE stream |
+| `tasks/pushNotificationConfig/set` | — | Register a webhook (see [Webhooks](/guides/webhooks)) |
+
+The per-method docs below use the PascalCase form to match the existing
+field names — substitute the namespaced form when calling.
+
 ## Request format
 
 ```json
@@ -188,20 +213,25 @@ Update the status of an in-progress task.
 }
 ```
 
-## Legacy method aliases
+## Standard alias mapping
 
-For backwards compatibility, the following aliases are accepted:
+The A2A Gateway accepts both A2A v1.0 namespaced names and the
+historical PascalCase forms. Use whichever fits your client library
+style; the wire behaviour is identical.
 
-| Legacy alias | Maps to |
-|-------------|---------|
-| `message/send` | `SendMessage` |
-| `message/stream` | `SendStreamingMessage` |
-| `tasks/get` | `GetTask` |
-| `tasks/cancel` | `CancelTask` |
-| `tasks/list` | `ListTasks` |
-| `tasks/complete` | `CompleteTask` |
-| `tasks/updateStatus` | `UpdateStatus` |
-| `tasks/resubscribe` | `SubscribeToTask` |
+| A2A v1.0 standard | PascalCase alias | Implementation |
+|---|---|---|
+| `message/send` | `SendMessage` | [`gateway.go`](https://github.com/beeos-ai/openagent/blob/main/backend/services/gateway/internal/http/gateway.go) — same handler |
+| `message/stream` | `SendStreamingMessage` | Same handler, SSE response |
+| `tasks/get` | `GetTask` | Same handler |
+| `tasks/cancel` | `CancelTask` | Same handler |
+| `tasks/list` | `ListTasks` | Same handler |
+| `tasks/complete` | `CompleteTask` | BeeOS extension (agent-side) |
+| `tasks/updateStatus` | `UpdateStatus` | BeeOS extension |
+| `tasks/resubscribe` | `SubscribeToTask` | Same handler, re-attach SSE |
+
+New integrations: prefer the namespaced form. Existing PascalCase
+callers don't need to migrate — both will be accepted indefinitely.
 
 ## Error codes
 

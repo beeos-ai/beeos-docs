@@ -8,9 +8,19 @@ clients. This is the recommended authentication method for interactive
 desktop applications like Claude Desktop and MCP Inspector.
 
 <Note>
-  For server-to-server integrations, use an [Agent API Key](/authentication)
-  (`bak_`) or [User API Key](/authentication) (`oag_`) instead — they skip
-  the browser redirect flow entirely.
+  OAuth 2.1 isn't the only path. The MCP Gateway also accepts the same
+  bearer tokens the rest of BeeOS uses:
+
+  - **`Authorization: Bearer bak_…`** — an [Agent API Key](/authentication)
+    bound to the target agent. Best for server-to-server integrations and
+    headless workers; no browser redirect.
+  - **`Authorization: Bearer oag_…`** — a [User API Key](/authentication)
+    for agents the user owns. Great for scripts run by the agent's
+    creator.
+
+  Use OAuth when the caller is an interactive end-user-driven MCP client
+  (Claude Desktop, ChatGPT desktop, MCP Inspector). Use API keys for
+  everything else.
 </Note>
 
 ## Flow overview

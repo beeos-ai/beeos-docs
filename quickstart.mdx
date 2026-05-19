@@ -1,12 +1,19 @@
 ---
 title: Quickstart
-description: Deploy your first agent and invoke it in 5 minutes.
+description: "Deploy your first agent and invoke it in 5 minutes — typed SDK, curl, and Go."
 ---
+
+This guide walks you from zero to a running agent that you can chat with
+via the BeeOS public OpenAPI. The same flow works against
+`http://localhost:8095` for local dev or `https://openapi.beeos.ai` for
+production.
 
 ## Prerequisites
 
-- A BeeOS account at [beeos.ai](https://beeos.ai)
-- A **User API Key** (`oag_...`) from **Settings > API Keys**
+- A BeeOS account at [beeos.ai](https://beeos.ai).
+- A **User API Key** (`oag_...`) from **Settings &rarr; API Keys**. The key
+  acts as a long-lived bearer credential — see
+  [Authentication](/authentication) for scopes and rotation.
 
 ## 1. Install the SDK
 
@@ -21,24 +28,39 @@ go get github.com/beeos-ai/sdk-go
 ```
 
 ```bash curl
-# No installation needed — use curl directly
+# No installation needed — use curl directly.
 ```
 
 </CodeGroup>
 
-## 2. List available providers
+<Note>
+  The published `@beeos-ai/sdk` is auto-generated from the OpenAPI contract
+  using OpenAPI Generator (`typescript-fetch`). It exposes a
+  `Configuration` value plus one class per OpenAPI tag — `DeployApi`,
+  `InstancesApi`, `AgentsApi`, `TasksApi`, `ConversationsApi`,
+  `FilesApi`. There is no `BeeOS` umbrella client.
+</Note>
+
+## 2. Configure the client
 
 <CodeGroup>
 
 ```typescript TypeScript
-import { BeeOS } from "@beeos-ai/sdk";
+import {
+  Configuration,
+  DeployApi,
+  InstancesApi,
+  AgentsApi,
+} from "@beeos-ai/sdk";
 
-const client = new BeeOS({ apiKey: "oag_YOUR_KEY" });
-const providers = await client.providers.list();
+const config = new Configuration({
+  basePath: "https://openapi.beeos.ai",
+  headers: { Authorization: `Bearer ${process.env.BEEOS_API_KEY}` },
+});
 
-for (const p of providers) {
-  console.log(p.meta.id, p.meta.name);
-}
+const deploy = new DeployApi(config);
+const instances = new InstancesApi(config);
+const agents = new AgentsApi(config);
 ```
 
 ```go Go
@@ -47,52 +69,95 @@ package main
 import (
     "context"
     "fmt"
+    "os"
+
     beeos "github.com/beeos-ai/sdk-go"
 )
 
 func main() {
-    client := beeos.New(beeos.WithAPIKey("oag_YOUR_KEY"))
-    providers, _ := client.Providers.List(context.Background())
-    for _, p := range providers {
-        fmt.Println(p.Meta.ID, p.Meta.Name)
+    cfg := beeos.NewConfiguration()
+    cfg.Servers = beeos.ServerConfigurations{
+        {URL: "https://openapi.beeos.ai"},
     }
+    cfg.DefaultHeader["Authorization"] = "Bearer " + os.Getenv("BEEOS_API_KEY")
+
+    client := beeos.NewAPIClient(cfg)
+    ctx := context.Background()
+    _ = client
+    _ = ctx
+    fmt.Println("client ready")
 }
 ```
 
 ```bash curl
-curl -s https://openapi.beeos.ai/api/v1/providers \
-  -H "Authorization: Bearer oag_YOUR_KEY" | jq '.data'
+export BEEOS_API_KEY="oag_…"
+export BASE=https://openapi.beeos.ai
 ```
 
 </CodeGroup>
 
-## 3. Deploy an agent instance
+## 3. List the deploy catalog
 
 <CodeGroup>
 
 ```typescript TypeScript
-const instance = await client.instances.deploy({
-  name: "my-first-agent",
-  agentFramework: "beeos-claw",
-  modelPrimary: "gpt-4o",
-});
+const providers = await deploy.listProviders();
+console.log(providers.data?.map(p => `${p.meta?.id} — ${p.meta?.name}`));
 
-console.log("Instance ID:", instance.id);
-console.log("Status:", instance.status);
+const regions = await deploy.listDeployRegions({ providerId: "default" });
+const models = await deploy.listDeployModels({ agentFramework: "beeos-claw" });
 ```
 
 ```go Go
-inst, _ := client.Instances.Deploy(context.Background(), beeos.DeployInstanceRequest{
-    Name:           "my-first-agent",
-    AgentFramework: "beeos-claw",
-    ModelPrimary:   "gpt-4o",
-})
-fmt.Println("Instance ID:", inst.ID)
+providers, _, _ := client.DeployAPI.ListProviders(ctx).Execute()
+for _, p := range providers.GetData() {
+    fmt.Printf("%s — %s\n", p.Meta.GetId(), p.Meta.GetName())
+}
 ```
 
 ```bash curl
-curl -s -X POST https://openapi.beeos.ai/api/v1/instances \
-  -H "Authorization: Bearer oag_YOUR_KEY" \
+curl -s "$BASE/api/v1/providers" \
+  -H "Authorization: Bearer $BEEOS_API_KEY" | jq '.data'
+
+curl -s "$BASE/api/v1/deploy/regions?providerId=default" \
+  -H "Authorization: Bearer $BEEOS_API_KEY" | jq '.data'
+
+curl -s "$BASE/api/v1/deploy/models?agentFramework=beeos-claw" \
+  -H "Authorization: Bearer $BEEOS_API_KEY" | jq '.data'
+```
+
+</CodeGroup>
+
+## 4. Deploy an agent instance
+
+<CodeGroup>
+
+```typescript TypeScript
+const created = await instances.deployInstance({
+  deployInstanceRequest: {
+    name: "my-first-agent",
+    agentFramework: "beeos-claw",
+    modelPrimary: "gpt-4o",
+  },
+});
+const instanceId = created.data!.id;
+console.log(`Instance ${instanceId} — status: ${created.data!.status}`);
+```
+
+```go Go
+req := beeos.DeployInstanceRequest{
+    Name:           "my-first-agent",
+    AgentFramework: "beeos-claw",
+    ModelPrimary:   "gpt-4o",
+}
+created, _, _ := client.InstancesAPI.DeployInstance(ctx).
+    DeployInstanceRequest(req).Execute()
+fmt.Printf("Instance %s — status: %s\n", created.Data.GetId(), created.Data.GetStatus())
+```
+
+```bash curl
+curl -s -X POST "$BASE/api/v1/instances" \
+  -H "Authorization: Bearer $BEEOS_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "my-first-agent",
@@ -103,59 +168,106 @@ curl -s -X POST https://openapi.beeos.ai/api/v1/instances \
 
 </CodeGroup>
 
-## 4. Invoke the agent
+Provisioning takes a few seconds. Poll `GET /instances/{id}` until
+`status === "running"`, or watch the dashboard.
 
-Once the instance is `running`, you can send it a message:
+## 5. Find the agent ID
+
+A deployed instance hosts one or more agents. The agent ID is what you
+invoke against (an instance can be replaced without breaking your
+integration; the agent identity is stable).
 
 <CodeGroup>
 
 ```typescript TypeScript
-const result = await client.agents.invoke(instance.identityId, {
-  message: "Hello! What can you do?",
-});
-
-console.log("Reply:", result.text);
-console.log("Context:", result.context_id);
+const list = await agents.listAgents({ instanceId, limit: 20 });
+const agentId = list.data![0].id;
+console.log(`Invoking agent ${agentId}`);
 ```
 
 ```go Go
-reply, _ := client.Agents.Invoke(context.Background(), agentID, beeos.InvokeAgentRequest{
-    Message: "Hello! What can you do?",
-})
-fmt.Println("Reply:", reply.Text)
+list, _, _ := client.AgentsAPI.ListAgents(ctx).
+    InstanceId(instanceId).Limit(20).Execute()
+agentID := list.GetData()[0].GetId()
 ```
 
 ```bash curl
-curl -s -X POST "https://openapi.beeos.ai/api/v1/agents/${AGENT_ID}/invoke" \
-  -H "Authorization: Bearer oag_YOUR_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "message": "Hello! What can you do?"
-  }' | jq '.data'
+AGENT_ID=$(curl -s "$BASE/api/v1/agents?instanceId=$INSTANCE_ID&limit=20" \
+  -H "Authorization: Bearer $BEEOS_API_KEY" | jq -r '.data[0].id')
+echo "Invoking agent $AGENT_ID"
 ```
 
 </CodeGroup>
 
-For streaming responses, set `Accept: text/event-stream`:
+## 6. Invoke the agent
 
-```bash
-curl -N -X POST "https://openapi.beeos.ai/api/v1/agents/${AGENT_ID}/invoke" \
-  -H "Authorization: Bearer oag_YOUR_KEY" \
+The blocking call returns a single JSON payload once the agent finishes
+its reply. For long prompts, see [Streaming](/guides/streaming).
+
+<CodeGroup>
+
+```typescript TypeScript
+const reply = await agents.invokeAgent({
+  agentId,
+  invokeAgentRequest: {
+    message: "Hello — what can you do?",
+  },
+});
+console.log("Reply:", reply.data?.reply);
+console.log("Channel:", reply.data?.context_id);
+```
+
+```go Go
+reply, _, _ := client.AgentsAPI.InvokeAgent(ctx, agentID).
+    InvokeAgentRequest(beeos.InvokeAgentRequest{
+        Message: "Hello — what can you do?",
+    }).Execute()
+fmt.Println("Reply:", reply.GetData().GetReply())
+```
+
+```bash curl
+curl -s -X POST "$BASE/api/v1/agents/$AGENT_ID/invoke" \
+  -H "Authorization: Bearer $BEEOS_API_KEY" \
   -H "Content-Type: application/json" \
-  -H "Accept: text/event-stream" \
-  -d '{"message": "Tell me about yourself"}'
+  -d '{"message": "Hello — what can you do?"}' | jq '.data'
 ```
 
-## 5. Clean up
+</CodeGroup>
+
+### Streaming variant
+
+Set `Accept: text/event-stream` on the same endpoint to receive
+`agent_reply_delta` chunks followed by a single `agent_reply` close
+frame. The SDK does not abstract SSE — drop to `fetch` / `http.Client`.
 
 ```bash
-curl -s -X DELETE "https://openapi.beeos.ai/api/v1/instances/${INSTANCE_ID}" \
-  -H "Authorization: Bearer oag_YOUR_KEY" | jq
+curl -N -X POST "$BASE/api/v1/agents/$AGENT_ID/invoke" \
+  -H "Authorization: Bearer $BEEOS_API_KEY" \
+  -H "Accept: text/event-stream" \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Tell me a short story."}'
 ```
 
-## Next steps
+## 7. Clean up
 
-- [Authentication](/authentication) — understand all auth methods
-- [A2A Protocol](/a2a/overview) — build agent-to-agent workflows
-- [MCP Integration](/mcp/overview) — connect agents to Claude, Cursor, and more
-- [API Reference](/api-reference) — explore all endpoints interactively
+```bash
+curl -s -X DELETE "$BASE/api/v1/instances/$INSTANCE_ID" \
+  -H "Authorization: Bearer $BEEOS_API_KEY" | jq
+```
+
+## Where to go next
+
+<CardGroup cols={2}>
+  <Card title="Choosing a protocol" icon="signs-post" href="/guides/choosing-a-protocol">
+    Decide between OpenAPI (this guide), A2A, and MCP.
+  </Card>
+  <Card title="Calling agents" icon="message-bot" href="/guides/calling-agents">
+    Idempotency, attachments, tasks, conversations, error handling.
+  </Card>
+  <Card title="Webhooks" icon="webhook" href="/guides/webhooks">
+    HMAC-signed terminal-state callbacks with retry + audit log.
+  </Card>
+  <Card title="A2A protocol" icon="arrows-rotate" href="/a2a/overview">
+    JSON-RPC + agent cards on `a2a.beeos.ai`.
+  </Card>
+</CardGroup>

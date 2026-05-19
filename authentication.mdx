@@ -1,135 +1,241 @@
 ---
-title: Authentication
-description: API keys, JWTs, and OAuth flows for BeeOS APIs.
+title: Authentication & API Keys
+description: "Credentials accepted by every BeeOS public surface — User JWT, oag_ User API Keys, bak_ Agent API Keys, and OAuth 2.1."
 ---
 
-BeeOS uses different authentication methods depending on which gateway you
-are calling and what role you are acting as (user, agent, or external platform).
+Every public BeeOS endpoint is authenticated. There are **four** credential
+types, chosen by the protocol surface you're calling — not by the SDK
+language. Pick the one that matches the host you're hitting:
 
-## Credential types
+| Credential | Header | Where it works | Who issues it |
+|---|---|---|---|
+| **User JWT** | `Authorization: Bearer <jwt>` | `gateway.beeos.ai` (web / mobile / desktop) **and** `openapi.beeos.ai` (SDK) | User login (Gateway `POST /api/v1/auth/login`) |
+| **User API Key (`oag_`)** | `Authorization: Bearer oag_...` | `openapi.beeos.ai` (SDK) **only** | User self-service (Gateway) |
+| **Agent API Key (`bak_`)** | `Authorization: Bearer bak_...` | `a2a.beeos.ai` (A2A JSON-RPC) **only** | Agent owner (Gateway) |
+| **MCP OAuth** | `Authorization: Bearer <oauth-access-token>` | `mcp.beeos.ai` (MCP) **only** | OAuth dance with Gateway |
 
-| Credential | Prefix | Scope | Issued via |
-|-----------|--------|-------|------------|
-| **User API Key** | `oag_` | All user-owned resources | Dashboard > Settings > API Keys |
-| **Agent API Key** | `bak_` | Single agent (bound to `agentId`) | Dashboard or API |
-| **JWT** | `eyJ...` | Session-scoped user identity | Login flow (web / mobile) |
-| **OAuth 2.1 Bearer** | `eyJ...` (HS256) | MCP access for a specific agent | MCP Gateway OAuth flow (DCR + PKCE) |
+The two host buckets are deliberately separate so SDK consumers never
+have to think about JWT refresh, and so A2A / MCP clients can't
+accidentally pick up a user's session cookie.
 
-## Which credential for which gateway
+---
 
-| Gateway | URL | Accepts | Scope |
-|---------|-----|---------|-------|
-| **OpenAPI Gateway** | `openapi.beeos.ai` | `oag_` User API Key, JWT | Instance lifecycle, agents listing & invoke |
-| **A2A Gateway** | `a2a.beeos.ai` | `bak_` Agent API Key, JWT, `oag_` | Cross-agent task orchestration, agent cards |
-| **MCP Gateway** | `mcp.beeos.ai` | `bak_` Agent API Key, `oag_` User API Key, OAuth 2.1 Bearer | Tool discovery and invocation from AI platforms |
+## 1. User JWT — web / mobile / desktop sessions
 
-## User API Key (`oag_`)
+Issued by the main Gateway (`gateway.beeos.ai`, local `:9080`) on
+login. Short-lived (typically 1 h, refreshed automatically by the
+SDK / web client). **Carries the user's full scope** — any operation
+the user can do from the web UI works with their JWT.
 
-User API Keys act on behalf of a BeeOS user. They can manage instances,
-invoke agents you own, and access the full Platform API.
+```http
+POST /api/v1/auth/login        ← Gateway, not openapi-gw
+Content-Type: application/json
 
-**Create a key:**
-1. Go to [beeos.ai/settings/api-keys](https://beeos.ai/settings/api-keys)
-2. Click **Create API Key**
-3. Copy the `oag_...` value (shown only once)
-
-**Usage:**
-
-```bash
-curl -s https://openapi.beeos.ai/api/v1/instances \
-  -H "Authorization: Bearer oag_YOUR_KEY"
+{ "email": "you@example.com", "password": "..." }
 ```
 
-<Warning>
-  Treat `oag_` keys like passwords. Do not commit them to source control
-  or expose them in client-side code.
-</Warning>
+The response contains an `access_token`; send it as `Authorization:
+Bearer <jwt>` to either Gateway (web traffic) or
+`openapi.beeos.ai` (SDK traffic — it accepts the same JWT).
 
-## Agent API Key (`bak_`)
+Use JWT **only** for interactive sessions. For backend cron jobs,
+CI, or anything where you store the credential at rest, prefer an
+`oag_` key — JWTs expire and rotating refresh tokens through a
+headless script is more friction than it's worth.
 
-Agent API Keys are scoped to a single agent. They are used for A2A
-protocol interactions and MCP access where a third-party system needs to
-talk to one specific agent.
+---
 
-**Usage with A2A Gateway:**
+## 2. `oag_` — User API Key (SDK calls)
 
-```bash
-curl -s -X POST "https://a2a.beeos.ai/${AGENT_ID}" \
-  -H "X-Agent-API-Key: bak_YOUR_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"SendMessage","params":{...}}'
+The credential SDK consumers actually pass through. Self-issued by
+the user — no admin involvement.
+
+```http
+POST /api/v1/api-keys            ← Gateway
+Authorization: Bearer <user-jwt>
+Content-Type: application/json
+
+{
+  "name": "my-cron-job",
+  "scopes": ["agents:read", "tasks:write"],
+  "rate_limit_per_minute": 600,
+  "expires_at": "2027-05-01T00:00:00Z"
+}
 ```
 
-**Usage with MCP Gateway:**
+The response contains the **plaintext** key (`oag_<64-hex>`) **once**;
+store it immediately. The Gateway only retains a SHA-256 hash.
 
-```bash
-curl -s -X POST "https://mcp.beeos.ai/${AGENT_ID}/mcp" \
-  -H "X-Agent-API-Key: bak_YOUR_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+### Format
+
 ```
+oag_   ────────────────────────────────────────────
+↑      ↑
+fixed  32 random bytes hex-encoded (64 chars)
+```
+
+The first 12 characters (`oag_<8 hex>`) are stored separately as
+`key_prefix` for safe display in lists / audit logs.
+
+### Scopes
+
+OpenAPI Gateway enforces scopes per route. Each request needs **at
+least one** of the scopes listed for that route; a request that
+matches none returns `403 insufficient_scope` with the acceptable
+scope set echoed in `error.metadata.required_scope` (comma-separated;
+any one is sufficient).
+
+| Scope | Routes |
+|---|---|
+| `agents:read` | `GET /agents`, `GET /agents/{agentId}` |
+| `agents:write` | `PATCH /agents/{agentId}` |
+| `tasks:read` | `GET /agents/{agentId}/tasks*`, `GET /agents/{agentId}/conversations*` (incl. history, SSE stream) |
+| `tasks:write` | `POST /agents/{agentId}/invoke`, all `POST /agents/{agentId}/tasks*` (create, cancel, continue), all `POST /agents/{agentId}/conversations*` (create, send), `DELETE /conversations/{convId}`, webhook CRUD (`POST` / `DELETE /tasks/{taskId}/webhooks*`) |
+| `files:read` | `GET /files/{id}` |
+| `files:write` | `POST /files/presign-upload` |
+| `instances:read` | `GET /providers`, `GET /deploy/regions`, `GET /deploy/models`, `GET /instances*` |
+| `instances:write` | All `POST /instances*` and `DELETE /instances/{id}` |
 
 <Note>
-  The `bak_` key is validated against the `{agentId}` in the URL path.
-  A key issued for Agent A cannot be used to access Agent B.
+**JWT callers bypass the scope check.** A user in the dashboard
+already has the full surface; scopes only apply to `oag_` keys.
+</Note>
+>
+<Note>
+If you forget to set scopes when minting a key the request is
+denied — there is no "all scopes" implicit default. Pick the
+narrowest set that does the job.
 </Note>
 
-## OAuth 2.1 (MCP Gateway)
+### Listing / revoking
 
-The MCP Gateway implements OAuth 2.1 with PKCE for spec-compliant MCP
-clients like Claude Desktop and MCP Inspector.
+```http
+GET    /api/v1/api-keys              ← Gateway, list yours
+DELETE /api/v1/api-keys/{id}         ← Gateway, revoke
+```
+
+There is **no rotation endpoint** — rotate by issuing a new key,
+flipping callers over, and revoking the old one. (See
+[Versioning & Deprecation](#) once P2-D lands for the recommended
+rollover window.)
+
+---
+
+## 3. `bak_` — Agent API Key (A2A JSON-RPC)
+
+For **external agents** (or other organisations' systems) calling
+**your agent** over the A2A protocol on `a2a.beeos.ai`. Scoped to a
+single agent — not a user. Each agent can hold **at most 3 active
+keys** at a time.
+
+```http
+POST /api/v1/agents/{agentId}/keys   ← Gateway (NOT openapi-gw)
+Authorization: Bearer <agent-owner-jwt>
+Content-Type: application/json
+
+{ "name": "partner-integration-acme-corp" }
+```
+
+### Format
+
+```
+bak_   ────────────────────────────────────────────
+↑      ↑
+fixed  32 random bytes hex-encoded (64 chars)
+```
+
+### Listing / revoking
+
+```http
+GET    /api/v1/agents/{agentId}/keys                ← Gateway
+DELETE /api/v1/agents/{agentId}/keys/{keyId}        ← Gateway
+```
+
+### Why a separate prefix?
+
+`bak_` keys have **no scope system** and **no user identity** —
+they're an agent invocation token. A2A Gateway authenticates the
+key, resolves the agent owner, then admits the request as that
+agent. Mixing `oag_` and `bak_` namespaces would have made this
+mapping ambiguous. See [`a2a.beeos.ai` agent integration
+contract](https://github.com/beeos-ai/openagent/blob/main/backend/openapi/beeos-agent-integration-v1.yaml).
+
+---
+
+## 4. MCP OAuth — Model Context Protocol clients
+
+`mcp.beeos.ai` is a [Model Context Protocol](https://modelcontextprotocol.io)
+host. MCP clients (Claude Desktop, Cursor, custom MCP servers) discover the
+authorisation server via the standard MCP discovery doc and complete a
+short OAuth 2.0 authorisation-code flow; the access token they receive
+is **only** valid on `mcp.beeos.ai` — not on `openapi.beeos.ai` and not
+on `a2a.beeos.ai`.
+
+You shouldn't normally hand-craft this flow — your MCP client
+implements it. If you're building a new MCP client, see the
+[MCP authentication spec](https://spec.modelcontextprotocol.io/specification/basic/authorization).
+
+---
+
+## Choosing between them
 
 ```mermaid
-sequenceDiagram
-    participant Client as MCP Client
-    participant GW as MCP Gateway
-    participant Web as BeeOS Web App
-    Client->>GW: POST /oauth/register
-    GW-->>Client: client_id
-
-    Client->>GW: GET /oauth/authorize?code_challenge=...
-    GW->>Web: redirect to /mcp-login
-    Web->>Web: user logs in
-    Web->>GW: redirect back with login ticket
-    GW-->>Client: redirect with ?code=...
-
-    Client->>GW: POST /oauth/token (code + code_verifier)
-    GW-->>Client: access_token (HS256 JWT)
-
-    Client->>GW: POST /{agentId}/mcp (Bearer token)
-    GW-->>Client: JSON-RPC response
+flowchart TD
+    Q{Are you a human in a browser?} -->|yes| JWT[Use JWT]
+    Q -->|no| Q2{Calling openapi.beeos.ai?}
+    Q2 -->|yes| OAG[Use oag_ User API Key]
+    Q2 -->|no| Q3{Calling a2a.beeos.ai?}
+    Q3 -->|yes| BAK[Use bak_ Agent API Key]
+    Q3 -->|no| Q4{Calling mcp.beeos.ai?}
+    Q4 -->|yes| MCP[Use MCP OAuth]
+    Q4 -->|no| X[See choosing-a-protocol.md]
 ```
 
-See [MCP > OAuth](/mcp/oauth) for the full flow details.
+See [Choosing a Protocol](/guides/choosing-a-protocol) for the full
+side-by-side comparison (host, wire format, scope unit, streaming /
+async / push semantics, and worked examples).
 
-## Response format
+For deeper context on "which protocol surface should I be calling in
+the first place" see
+[`docs/guides/choosing-a-protocol.md`](/guides/choosing-a-protocol) (P1-G,
+planned).
 
-All OpenAPI Gateway responses use a standard envelope:
+---
 
-```json
-{
-  "success": true,
-  "data": { ... }
-}
-```
+## Common mistakes
 
-Authentication errors return:
+- **Using `oag_` on `a2a.beeos.ai`** — A2A Gateway rejects it with
+  `401 unauthorized`. The two host buckets share zero credential
+  state by design.
+- **Embedding `oag_` keys in shipped mobile / desktop binaries** —
+  the user's keys belong to the user, not your app. Web apps should
+  authenticate the user (JWT) and your server mints a server-side
+  `oag_` for backend work.
+- **Forgetting to set scopes** — scope enforcement is live; a key
+  missing the required scope returns `403 insufficient_scope` with
+  the acceptable scope set echoed in `error.metadata.required_scope`.
+  Pick the narrowest scope set per [the table above](#scopes).
+- **Expecting key rotation from openapi-gw** — rotation /
+  revocation lives on the main Gateway (see endpoints above). The
+  OpenAPI Gateway is read-only for credential metadata; it does not
+  expose `POST /api-keys`.
 
-```json
-{
-  "success": false,
-  "error": "unauthorized",
-  "message": "Invalid or missing credentials"
-}
-```
+---
 
-## Rate limits
+## Where each credential is checked in code
 
-| Gateway | Default limit |
-|---------|--------------|
-| OpenAPI Gateway | 300 requests/minute per user |
-| A2A Gateway | Per-agent rate limiting |
-| MCP Gateway | Follows agent-level limits |
+| Credential | Validator location | Note |
+|---|---|---|
+| User JWT | [`backend/pkg/infrastructure/authclient/middleware.go`](https://github.com/beeos-ai/openagent/blob/main/backend/pkg/infrastructure/authclient/middleware.go) `Authenticate` | RSA public-key verification of RS256 JWT |
+| `oag_` | [`backend/pkg/infrastructure/authclient/middleware.go`](https://github.com/beeos-ai/openagent/blob/main/backend/pkg/infrastructure/authclient/middleware.go) `Authenticate` → Auth Service gRPC `LookupAPIKey` | SHA-256 hash compared against `api_keys.key_hash` |
+| `bak_` | A2A Gateway `auth/agent_api_key.go` → Agent Identity gRPC `LookupAgentAPIKey` | SHA-256 hash compared against `agent_api_keys.key_hash` |
+| MCP OAuth | MCP Gateway internal OAuth provider | Per MCP spec |
 
-When rate limited, you receive HTTP `429 Too Many Requests` with a
-`Retry-After` header.
+---
+
+## See also
+
+- [Calling Agents](/guides/calling-agents) — once you have a credential, here's how to make the actual SDK calls
+- [OpenAPI contract](https://github.com/beeos-ai/openagent/blob/main/backend/openapi/beeos-platform-v1.yaml) — the routes you can hit with an `oag_` key
+- [A2A external integration](https://github.com/beeos-ai/openagent/blob/main/backend/openapi/beeos-agent-integration-v1.yaml) — routes accepting `bak_`
+- [ADR 001 — openapi-gateway as the sole OpenAPI implementer](https://github.com/beeos-ai/openagent/blob/main/backend/docs/adr/001-openapi-gateway-bff.md)

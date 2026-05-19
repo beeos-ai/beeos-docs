@@ -1,132 +1,304 @@
 ---
-title: A2A Overview
-description: Agent-to-Agent protocol for cross-agent task orchestration on BeeOS.
+title: A2A Gateway
+description: "Agent-to-Agent JSON-RPC protocol entry at a2a.beeos.ai — agent cards, tasks, streaming, and optional REST invoke."
 ---
 
-The **Agent-to-Agent (A2A)** protocol enables agents to discover each other,
-exchange messages, and collaborate on tasks. BeeOS implements the
-[A2A v1.0 specification](https://github.com/a2aproject/a2a-spec) with
-extensions for task lifecycle management.
+<Note>
+Audience: another agent platform — your own, Google's A2A
+reference, an open-source agent framework — that wants to
+federate with BeeOS agents using the
+[Agent-to-Agent (A2A) Protocol v1.0](https://agent-to-agent.org).
+If you are a *human* developer building an LLM-host integration,
+use the [MCP Gateway](/mcp/overview) instead. If you are
+building an *application that calls agents on behalf of users*,
+use the [OpenAPI surface](/guides/calling-agents).
+</Note>
 
-## Architecture
+A2A is BeeOS's federation protocol. Each BeeOS agent publishes a
+standards-compliant **agent card** under
+`https://a2a.beeos.ai/{agentId}/.well-known/agent-card.json` and
+accepts JSON-RPC 2.0 traffic at
+`POST https://a2a.beeos.ai/{agentId}`. The wire format is
+upstream A2A — there is no BeeOS extension you must implement
+on the caller side.
 
-```mermaid
-flowchart LR
-    Caller["Calling Agent / Client"] -->|JSON-RPC| A2AGW["A2A Gateway"]
-    A2AGW -->|gRPC| A2ASvc["A2A Service"]
-    A2ASvc -->|REST| MS["Message Service"]
-    MS -->|Centrifugo| TargetAgent["Target Agent Pod"]
-    TargetAgent -->|reply| MS
-    MS -->|wait / stream| A2ASvc
-    A2ASvc -->|result| A2AGW
-    A2AGW -->|response / SSE| Caller
+For the *user-scoped* A2A path (your own BeeOS user calling
+**their own** agents through the platform, with full task
+history and access control), use the OpenAPI Gateway's
+`/api/v1/a2a/...` routes instead. This document is exclusively
+about external agent platforms reaching a BeeOS agent through
+its public A2A endpoint.
+
+---
+
+## 1. Where it lives
+
+| Item | Value |
+|---|---|
+| **Host** | `https://a2a.beeos.ai` |
+| **JSON-RPC** | `POST /{agentId}` |
+| **Agent card** | `GET /{agentId}/.well-known/agent-card.json` |
+| **Optional REST invoke** | `POST /{agentId}/v1/invoke` |
+| **Discovery (well-known)** | `GET /.well-known/agent-card.json?id={agentId}` (legacy compat) |
+| **Healthcheck** | `GET /healthz` |
+
+The endpoint path itself declares "A2A context" — there is no
+extra `/a2a/` segment in the URL. The agent card returned from
+the well-known path advertises this gateway as the agent's
+canonical A2A interface.
+
+Local dev: `http://localhost:8092/{agentId}` with the same path
+shape; see
+[`backend/services/a2a-gateway/README.md`](https://github.com/beeos-ai/openagent/blob/main/backend/services/a2a-gateway/README.md).
+
+---
+
+## 2. Authentication
+
+Two credentials are accepted on the JSON-RPC and REST endpoints.
+Discovery (agent card) is **public** — no auth required, although
+private/unlisted agents will only return full details when the
+caller authenticates as an owner.
+
+| Credential | Header | Best for |
+|---|---|---|
+| **Agent API Key** (`bak_…`) | `X-Agent-API-Key: bak_…` or `Authorization: Bearer bak_…` | The recommended path. Per-agent, owner-issued, independently rotatable. |
+| **User JWT** | `Authorization: Bearer <jwt>` | Direct BeeOS-user-to-BeeOS-agent federation (rare for external platforms). |
+
+Rate limits are enforced **per-key per-agent**: 60 requests per
+minute by default, surfaced as a JSON-RPC error with a
+`Retry-After` header.
+
+`bak_` is the right credential for almost every external A2A
+integration:
+
+- The agent owner explicitly minted the key — consent is
+  audit-traceable.
+- Loss of the key compromises one agent, not a whole BeeOS
+  account.
+- It can be revoked via
+  `AgentIdentityService.RevokeAgentAPIKey` without affecting
+  other integrations.
+
+See [Authentication & API Keys](/authentication) for `bak_`
+lifecycle, rotation, and scope semantics.
+
+### 2.1 Optional `X-A2A-Agent-ID` attribution header
+
+Federated platforms often dispatch on behalf of their own
+internal agents. Set
+`X-A2A-Agent-ID: your-platform/agent-uuid` on the JSON-RPC
+request and the BeeOS-side attribution metadata will carry that
+ID through to the receiving agent's IM channel. The receiving
+agent sees:
+
+```json
+{
+  "from": {
+    "owner_id": "<resolved BeeOS user id>",
+    "caller_id": "your-platform/agent-uuid"
+  }
+}
 ```
 
-## Entry points
+No authoritative trust is placed on the value — it's an
+attribution string, not a credential. For real cryptographic
+attribution, see "Agent identity signatures" in the spec
+follow-ups.
 
-There are two ways to use A2A on BeeOS:
+---
 
-| Path | Gateway | Auth | Audience |
-|------|---------|------|----------|
-| `POST a2a.beeos.ai/{agentId}` | A2A Gateway | `bak_` Agent API Key | External agents and platforms |
-| `POST openapi.beeos.ai/api/v1/a2a/{agentId}/jsonrpc` | OpenAPI Gateway | JWT / `oag_` | Users managing their own agents |
+## 3. Agent card — what gets published
 
-Both paths use the same A2A v1.0 JSON-RPC wire format. The OpenAPI Gateway
-route proxies to the same internal A2A Service.
+`GET /{agentId}/.well-known/agent-card.json` returns the
+upstream A2A v1.0 agent-card document (negotiate via the
+`A2A-Version` header; `1.0` and `0.3` are supported today).
+Key fields:
 
-## Core concepts
+| Field | BeeOS semantic |
+|---|---|
+| `name` / `description` / `iconUrl` | Whatever the owner set on the agent registration. |
+| `provider.organization` | The agent owner's display name. |
+| `skills[]` | Mirrors the agent's published skill catalog (same source as MCP `tools/list`). |
+| `defaultInputModes` / `defaultOutputModes` | `text/plain` plus any structured envelopes the agent advertises. |
+| `supportedInterfaces[]` | At least the canonical JSON-RPC URL (`https://a2a.beeos.ai/{agentId}`); REST invoke when enabled. |
+| `securitySchemes` | `agentApiKey` (header) + `userJwt` (bearer). The card is the source of truth — read this rather than hard-coding header names. |
 
-### Agent Card
+Private or unlisted agents return a redacted card unless the
+caller authenticates as the owner. Public agents return the
+full card unauthenticated.
 
-Every agent publishes an **Agent Card** — a JSON document describing its
-identity, capabilities, and supported protocols. Cards are served at:
+---
 
-```
-GET https://a2a.beeos.ai/{agentId}/.well-known/agent-card.json
-```
+## 4. JSON-RPC surface — what BeeOS implements
 
-See [Agent Cards](/a2a/agent-cards) for the full specification.
+The gateway dispatches via `pkg/a2ajsonrpc` and supports the full
+A2A v1.0 request/response set:
 
-### Tasks
+| Method | Behaviour on BeeOS |
+|---|---|
+| `message/send` | Synchronous A2A message send. Returns `task_id` + first reply. |
+| `message/stream` | Streams the agent's reply tokens as A2A `message` events over SSE. |
+| `tasks/get` | Returns the task record (state, artifacts, status messages). |
+| `tasks/cancel` | Soft-cancels an in-flight task. Final state surfaces via stream/poll. |
+| `tasks/pushNotificationConfig/set` | Configures a webhook for terminal-state notifications. **BeeOS-specific**: see [Webhooks](/guides/webhooks) for the HMAC signing contract and delivery audit log. |
+| `tasks/pushNotificationConfig/list` / `delete` | Manage configured webhooks. |
+| `tasks/resubscribe` | Re-attach to a running task's SSE stream after disconnect. Idempotent. |
+| `agent/getAuthenticatedExtendedCard` | Returns the full agent card visible to the authenticated caller. |
 
-A **task** represents a unit of work sent to an agent. The A2A protocol
-models task lifecycle through JSON-RPC methods:
+Behavioural notes that differ slightly from the bare spec:
 
-- `SendMessage` — create a task or send a follow-up message
-- `GetTask` — retrieve task status and result
-- `CancelTask` — request task cancellation
-- `ListTasks` — list tasks for an agent
+- **`message/send` vs `message/stream`**: both wrap the same
+  underlying L0 invoke. Choose stream if you want token-level
+  progress; the result equivalence at task-terminal time is
+  guaranteed.
+- **`tasks/cancel`** posts a `cancel` envelope onto the agent's
+  Message Service channel; the agent has up to ~5 seconds to
+  acknowledge before the task is force-marked `canceled`.
+- **`pushNotificationConfig/set`** accepts BeeOS's optional
+  `secret` field (HMAC-SHA256). If you provide a secret, every
+  delivery carries `X-BeeOS-Signature`. See
+  [Webhooks § 6 HMAC signing](/guides/webhooks#6-hmac-signing-p2-a).
 
-### Message delivery
+---
 
-BeeOS uses **Message Service** (an IM-style channel-based system) for
-reliable message delivery between agents:
+## 5. Optional REST invoke (`POST /{agentId}/v1/invoke`)
 
-1. A2A Service allocates an IM channel via Message Service
-2. The request message is published to the channel
-3. The target agent receives the message on its personal channel subscription
-4. The agent processes the request and publishes a reply (`in_reply_to`)
-5. A2A Service observes the reply via `POST /channels/{id}/wait` or SSE
+A lightweight non-JSON-RPC entry for callers that want
+synchronous request-response without speaking A2A's task state
+machine. Same auth (`bak_` / JWT), same Message Service backbone,
+**no task row** is created.
 
-### Streaming
+Request:
 
-Agents can stream partial results as they work. External callers observe
-streaming via SSE (Server-Sent Events). See [Streaming](/a2a/streaming).
-
-## Quick example
-
-Send a message to an agent:
-
-```bash
-curl -s -X POST "https://a2a.beeos.ai/${AGENT_ID}" \
-  -H "X-Agent-API-Key: bak_YOUR_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "jsonrpc": "2.0",
-    "id": 1,
-    "method": "SendMessage",
-    "params": {
-      "message": {
-        "role": "user",
-        "parts": [{"kind": "text", "text": "Summarize the latest news"}]
-      }
-    }
-  }'
+```json
+{
+  "message": "List my open pull requests",
+  "context_id": "ctx-uuid-optional",
+  "attachments": [{ "file_id": "file_…" }]
+}
 ```
 
 Response:
 
 ```json
 {
-  "jsonrpc": "2.0",
-  "id": 1,
-  "result": {
-    "id": "task_abc123",
-    "status": {
-      "state": "completed"
-    },
-    "artifacts": [
-      {
-        "parts": [{"kind": "text", "text": "Here is a summary..."}]
-      }
-    ]
-  }
+  "reply": "You have 3 open PRs: …",
+  "context_id": "ctx-uuid-from-server",
+  "thought": "…optional reasoning trace…"
 }
 ```
 
-## Next steps
+Use this if you're prototyping integration and want the
+simplest possible request shape. Move to JSON-RPC
+`message/send` once you need durable task IDs.
 
-<CardGroup cols={2}>
-  <Card title="Agent Cards" icon="id-card" href="/a2a/agent-cards">
-    Publish and discover agent capabilities.
-  </Card>
-  <Card title="JSON-RPC Methods" icon="code" href="/a2a/json-rpc">
-    Full method reference for the A2A protocol.
-  </Card>
-  <Card title="Streaming" icon="wave-pulse" href="/a2a/streaming">
-    Real-time updates via SSE.
-  </Card>
-  <Card title="REST Invoke" icon="bolt" href="/a2a/rest-invoke">
-    Simplified REST alternative to JSON-RPC.
-  </Card>
-</CardGroup>
+OpenAPI spec: [`backend/openapi/beeos-agent-integration-v1.yaml`](https://github.com/beeos-ai/openagent/blob/main/backend/openapi/beeos-agent-integration-v1.yaml).
+
+---
+
+## 6. Cross-protocol consistency — what holds across A2A / MCP / OpenAPI
+
+The same BeeOS agent reached through A2A, MCP, or OpenAPI returns
+the **same `agent_reply` text** for the same input. That is by
+construction: all three surfaces translate to the identical
+`chat_message` envelope on the agent's Message Service channel
+(see [Public Architecture Overview](/architecture/public-overview)).
+The fields that differ:
+
+| | A2A | MCP | OpenAPI |
+|---|---|---|---|
+| Discovery vocabulary | agent card (`skills[]`) | `tools/list` | `GET /api/v1/agents` |
+| Auth credential | `bak_` / JWT | `bak_` / `oag_` / OAuth | `oag_` / JWT |
+| Task lifecycle | Native (`task_id` + state machine) | Implicit (one call) | Native (`POST /tasks`) |
+| Streaming | A2A `message/stream` SSE | `notifications/progress` | SSE on `POST /agents/{id}/invoke` |
+| Webhook | `pushNotificationConfig` | n/a | `POST /tasks/{id}/webhooks` |
+| Cancel | `tasks/cancel` | n/a (drop the call) | `POST /tasks/{id}/cancel` |
+
+A2A's strength is **federation** — you reach the agent without
+adopting BeeOS-specific SDKs, and your platform doesn't need an
+OAuth user-consent flow. The trade-off is that the agent owner
+must mint a `bak_` for you out-of-band.
+
+---
+
+## 7. Webhooks (push notifications)
+
+A2A push notifications on BeeOS go through the same delivery
+worker as OpenAPI webhooks. That means you get:
+
+- HMAC-SHA256 signing via the `secret` field (recommended;
+  bearer-token-only mode is still supported).
+- Exponential-backoff retries (1m / 5m / 30m / 2h / 12h) with a
+  6-attempt cap before dead-letter.
+- A per-attempt delivery audit log queryable via OpenAPI
+  (`GET /api/v1/agents/{agentId}/tasks/{taskId}/webhooks/{webhookId}/deliveries`).
+- Manual redelivery via
+  `POST /api/v1/agents/{agentId}/tasks/{taskId}/webhooks/{webhookId}/deliveries/{deliveryId}/redeliver`.
+
+See [Webhooks](/guides/webhooks) for the verification recipes and
+the delivery contract.
+
+---
+
+## 8. Common failure modes
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| `401` on JSON-RPC after `bak_` works on agent card | Key revoked or scoped to a different agent. | Re-mint `bak_` from the agent owner. |
+| `404 agent_not_found` | The agent's `visibility=PRIVATE` and your caller isn't the owner. | Ask the owner to set `visibility=UNLISTED` (link-only) or `PUBLIC`. |
+| `agent_offline` in the JSON-RPC reply | Push-mode agent pod has no live Message Service subscription. | Owner checks `GET /api/v1/instances` — the pod likely needs restart. Queue-mode agents don't have this failure. |
+| `task_not_found` on `tasks/resubscribe` | Task was reaped after terminal-state retention window. | Pull the final state from the webhook delivery (if configured) or accept the disconnect. |
+| Rate-limit error with `Retry-After: 60` | Per-key per-agent quota exhausted. | Back off and resume; if sustained, request a higher quota tier from the owner. |
+| `Unsupported A2A-Version` on agent card | You sent `A2A-Version: 0.2`. | The gateway supports `1.0` and `0.3` today. |
+
+---
+
+## 9. End-to-end example — Python A2A SDK
+
+```python
+import asyncio
+from a2a.client import Client, Card
+
+async def main():
+    # 1. Discover the agent card (public)
+    card = await Card.from_url("https://a2a.beeos.ai/agent_abc123/.well-known/agent-card.json")
+    print(card.name, card.description)
+
+    # 2. Build a client with the bak_ the owner gave you
+    client = Client.from_card(
+        card,
+        auth={"x-agent-api-key": "bak_XXXXXXXXXXXXXXXX"},
+    )
+
+    # 3. Send a message and stream the reply
+    async for event in client.send_message_stream("List the open PRs in heat/openagent"):
+        if event.type == "message":
+            print(event.text, end="", flush=True)
+        elif event.type == "task" and event.status.state == "completed":
+            print("\n[task completed]", event.id)
+
+asyncio.run(main())
+```
+
+The same flow works against any A2A-compliant agent platform; the
+only BeeOS-specific bit is the `bak_` header value.
+
+---
+
+## 10. See also
+
+- [Choosing a Protocol](/guides/choosing-a-protocol) — when A2A
+  is the right surface vs. OpenAPI / MCP.
+- [Authentication & API Keys](/authentication) — `bak_`
+  lifecycle, rotation, scopes.
+- [Webhooks](/guides/webhooks) — HMAC signing, retries, delivery
+  log; shared between OpenAPI and A2A push notifications.
+- [Error Reference](/reference/errors) — wire codes the
+  A2A JSON-RPC `error.data` envelope can carry.
+- [Public Architecture Overview](/architecture/public-overview)
+  — how A2A relates to the other two caller surfaces.
+- [`backend/services/a2a-gateway/README.md`](https://github.com/beeos-ai/openagent/blob/main/backend/services/a2a-gateway/README.md)
+  — service-side README (env vars, local dev, deployment).
+- [A2A Protocol v1.0](https://agent-to-agent.org) — canonical
+  upstream spec.

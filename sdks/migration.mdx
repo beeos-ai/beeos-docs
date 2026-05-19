@@ -1,0 +1,365 @@
+---
+title: SDK Migration
+description: "Upgrade paths between @beeos-ai/sdk versions (0.3.x → 0.4.x and beyond), plus hand-rolled HTTP migration recipes."
+---
+
+<Note>
+Audience: developers upgrading `@beeos-ai/sdk` (TypeScript) or
+`github.com/beeos-ai/sdk-go` (Go) between major or minor
+versions. This guide is **wire-only** — the codegen tooling
+(`openapi-generator-cli` + the configs in
+[`sdks/openapi-sdk/`](https://github.com/beeos-ai/openagent/blob/main/sdks/openapi-sdk/)) is not
+documented here, only the changes consumers see.
+</Note>
+
+Each section covers one upgrade path. Within a section the
+recipes are stable: TS first, then Go, then "if you wrote
+custom HTTP code, do this instead". Cross-link to
+[`docs/CHANGELOG.md`](/sdks/changelog) for the full machine-
+readable list of changes; this file is the human walkthrough.
+
+Both SDKs share **one version line**. When you bump the TS
+package you MUST bump the Go module to the same tag in the same
+release. Don't mix them — that's how you end up calling a route
+on one SDK that doesn't exist on the other.
+
+---
+
+## Quick choose-your-path
+
+| You're on | Read this section |
+|---|---|
+| `0.3.x` and earlier (pre-webhook-signing) | [§ 1 — 0.3 → 0.4](#1-03--04) and [§ 2 — 0.4 → unreleased](#2-04--unreleased) |
+| `0.4.x` (today's published) | [§ 2 — 0.4 → unreleased](#2-04--unreleased) |
+| Hand-rolled `fetch`/`net/http` directly against `openapi.beeos.ai` | [§ 3 — hand-rolled HTTP → SDK](#3-hand-rolled-http--sdk) |
+| Migrating off `0.2.x` (pre-BFF decoupling) | [§ 4 — 0.2.x → 0.4.x](#4-02x--04x) |
+
+---
+
+## 1. `0.3.x` → `0.4.x`
+
+`0.4` is the first time the SDKs were stamped from the
+decoupled openapi-gateway BFF (ADR-001). The wire is almost a
+superset of `0.3`, with **one breaking change**:
+
+### 1.1 BREAKING — `SendMessageResponse.offset` removed
+
+The field was a misleading placeholder. The actual offset is
+opaque inside the `since` cursor returned by the same response.
+
+**TS — before**:
+
+```ts
+const res = await api.sendMessage({ /* … */ });
+const nextOffset = res.offset + 1;          // ❌ removed
+```
+
+**TS — after**:
+
+```ts
+const res = await api.sendMessage({ /* … */ });
+// Use res.cursor as opaque; pass back as `since` on the next read:
+const events = await api.streamConversationEvents({
+  conversationId: convoId,
+  since: res.cursor,
+});
+```
+
+**Go — before**:
+
+```go
+resp, _, _ := api.SendMessage(ctx, /* … */).Execute()
+nextOffset := resp.Offset + 1   // ❌ field removed
+```
+
+**Go — after**:
+
+```go
+resp, _, _ := api.SendMessage(ctx, /* … */).Execute()
+events, _, _ := api.StreamConversationEvents(ctx, convoID).
+    Since(resp.GetCursor()).
+    Execute()
+```
+
+### 1.2 Added — `idempotency_key` on `invoke`
+
+Optional. Old callers keep working; **new** callers should set
+it on any operation that retries on transient failure:
+
+```ts
+await api.invokeAgent({
+  agentId: "agent_abc",
+  invokeAgentRequest: {
+    message: "Run nightly report",
+    idempotencyKey: crypto.randomUUID(),   // re-submitting with the
+                                           // same key is safe.
+  },
+});
+```
+
+If the same key arrives twice within the dedup window, the
+second call returns the first call's reply. See
+[Calling Agents § Idempotency](/guides/calling-agents#5-idempotency).
+
+### 1.3 Added — `TaskResponse.truncated`
+
+Optional boolean. If the task's event log exceeded the
+1 000-message scan cap, this is `true` and the returned event
+list may not be exhaustive. Old code can ignore the field;
+new code should display a "scroll back further" UI hint:
+
+```ts
+const task = await api.getTask({ agentId, taskId });
+if (task.truncated) {
+  console.warn("Task event log truncated — fetch with since=<cursor> for more");
+}
+```
+
+### 1.4 Added — `PushNotificationConfig.protocol_filter`
+
+When you register a webhook via the OpenAPI surface, the
+gateway stamps `protocol_filter="openapi"` automatically. When
+you register via A2A's `pushNotificationConfig/set`, it gets
+`protocol_filter="a2a"`. Lets you have **one** receiver URL
+behind **multiple** filtered subscriptions (e.g. only OpenAPI
+events, not A2A federation events).
+
+No breaking change — old clients ignored this field; new
+clients can use it for filtering.
+
+---
+
+## 2. `0.4.x` → Unreleased (current main)
+
+The Unreleased entries below ship together in the next minor
+release. None are breaking.
+
+### 2.1 Webhook HMAC signing — opt-in but recommended
+
+Set `secret` when registering a webhook and every delivery
+ships an `X-BeeOS-Signature` header. The wire response only
+returns `has_secret: true`; the raw secret is never echoed.
+
+**TS — register with signing**:
+
+```ts
+const wh = await api.registerTaskWebhook({
+  agentId,
+  taskId,
+  registerTaskWebhookRequest: {
+    url: "https://my-app.example.com/beeos-webhook",
+    token: "my-bearer-token",          // optional, still supported
+    secret: "wh_sec_" + crypto.randomUUID(),  // NEW — opt-in HMAC
+  },
+});
+// wh.hasSecret === true; wh.secret is NOT returned.
+```
+
+Verify on receipt (Node):
+
+```ts
+import { createHmac, timingSafeEqual } from "node:crypto";
+
+const expected = createHmac("sha256", secret)
+  .update(rawBody)
+  .digest("hex");
+const got = (req.headers["x-beeos-signature"] as string)
+  .replace(/^sha256=/, "");
+if (!timingSafeEqual(Buffer.from(expected), Buffer.from(got))) {
+  res.status(401).end();
+  return;
+}
+```
+
+See [Webhooks § 6 HMAC signing](/guides/webhooks#6-hmac-signing-p2-a)
+for the Python variant and the full delivery contract.
+
+### 2.2 Webhook delivery audit log + manual replay
+
+Two new endpoints:
+
+- `GET .../webhooks/{webhookId}/deliveries?limit=50` — last N
+  per-attempt rows.
+- `POST .../webhooks/{webhookId}/deliveries/{deliveryId}/redeliver`
+  — re-queue a `failed` / `dead_letter` row immediately.
+
+```ts
+const deliveries = await api.listWebhookDeliveries({
+  agentId, taskId, webhookId,
+});
+const failed = deliveries.deliveries.filter(d => d.status === "failed");
+for (const d of failed) {
+  await api.redeliverWebhook({
+    agentId, taskId, webhookId, deliveryId: d.deliveryId,
+  });
+}
+```
+
+### 2.3 `GET /api/v1/tasks` — cross-agent inbox
+
+Previously you had to call `GET /agents/{id}/tasks` once per
+agent to assemble a multi-agent inbox. Now:
+
+```ts
+const inbox = await api.listUserTasks({
+  limit: 50,
+  // optional filter: agentId: "agent_abc",
+});
+```
+
+Pages with `since` (offset cursor).
+
+### 2.4 `attachments[].file_id` on invoke / tasks / conversations
+
+Replace the old "stuff the binary in `message`" workflow with:
+
+```ts
+const presign = await api.presignUpload({
+  presignUploadRequest: {
+    contentType: "image/png",
+    contentLengthBytes: file.size,
+  },
+});
+await fetch(presign.uploadUrl, { method: "PUT", body: file });
+
+await api.invokeAgent({
+  agentId,
+  invokeAgentRequest: {
+    message: "Caption this image",
+    attachments: [{ fileId: presign.fileId }],
+  },
+});
+```
+
+Old "no attachments" callers keep working — the field is
+optional.
+
+### 2.5 `PATCH /api/v1/agents/{agentId}`
+
+Owner-only update of `visibility` and `mcp_enabled` (whitelist).
+Other fields (`name`, `description`, …) are still synced by the
+agent process via `POST /api/v1/agents/sync` — patching them
+here would be silently overwritten, so the SDK doesn't let you.
+
+```ts
+await api.updateAgent({
+  agentId,
+  updateAgentRequest: {
+    visibility: "PUBLIC",
+    mcpEnabled: true,
+  },
+});
+```
+
+### 2.6 Wire-error envelope tightened
+
+All 4xx / 5xx now follow the canonical envelope (`type`,
+`code`, `message`, `param?`, `request_id`). Old code that only
+inspected the HTTP status keeps working; new code should branch
+on `error.code`. See [Error Reference](/reference/errors).
+
+### 2.7 New error code — `insufficient_scope`
+
+If you mint an `oag_` User API Key with read-only scopes and
+try a write operation, you now get `403 insufficient_scope`
+(previously the call silently succeeded if the underlying user
+was the owner). This is a **wire** change at the boundary
+between "your code worked by accident" and "your code worked
+because the auth model said so".
+
+To fix: re-mint the key with the right scopes (see
+[Auth & API Keys](/authentication#scopes)).
+
+### 2.8 `timeout_ms` clamp on `invoke`
+
+The blocking-invoke timeout is clamped to `[100, 115_000]` ms
+server-side. Passing `timeoutMs: 200_000` no longer hangs your
+connection past the gateway limit — it's clamped to 115s and
+returns `service_timeout` at the clamp. New code should pick a
+realistic value; old code that was *intending* a hang will now
+error out promptly.
+
+---
+
+## 3. Hand-rolled HTTP → SDK
+
+If you've been calling `https://openapi.beeos.ai/api/v1/...`
+with `fetch` / `axios` / `net/http` directly, the migration is
+mostly mechanical:
+
+1. `npm install @beeos-ai/sdk@latest` (or `go get github.com/beeos-ai/sdk-go@latest`).
+2. Construct one `Configuration` with your base URL and
+   `Authorization: Bearer <oag_… | jwt>`:
+   ```ts
+   import { Configuration, AgentsApi, TasksApi } from "@beeos-ai/sdk";
+
+   const cfg = new Configuration({
+     basePath: "https://openapi.beeos.ai",
+     accessToken: process.env.BEEOS_API_KEY,
+   });
+   ```
+3. Replace each route with the corresponding `<Tag>Api` method.
+   The mapping is one-to-one with the `operationId` field in
+   `backend/openapi/beeos-platform-v1.yaml`.
+4. **Error handling.** The SDK throws on non-2xx. Catch and
+   inspect `err.response?.error?.code`:
+   ```ts
+   try {
+     await api.invokeAgent({ /* … */ });
+   } catch (e: any) {
+     const code = e?.response?.error?.code;
+     if (code === "agent_offline") { /* retry */ }
+     else if (code === "rate_limited") { /* back off */ }
+     else throw e;
+   }
+   ```
+5. **SSE.** The TS SDK does NOT abstract SSE today. For
+   streaming endpoints, keep your hand-rolled `EventSource` and
+   point it at the URL returned by the SDK's "build URL"
+   helper, OR use `Accept: text/event-stream` directly on the
+   underlying `fetch`. See [Streaming](/guides/streaming).
+6. **Idempotency.** The SDK does NOT auto-set
+   `idempotency_key`; pass it explicitly on any retry path.
+
+---
+
+## 4. `0.2.x` → `0.4.x`
+
+`0.2` predates the OpenAPI Gateway BFF decoupling (ADR-001).
+The SDK was generated from the **main** Gateway's swagger and
+the route set was broader (and inconsistent — half the routes
+were user-only, half were public).
+
+**Recommended path**: bump straight to `0.4.x`. The route names
+that survived are unchanged; routes that were removed are ones
+that should never have been part of the public SDK in the first
+place (admin endpoints, internal control-plane calls).
+
+If you have stuck callers on `0.2.x`:
+
+1. **First**, audit which routes you actually use. Most consumers
+   were calling 3-5 endpoints out of the 50+ surface.
+2. **Then**, check each against
+   [`backend/openapi/beeos-platform-v1.yaml`](https://github.com/beeos-ai/openagent/blob/main/backend/openapi/beeos-platform-v1.yaml).
+   If it's there, it's still supported. If it isn't, you were
+   on a non-contract route — open an issue and we'll add it (or
+   point you at the right surface).
+3. **Finally**, follow § 1 + § 2 above for the wire deltas.
+
+There is no programmatic migration tool — the changes are
+small enough that find/replace + a unit-test pass covers it.
+
+---
+
+## See also
+
+- [`docs/CHANGELOG.md`](/sdks/changelog) — the canonical list of
+  what changed in each version.
+- [`sdks/openapi-sdk/generate.sh`](https://github.com/beeos-ai/openagent/blob/main/sdks/openapi-sdk/generate.sh)
+  — where the version stamps live.
+- [`backend/docs/adr/001-openapi-gateway-bff.md`](https://github.com/beeos-ai/openagent/blob/main/backend/docs/adr/001-openapi-gateway-bff.md)
+  — the rationale for the `0.4.x` "fresh start".
+- [`docs/reference/errors.md`](/reference/errors) — the
+  full `code` table for typed error handling.
+- [`docs/guides/auth-api-keys.md`](/authentication) — credential
+  matrix for the `insufficient_scope` change.

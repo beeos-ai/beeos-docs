@@ -1,27 +1,32 @@
 ---
 title: Go SDK
-description: Install and use the github.com/beeos-ai/sdk-go Go client.
+description: "Install and use github.com/beeos-ai/sdk-go — the auto-generated Go client for the BeeOS OpenAPI."
 ---
 
-The Go SDK is an auto-generated client for the BeeOS Platform API
-(`openapi.beeos.ai`). It covers **instance lifecycle management** and
-**agent invocation** — the core platform operations you need to deploy
-agents and send them messages programmatically.
+The [`github.com/beeos-ai/sdk-go`](https://github.com/beeos-ai/sdk-go)
+module is the canonical Go client for the public BeeOS OpenAPI contract
+served by [`openapi-gateway`](/architecture/public-overview#3-what-each-surface-owns)
+at `openapi.beeos.ai`. It is generated from the same
+[`backend/openapi/beeos-platform-v1.yaml`](https://github.com/beeos-ai/openagent/blob/main/backend/openapi/beeos-platform-v1.yaml)
+that powers this site's API Reference tab.
 
 <Info>
-  The SDK targets the **Platform API** only. The [A2A protocol](/a2a/overview)
-  (`a2a.beeos.ai`) and [MCP protocol](/mcp/overview) (`mcp.beeos.ai`) are
-  separate protocol entry points with their own authentication and are **not**
-  included in this SDK.
+  The SDK targets the **Platform API** only. The
+  [A2A protocol](/a2a/overview) (`a2a.beeos.ai`) and
+  [MCP protocol](/mcp/overview) (`mcp.beeos.ai`) are separate hosts
+  with their own auth — they are **not** wrapped by this module.
 </Info>
 
-## Installation
+## Install
 
 ```bash
-go get github.com/beeos-ai/sdk-go@latest
+go get github.com/beeos-ai/sdk-go
 ```
 
-## Configuration
+Current published version: **v0.4.0** (see
+[SDK Changelog](/sdks/changelog) for wire deltas).
+
+## Configure
 
 ```go
 package main
@@ -29,7 +34,7 @@ package main
 import (
     "context"
     "fmt"
-    "net/http"
+    "os"
 
     beeos "github.com/beeos-ai/sdk-go"
 )
@@ -39,29 +44,18 @@ func main() {
     cfg.Servers = beeos.ServerConfigurations{
         {URL: "https://openapi.beeos.ai"},
     }
-    cfg.HTTPClient = &http.Client{
-        Transport: &authTransport{
-            key:  "oag_YOUR_KEY",
-            base: http.DefaultTransport,
-        },
-    }
+    cfg.DefaultHeader["Authorization"] = "Bearer " + os.Getenv("BEEOS_API_KEY")
 
     client := beeos.NewAPIClient(cfg)
     ctx := context.Background()
 
-    // Use client...
-    _ = ctx
-    _ = client
-}
-
-type authTransport struct {
-    key  string
-    base http.RoundTripper
-}
-
-func (t *authTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-    req.Header.Set("Authorization", "Bearer "+t.key)
-    return t.base.RoundTrip(req)
+    providers, _, err := client.DeployAPI.ListProviders(ctx).Execute()
+    if err != nil {
+        panic(err)
+    }
+    for _, p := range providers.GetData() {
+        fmt.Printf("%s — %s\n", p.Meta.GetId(), p.Meta.GetName())
+    }
 }
 ```
 
@@ -71,160 +65,243 @@ func (t *authTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 ## Catalog
 
-### List providers
+```go
+providers, _, _ := client.DeployAPI.ListProviders(ctx).Execute()
+
+regions, _, _ := client.DeployAPI.ListDeployRegions(ctx).
+    ProviderId("default").Execute()
+
+models, _, _ := client.DeployAPI.ListDeployModels(ctx).
+    AgentFramework("beeos-claw").Execute()
+```
+
+## Instance lifecycle
 
 ```go
-providers, _, err := client.DeployAPI.ListProviders(ctx).Execute()
-if err != nil {
-    log.Fatal(err)
+req := beeos.DeployInstanceRequest{
+    Name:           "my-agent",
+    AgentFramework: "beeos-claw",
+    ModelPrimary:   "gpt-4o",
 }
-for _, p := range providers.Data {
-    fmt.Println(p.Meta.Id, p.Meta.Name)
-}
+created, _, _ := client.InstancesAPI.DeployInstance(ctx).
+    DeployInstanceRequest(req).Execute()
+
+instanceID := created.GetData().GetId()
+
+inst, _, _ := client.InstancesAPI.GetInstance(ctx, instanceID).Execute()
+
+client.InstancesAPI.StartInstance(ctx, instanceID).Execute()
+client.InstancesAPI.StopInstance(ctx, instanceID).Execute()
+client.InstancesAPI.RestartInstance(ctx, instanceID).Execute()
+client.InstancesAPI.DestroyInstance(ctx, instanceID).Execute()
 ```
 
-### List regions
+`ListInstances` supports pagination + status filter:
 
 ```go
-regions, _, err := client.DeployAPI.ListDeployRegions(ctx).
-    ProviderId("default").
-    Execute()
-```
-
-### List deploy models
-
-```go
-models, _, err := client.DeployAPI.ListDeployModels(ctx).
-    AgentFramework("beeos-claw").
-    Execute()
-```
-
-## Instances
-
-### Deploy an instance
-
-```go
-inst, _, err := client.InstancesAPI.DeployInstance(ctx).
-    DeployInstanceRequest(beeos.DeployInstanceRequest{
-        Name:           "my-agent",
-        AgentFramework: beeos.PtrString("beeos-claw"),
-        ModelPrimary:   beeos.PtrString("gpt-4o"),
-    }).
-    Execute()
-
-fmt.Println("ID:", inst.Data.Id, "Status:", inst.Data.Status)
-```
-
-### List instances
-
-```go
-list, _, err := client.InstancesAPI.ListInstances(ctx).
-    Page(0).
-    PageSize(20).
-    Status("running").
-    Execute()
-
-for _, inst := range list.Data {
-    fmt.Println(inst.Id, inst.Name, inst.Status)
-}
-```
-
-### Get instance
-
-```go
-inst, _, err := client.InstancesAPI.GetInstance(ctx, "inst_abc123").Execute()
-```
-
-### Lifecycle operations
-
-```go
-_, _, _ = client.InstancesAPI.StartInstance(ctx, "inst_abc123").Execute()
-_, _, _ = client.InstancesAPI.StopInstance(ctx, "inst_abc123").Execute()
-_, _, _ = client.InstancesAPI.RestartInstance(ctx, "inst_abc123").Execute()
-_, _, _ = client.InstancesAPI.DestroyInstance(ctx, "inst_abc123").Execute()
+list, _, _ := client.InstancesAPI.ListInstances(ctx).
+    Page(0).PageSize(20).Status("running").Execute()
 ```
 
 ## Agents
 
-### List agents
-
 ```go
-agents, _, err := client.AgentsAPI.ListAgents(ctx).
-    InstanceId("inst_abc123").
-    Limit(20).
-    Execute()
-if err != nil {
-    log.Fatal(err)
-}
-for _, a := range agents.Data {
-    fmt.Println(a.Id, a.Name, a.Status)
-}
+list, _, _ := client.AgentsAPI.ListAgents(ctx).
+    InstanceId(instanceID).Limit(20).Execute()
+
+agent, _, _ := client.AgentsAPI.GetAgent(ctx, "agent_abc123").Execute()
+
+patchReq := beeos.PatchAgentRequest{Visibility: beeos.PtrString("public")}
+_, _, _ = client.AgentsAPI.PatchAgent(ctx, agent.GetData().GetId()).
+    PatchAgentRequest(patchReq).Execute()
 ```
 
-### Get agent details
+### Invoke (blocking)
+
+See [Calling agents](/guides/calling-agents) for the full contract.
 
 ```go
-agent, _, err := client.AgentsAPI.GetAgent(ctx, "agent_abc123").Execute()
-if err != nil {
-    log.Fatal(err)
+req := beeos.InvokeAgentRequest{
+    Message: "Hello, what can you do?",
 }
-fmt.Println(agent.Data.Name, agent.Data.Visibility)
-```
-
-### Invoke an agent (blocking)
-
-```go
 reply, _, err := client.AgentsAPI.InvokeAgent(ctx, "agent_abc123").
-    InvokeAgentRequest(beeos.InvokeAgentRequest{
-        Message: "Hello, what can you do?",
-    }).
-    Execute()
+    InvokeAgentRequest(req).Execute()
 if err != nil {
-    log.Fatal(err)
+    // see "Error handling" below
 }
-fmt.Println(reply.Data.Reply)
+fmt.Println("Reply:", reply.GetData().GetReply())
+fmt.Println("Channel:", reply.GetData().GetContextId())
 ```
 
-### Invoke with streaming (raw HTTP)
+### Invoke with idempotency + attachments (0.4.0)
 
 ```go
-body := strings.NewReader(`{"message":"Hello!"}`)
-req, _ := http.NewRequest("POST",
-    "https://openapi.beeos.ai/api/v1/agents/agent_abc123/invoke", body)
-req.Header.Set("Authorization", "Bearer oag_YOUR_KEY")
+req := beeos.InvokeAgentRequest{
+    Message:        "Summarize the attached PDF.",
+    IdempotencyKey: beeos.PtrString("user_42:summarize_q3_report"),
+    Attachments: []beeos.Attachment{
+        {FileId: "file_abc123", Filename: beeos.PtrString("q3-report.pdf")},
+    },
+    Metadata: map[string]interface{}{"campaign": "marketing-q3"},
+}
+reply, _, _ := client.AgentsAPI.InvokeAgent(ctx, "agent_abc123").
+    InvokeAgentRequest(req).Execute()
+```
+
+`IdempotencyKey` makes the call safe to retry within the TTL window
+(see [ADR 0021](https://github.com/beeos-ai/openagent/blob/main/backend/docs/adr/0021-idempotency-key-ttl.md)).
+
+### Streaming invoke (SSE)
+
+The SDK does not abstract SSE — use `net/http` directly. See
+[Streaming](/guides/streaming) for frame shapes.
+
+```go
+import (
+    "bufio"
+    "net/http"
+    "strings"
+)
+
+req, _ := http.NewRequestWithContext(ctx, "POST",
+    "https://openapi.beeos.ai/api/v1/agents/agent_abc123/invoke",
+    strings.NewReader(`{"message":"Tell me a long story."}`))
+req.Header.Set("Authorization", "Bearer "+os.Getenv("BEEOS_API_KEY"))
 req.Header.Set("Content-Type", "application/json")
 req.Header.Set("Accept", "text/event-stream")
 
-resp, err := http.DefaultClient.Do(req)
-if err != nil {
-    log.Fatal(err)
-}
+resp, _ := http.DefaultClient.Do(req)
 defer resp.Body.Close()
-
 scanner := bufio.NewScanner(resp.Body)
 for scanner.Scan() {
     fmt.Println(scanner.Text())
 }
 ```
 
-## Error handling
+## Tasks (async invocation)
 
 ```go
-inst, resp, err := client.InstancesAPI.GetInstance(ctx, "nonexistent").Execute()
-if err != nil {
-    if resp != nil {
-        fmt.Println("HTTP status:", resp.StatusCode)
+createReq := beeos.CreateTaskRequest{
+    Message:        "Run the full Q3 audit.",
+    IdempotencyKey: beeos.PtrString("audit_q3_2026"),
+}
+created, _, _ := client.TasksAPI.CreateTask(ctx, "agent_abc123").
+    CreateTaskRequest(createReq).Execute()
+taskID := created.GetData().GetTaskId()
+
+// Poll
+for {
+    task, _, _ := client.TasksAPI.GetTask(ctx, "agent_abc123", taskID).Execute()
+    status := task.GetData().GetStatus()
+    if status == "completed" || status == "failed" {
+        break
     }
-    fmt.Println("Error:", err)
+    time.Sleep(2 * time.Second)
+}
+
+// Or list cross-agent (new in 0.4.0)
+all, _, _ := client.TasksAPI.ListUserTasks(ctx).State("running").Limit(50).Execute()
+
+// Cancel
+client.TasksAPI.CancelTask(ctx, "agent_abc123", taskID).Execute()
+```
+
+Webhook registration (HMAC-signed deliveries):
+
+```go
+hookReq := beeos.RegisterTaskWebhookRequest{
+    Url:    "https://example.com/hooks/beeos",
+    Secret: beeos.PtrString("whsec_…"),
+    Events: []string{"completed", "failed", "cancelled"},
+}
+_, _, _ = client.TasksAPI.RegisterTaskWebhook(ctx, "agent_abc123", taskID).
+    RegisterTaskWebhookRequest(hookReq).Execute()
+```
+
+Delivery history + replay (new in 0.4.0 — see
+[Webhooks](/guides/webhooks)):
+
+```go
+deliveries, _, _ := client.TasksAPI.ListWebhookDeliveries(ctx,
+    "agent_abc123", taskID, "wh_abc123").Execute()
+
+_, _, _ = client.TasksAPI.RedeliverWebhook(ctx,
+    "agent_abc123", taskID, "wh_abc123", "del_xyz").Execute()
+```
+
+## Conversations
+
+```go
+conv, _, _ := client.ConversationsAPI.CreateConversation(ctx, "agent_abc123").
+    CreateConversationRequest(beeos.CreateConversationRequest{
+        Title: beeos.PtrString("Quarterly planning"),
+    }).Execute()
+
+_, _, _ = client.ConversationsAPI.SendConversationMessage(ctx,
+    "agent_abc123", conv.GetData().GetId()).
+    SendConversationMessageRequest(beeos.SendConversationMessageRequest{
+        Message: "Start the planning session.",
+    }).Execute()
+
+msgs, _, _ := client.ConversationsAPI.ListConversationMessages(ctx,
+    "agent_abc123", conv.GetData().GetId()).Since(0).Execute()
+```
+
+## Files
+
+```go
+presignReq := beeos.PresignUploadRequest{
+    Filename:    "report.pdf",
+    ContentType: "application/pdf",
+    SizeBytes:   4_582_910,
+}
+presigned, _, _ := client.FilesAPI.PresignUpload(ctx).
+    PresignUploadRequest(presignReq).Execute()
+
+// Upload bytes to the returned signed URL with PUT...
+// Later, fetch metadata + a fresh download URL:
+meta, _, _ := client.FilesAPI.PresignDownload(ctx, presigned.GetData().GetFileId()).Execute()
+```
+
+Use the `file_id` in `Attachments` on `InvokeAgentRequest` or
+`CreateTaskRequest`.
+
+## Error handling
+
+Non-2xx responses return a `*GenericOpenAPIError` that wraps the
+BeeOS error envelope:
+
+```go
+import (
+    "encoding/json"
+    "errors"
+)
+
+type beeosError struct {
+    Success bool `json:"success"`
+    Error   struct {
+        Code    string `json:"code"`
+        Message string `json:"message"`
+    } `json:"error"`
+}
+
+if _, _, err := client.InstancesAPI.GetInstance(ctx, "nope").Execute(); err != nil {
+    var apiErr *beeos.GenericOpenAPIError
+    if errors.As(err, &apiErr) {
+        var body beeosError
+        _ = json.Unmarshal(apiErr.Body(), &body)
+        fmt.Printf("api error: %s — %s\n", body.Error.Code, body.Error.Message)
+    }
 }
 ```
 
+See [Error reference](/reference/errors) for the full code list.
+
 ## Source and generation
 
-The SDK is auto-generated from
-[`beeos-platform-v1.yaml`](https://github.com/beeos-ai/openagent/blob/main/backend/openapi/beeos-platform-v1.yaml)
-using OpenAPI Generator (`go`). The published module mirrors the generated
-output from the monorepo.
+Generated from the same OpenAPI spec as the TypeScript SDK
+([`sdks/openapi-sdk/generate.sh`](https://github.com/beeos-ai/openagent/blob/main/sdks/openapi-sdk/generate.sh)).
+Wire-level changes: [SDK Changelog](/sdks/changelog). Version
+migration: [SDK Migration](/sdks/migration).
 
-- **Go module:** `github.com/beeos-ai/sdk-go`
-- **GitHub:** [beeos-ai/sdk-go](https://github.com/beeos-ai/sdk-go)
+- GitHub: [`beeos-ai/sdk-go`](https://github.com/beeos-ai/sdk-go)

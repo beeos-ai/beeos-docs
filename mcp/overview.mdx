@@ -1,82 +1,188 @@
 ---
-title: MCP Overview
-description: Expose BeeOS agents as MCP tool servers for Claude, ChatGPT, Cursor, and more.
+title: MCP Gateway
+description: "Model Context Protocol entry at mcp.beeos.ai — tools/list, tools/call, OAuth 2.1 + PKCE for spec-compliant clients."
 ---
 
-The **Model Context Protocol (MCP)** integration lets external AI platforms
-discover and invoke BeeOS agent skills as standard MCP tools. Any platform
-that supports MCP Streamable HTTP transport can connect — including Claude
-Desktop, ChatGPT, Cursor, n8n, and MCP Inspector.
+<Note>
+Audience: developers integrating BeeOS agents into an LLM tool
+host — Claude Desktop, Cursor, OpenAI's MCP support, n8n, MCP
+Inspector, or any [Model Context Protocol](https://modelcontextprotocol.io)
+client.
+</Note>
 
-## Architecture
+The MCP Gateway turns every MCP-enabled BeeOS agent into a
+spec-compliant MCP tool server. From the host's point of view it
+looks like any other MCP endpoint: discover tools, call them,
+optionally stream responses. From your side as the agent owner it's
+"flip `mcp_enabled=true` on the agent and you're done."
 
-```mermaid
-flowchart LR
-    Claude["Claude Desktop"] -->|OAuth 2.1| MCPGW["MCP Gateway"]
-    Cursor["Cursor IDE"] -->|bak_ / oag_| MCPGW
-    N8N["n8n"] -->|bak_| MCPGW
+For the decision of *whether* MCP is the right surface (vs.
+OpenAPI or A2A), see
+[Choosing a Protocol](/guides/choosing-a-protocol). This guide
+covers MCP-specific integration once you've made that choice.
 
-    MCPGW -->|tools/list| AgentID["Agent Identity"]
-    MCPGW -->|tools/call via chatinvoke| MS["Message Service"]
-    MS --> Agent["Agent Pod"]
-    Agent --> MS
-    MS -->|reply| MCPGW
-    MCPGW -->|response| Claude
-```
+---
 
-## MCP endpoint
+## 1. Where it lives
 
-```
-POST https://mcp.beeos.ai/{agentId}/mcp
-```
+| Item | Value |
+|---|---|
+| **Host** | `https://mcp.beeos.ai` |
+| **MCP endpoint shape** | `POST /{agentId}/mcp` |
+| **Transport** | Streamable HTTP (JSON-RPC 2.0 over HTTP, SSE for streaming) |
+| **OAuth metadata** | `GET /.well-known/oauth-authorization-server` |
+| **Protected resource metadata** | `GET /.well-known/oauth-protected-resource` |
+| **Health probe** | `GET /healthz` |
 
-This is a Streamable HTTP endpoint accepting JSON-RPC 2.0 requests per the
-MCP specification.
+Local development: the gateway listens on `http://localhost:8094`
+with the same path shape; see
+[`backend/services/mcp-gateway/README.md`](https://github.com/beeos-ai/openagent/blob/main/backend/services/mcp-gateway/README.md)
+for the goreman wiring.
 
-## Authentication
+The agent ID in the URL pins each MCP session to one BeeOS agent.
+A single MCP host can mount multiple BeeOS agents by registering
+multiple endpoints with different `{agentId}` segments.
 
-The MCP endpoint accepts three credential types (in priority order):
+---
 
-| Method | Header | Best for |
-|--------|--------|----------|
-| Agent API Key | `X-Agent-API-Key: bak_...` | Per-agent third-party integrations |
-| User API Key | `Authorization: Bearer oag_...` | Scripts, CI, automation acting as a user |
-| OAuth 2.1 Bearer | `Authorization: Bearer <JWT>` | Spec-compliant MCP clients (Claude Desktop) |
+## 2. Authentication — three credentials, one endpoint
 
-See [MCP OAuth](/mcp/oauth) for the full OAuth 2.1 + PKCE flow.
+`/{agentId}/mcp` accepts **three** credential types. Pick the one
+that matches your client's identity model.
 
-## Quick start
+| Credential | Header | Best for | Scope |
+|---|---|---|---|
+| **OAuth 2.1 Bearer** (HS256 JWT from `/oauth/token`) | `Authorization: Bearer <jwt>` | Spec-compliant MCP clients (Claude Desktop, MCP Inspector) | Per-session, agent set granted at consent time |
+| **User API Key** (`oag_…`) | `Authorization: Bearer oag_…` | Scripts, CI, n8n acting as a BeeOS user | All MCP-enabled agents the user owns |
+| **Agent API Key** (`bak_…`) | `X-Agent-API-Key: bak_…` or `Authorization: Bearer bak_…` | Third-party integrations bound to a single agent | One agent (the URL's `{agentId}` MUST match) |
 
-### List available tools
+The fixed priority order is OAuth → User → Agent. Sending two
+**different** credentials (e.g. `Authorization: Bearer oag_…` plus
+`X-Agent-API-Key: bak_…` with a different value) returns `401`.
+Sending the same `bak_` in both `Authorization` and
+`X-Agent-API-Key` for a stubborn proxy is fine.
+
+For credential rotation and revocation, see
+[Authentication & API Keys](/authentication).
+
+### 2.1 OAuth 2.1 flow (spec-compliant MCP clients)
+
+Claude Desktop / Cursor / MCP Inspector use Dynamic Client
+Registration (DCR) + Authorization Code + PKCE per the
+[MCP Authorization spec](https://spec.modelcontextprotocol.io/specification/server/authorization/):
+
+1. Client POSTs `/oauth/register` → `{client_id, …}`.
+2. Client opens browser at
+   `/oauth/authorize?client_id=…&code_challenge=…&redirect_uri=…&state=…`.
+3. MCP Gateway redirects to BeeOS web login
+   (`MCP_WEB_LOGIN_URL/mcp-login?return_to=…`).
+4. User signs into BeeOS, picks which agents to grant.
+5. Web app redirects back to MCP Gateway, gateway redirects to
+   `redirect_uri` with `?code=…&state=…`.
+6. Client POSTs `/oauth/token` with `code_verifier` → access token.
+7. Client uses token on `/{agentId}/mcp` from then on.
+
+You don't usually code this manually — Claude Desktop, MCP
+Inspector, and similar tools handle DCR + PKCE automatically.
+What you DO need to make sure of:
+
+- Your BeeOS user account has at least one **MCP-enabled** agent
+  (`mcp_enabled=true`). Check with
+  `GET /api/v1/agents` on the OpenAPI surface — the `mcp_enabled`
+  field surfaces in the catalog response.
+- Your client's `redirect_uri` is reachable from a browser (the
+  authorization-code redirect can't go to a non-routable host).
+- For local dev: `MCP_PUBLIC_URL=http://localhost:8094` is in the
+  gateway's env, and the web app at `localhost:3000` exposes a
+  `/mcp-login` route.
+
+### 2.2 API-key-only flow (n8n, scripts, CI)
+
+For non-interactive callers, skip the OAuth flow entirely and use
+an `oag_` (User API Key) or `bak_` (Agent API Key) as a bearer
+credential:
 
 ```bash
-curl -s -X POST "https://mcp.beeos.ai/${AGENT_ID}/mcp" \
-  -H "X-Agent-API-Key: bak_YOUR_KEY" \
+# n8n / CI: list this user's MCP-enabled agents
+curl -X POST https://mcp.beeos.ai/<agentId>/mcp \
+  -H "Authorization: Bearer oag_XXXXXXXXXXXXXXXX" \
   -H "Content-Type: application/json" \
-  -d '{
-    "jsonrpc": "2.0",
-    "id": 1,
-    "method": "tools/list"
-  }' | jq
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+
+# Third-party app bound to ONE agent
+curl -X POST https://mcp.beeos.ai/<agentId>/mcp \
+  -H "X-Agent-API-Key: bak_XXXXXXXXXXXXXXXX" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
 ```
 
-Response:
+`bak_` is the right choice for third-party apps because:
+- The key is bound to ONE agent — losing the key compromises only
+  that integration, not your whole user account.
+- It can be revoked independently of your `oag_` keys.
+- The agent owner (you) explicitly issued it, so consent is
+  audit-traceable.
+
+---
+
+## 3. What each MCP method does
+
+The gateway implements four JSON-RPC methods. All requests are
+POST to `/{agentId}/mcp`; responses are JSON-RPC 2.0 envelopes.
+
+### 3.1 `initialize`
+
+Standard MCP handshake. The gateway returns its protocol version
+and capabilities. Clients that auto-reconnect should re-issue
+this on every session start.
 
 ```json
 {
   "jsonrpc": "2.0",
   "id": 1,
+  "method": "initialize",
+  "params": {
+    "protocolVersion": "2024-11-05",
+    "capabilities": { "tools": {} },
+    "clientInfo": { "name": "claude-desktop", "version": "0.7.0" }
+  }
+}
+```
+
+### 3.2 `tools/list`
+
+Enumerates the **single** BeeOS agent reachable through this
+endpoint as one tool. The tool's name, description, and input
+schema come from the agent's
+[Agent Card](/architecture/public-overview#3-what-each-surface-owns)
+(`pkg/agentcard` resolves it).
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "tools/list"
+}
+```
+
+Response (truncated):
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
   "result": {
     "tools": [
       {
-        "name": "web_search",
-        "description": "Search the web for information",
+        "name": "agent_abc123",
+        "description": "Analyze CSV files and produce a chart.",
         "inputSchema": {
           "type": "object",
           "properties": {
-            "query": {"type": "string", "description": "Search query"}
+            "message": { "type": "string" },
+            "context_id": { "type": "string" }
           },
-          "required": ["query"]
+          "required": ["message"]
         }
       }
     ]
@@ -84,80 +190,156 @@ Response:
 }
 ```
 
-### Call a tool
+The shape is **deliberately uniform** across BeeOS agents — every
+agent looks like a `message → reply` tool to MCP. If your agent
+needs structured input, validate inside the agent process (the
+`message` field is the JSON or natural-language envelope the
+agent expects); MCP itself doesn't model per-agent schemas
+deeply.
 
-```bash
-curl -s -X POST "https://mcp.beeos.ai/${AGENT_ID}/mcp" \
-  -H "X-Agent-API-Key: bak_YOUR_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "jsonrpc": "2.0",
-    "id": 2,
-    "method": "tools/call",
-    "params": {
-      "name": "web_search",
-      "arguments": {"query": "latest AI news"}
-    }
-  }' | jq
-```
+### 3.3 `tools/call`
 
-## Claude Desktop setup
-
-Add this to `~/Library/Application Support/Claude/claude_desktop_config.json`:
+Invokes the agent. Synchronous by default; pass an SSE-capable
+`Accept` header to stream `notifications/progress` events as the
+agent emits `agent_reply_delta`.
 
 ```json
 {
-  "mcpServers": {
-    "beeos-agent": {
-      "transport": "streamable-http",
-      "url": "https://mcp.beeos.ai/YOUR_AGENT_ID/mcp"
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "tools/call",
+  "params": {
+    "name": "agent_abc123",
+    "arguments": {
+      "message": "What's the top-selling SKU last week?",
+      "context_id": "ctx-uuid-optional"
     }
   }
 }
 ```
 
-Claude will automatically walk through the OAuth flow (DCR, authorize,
-token) the first time it connects. After authentication, `tools/list` and
-`tools/call` work transparently.
+Synchronous response:
 
-## How tools/call works under the hood
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "result": {
+    "content": [
+      { "type": "text", "text": "Top SKU last week: BLUE-42 (1,329 units)" }
+    ]
+  }
+}
+```
 
-MCP `tools/call` is a synchronous chat round-trip that uses the same
-`chatinvoke` transport as [A2A REST invoke](/a2a/rest-invoke):
+Streaming response: same JSON-RPC ID, but the gateway writes
+`notifications/progress` events on the SSE stream as the agent
+emits `agent_reply_delta`, then closes with the final `result`.
 
-1. MCP Gateway opens (or reuses) an IM channel via Message Service
-2. The tool call is published as a `chat_message` to the channel
-3. The gateway calls `POST /channels/{id}/wait` to block for the reply
-4. The agent processes the message and publishes an `agent_reply`
-5. The gateway returns the reply as the JSON-RPC result
+### 3.4 `tools/call` cancel
 
-This design means MCP does **not** create A2A task rows and has no
-task-lifecycle overhead.
+The MCP spec doesn't standardise cancel today. If you need
+cancel semantics for a long-running call, use the
+[OpenAPI tasks surface](/guides/calling-agents#3c-async-task) in
+parallel — submit the same work as a BeeOS task and cancel via
+`POST /tasks/{id}/cancel`. The MCP `tools/call` will see the
+agent's terminal state through the underlying Message Service
+channel.
 
-## Supported JSON-RPC methods
+---
 
-| Method | Description |
-|--------|-------------|
-| `tools/list` | List all tools the agent exposes |
-| `tools/call` | Invoke a specific tool |
-| `resources/list` | List available resources |
-| `resources/read` | Read a specific resource |
-| `prompts/list` | List prompt templates |
-| `prompts/get` | Get a specific prompt template |
+## 4. Behavioural contract — what MCP guarantees, what it doesn't
 
-See [Tools](/mcp/tools) and [Resources](/mcp/resources) for detailed method
-documentation.
+**Guaranteed:**
 
-## Next steps
+- `tools/list` is **read-only** and idempotent. Safe to call
+  repeatedly across reconnects.
+- `tools/call` always delivers exactly one `result` (or one
+  `error`) per JSON-RPC ID. Cancellation triggered server-side
+  (deadline, agent crash) surfaces as a JSON-RPC error with a
+  stable `code` from
+  [Error Reference](/reference/errors).
+- The same agent reachable via OpenAPI / A2A is reachable here;
+  responses are bit-identical (same `agent_reply` from the same
+  Message Service channel).
+- Idempotency: pass `params.arguments.idempotency_key` and the
+  gateway honours it on the underlying L0 invoke. See
+  [Calling Agents § Idempotency](/guides/calling-agents#5-idempotency).
+- Attachments: pass `params.arguments.attachments[]` with
+  `file_id` values from `POST /api/v1/files/presign-upload`. The
+  agent sees a normal multi-part `chat_message`.
 
-<CardGroup cols={2}>
-  <Card title="OAuth Flow" icon="key" href="/mcp/oauth">
-    Set up OAuth 2.1 + PKCE for spec-compliant MCP clients.
-  </Card>
-  <Card title="Tools" icon="wrench" href="/mcp/tools">
-    Tools discovery and invocation reference.
-  </Card>
-  <Card title="Resources" icon="database" href="/mcp/resources">
-    Read-only data resources exposed by agents.
-  </Card>
-</CardGroup>
+**Not guaranteed:**
+
+- **Durable async** — MCP `tools/call` is request-response.
+  Long-running work that needs to survive client disconnects
+  belongs on OpenAPI tasks. Reaching for "fire-and-forget MCP
+  tool" is a sign the protocol's wrong for the use case.
+- **Multi-turn within one call** — every `tools/call` is a fresh
+  turn. To chain related turns, the MCP host typically keeps the
+  conversation context client-side and includes the relevant
+  history in the next `message`. If you need server-side
+  conversation continuity, use the OpenAPI
+  [conversations surface](/guides/conversations) and reference the
+  conversation ID from `arguments.context_id` on MCP calls.
+- **Webhook push** — MCP has no notion of server-pushed events
+  outside the in-flight call. For "tell me when this task
+  finishes" semantics, use OpenAPI webhooks (P2-A —
+  [see the webhooks guide](/guides/webhooks)).
+- **Rate-limit visibility** — the gateway enforces rate limits
+  per credential × agent, but rate-limit metadata is returned in
+  the standard MCP error shape (`code`, `message`). Inspect the
+  `code` (`rate_limited`) to back off; the wire doesn't carry
+  `Retry-After` today.
+
+---
+
+## 5. Common failure modes
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| `401 unauthorized` even after DCR + PKCE | The agent isn't MCP-enabled. | Flip `mcp_enabled=true` on the agent (`PATCH /api/v1/agents/{id}`). |
+| `401` with `WWW-Authenticate: Bearer realm="MCP", resource_metadata="…/.well-known/oauth-protected-resource"` | Credential missing or expired. The header points at the OAuth metadata so spec-aware clients auto-retry. | Re-run the OAuth flow (most clients do this automatically). |
+| `400 invalid_param` on `tools/call` | `arguments.message` empty, or `attachments[i].file_id` references a missing / mismatched-owner file. | Verify the file ID in `GET /api/v1/files/{id}` from your `oag_` first. |
+| `503 agent_service_unavailable` | Agent pod is offline or has no Message Service subscription. | Check the agent's instance state via `GET /api/v1/instances`; restart if `delivery_mode=push` and the pod is in `STOPPED`. |
+| `409 conflict` on duplicate `idempotency_key` | A previous call with the same key is still in flight. | Either wait for the prior reply or rotate the key. |
+
+---
+
+## 6. End-to-end example — Claude Desktop
+
+`~/Library/Application Support/Claude/claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "beeos-csv-analyst": {
+      "transport": "streamable-http",
+      "url": "https://mcp.beeos.ai/agent_abc123/mcp"
+    }
+  }
+}
+```
+
+On first use, Claude walks DCR → `/oauth/authorize` → the BeeOS
+consent screen → token → `tools/list` → `tools/call`. You'll see
+"BeeOS CSV Analyst" appear as a tool in Claude's prompt menu.
+After the first session the token is cached locally; refreshes
+follow standard OAuth refresh-token semantics.
+
+---
+
+## 7. See also
+
+- [Choosing a Protocol](/guides/choosing-a-protocol) — when MCP is
+  the right surface vs. OpenAPI / A2A.
+- [Authentication & API Keys](/authentication) — `oag_` /
+  `bak_` / OAuth lifecycle, scopes, rotation.
+- [Error Reference](/reference/errors) — stable wire codes
+  the MCP error envelope can return.
+- [Public Architecture Overview](/architecture/public-overview)
+  — how MCP relates to the other two caller surfaces.
+- [`backend/services/mcp-gateway/README.md`](https://github.com/beeos-ai/openagent/blob/main/backend/services/mcp-gateway/README.md)
+  — service-side README (env vars, local dev, deployment).
+- [MCP Authorization Spec](https://spec.modelcontextprotocol.io/specification/server/authorization/)
+  — the canonical OAuth / DCR / PKCE spec the gateway implements.

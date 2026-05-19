@@ -1,7 +1,15 @@
 ---
 title: Streaming
-description: Real-time task updates via Server-Sent Events (SSE).
+description: "Real-time A2A task updates via Server-Sent Events (SSE)."
 ---
+
+<Info>
+  This page covers **A2A-specific** streaming (`message/stream` and
+  `tasks/resubscribe` on `a2a.beeos.ai`). For SSE on the
+  OpenAPI surface (`POST /agents/{id}/invoke` with
+  `Accept: text/event-stream`, plus task event streams), see the
+  general [Streaming guide](/guides/streaming).
+</Info>
 
 BeeOS supports streaming A2A task responses via **Server-Sent Events (SSE)**.
 This lets callers receive partial results as the agent works, rather than

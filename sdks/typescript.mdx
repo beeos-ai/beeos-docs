@@ -1,156 +1,162 @@
 ---
 title: TypeScript SDK
-description: Install and use the @beeos-ai/sdk TypeScript client.
+description: "Install and use @beeos-ai/sdk — the auto-generated TypeScript client for the BeeOS OpenAPI."
 ---
 
-The `@beeos-ai/sdk` package is an auto-generated TypeScript client for the
-BeeOS Platform API (`openapi.beeos.ai`). It covers **instance lifecycle
-management** and **agent invocation** — the core platform operations you need
-to deploy agents and send them messages programmatically.
+The [`@beeos-ai/sdk`](https://www.npmjs.com/package/@beeos-ai/sdk)
+package is the canonical TypeScript client for the public BeeOS OpenAPI
+contract served by [`openapi-gateway`](/architecture/public-overview#3-what-each-surface-owns)
+at `openapi.beeos.ai`. It is generated from the same
+[`backend/openapi/beeos-platform-v1.yaml`](https://github.com/beeos-ai/openagent/blob/main/backend/openapi/beeos-platform-v1.yaml)
+that powers this site's API Reference tab — what you see in the spec is
+what you get in the SDK.
 
 <Info>
-  The SDK targets the **Platform API** only. The [A2A protocol](/a2a/overview)
-  (`a2a.beeos.ai`) and [MCP protocol](/mcp/overview) (`mcp.beeos.ai`) are
-  separate protocol entry points with their own authentication and are **not**
-  included in this SDK.
+  The SDK targets the **Platform API** only. The
+  [A2A protocol](/a2a/overview) (`a2a.beeos.ai`) and
+  [MCP protocol](/mcp/overview) (`mcp.beeos.ai`) are separate hosts
+  with their own auth — they are **not** wrapped by this package.
+  Mix-and-match by issuing direct HTTPS requests against those hosts.
 </Info>
 
-## Installation
+## Install
 
 ```bash
 npm install @beeos-ai/sdk
 ```
 
-## Configuration
+Current published version: **0.4.0** (see [SDK Changelog](/sdks/changelog)
+for wire deltas).
+
+## Configure
+
+The generated code follows the OpenAPI Generator `typescript-fetch`
+template: one `Configuration` value plus one class per OpenAPI tag.
 
 ```typescript
-import { Configuration, DeployApi, InstancesApi, AgentsApi } from "@beeos-ai/sdk";
+import {
+  Configuration,
+  DeployApi,
+  InstancesApi,
+  AgentsApi,
+  TasksApi,
+  ConversationsApi,
+  FilesApi,
+} from "@beeos-ai/sdk";
 
 const config = new Configuration({
   basePath: "https://openapi.beeos.ai",
   headers: {
-    Authorization: "Bearer oag_YOUR_KEY",
+    Authorization: `Bearer ${process.env.BEEOS_API_KEY}`,
   },
 });
 
-const deployApi = new DeployApi(config);
-const instancesApi = new InstancesApi(config);
-const agentsApi = new AgentsApi(config);
+const deploy = new DeployApi(config);
+const instances = new InstancesApi(config);
+const agents = new AgentsApi(config);
+const tasks = new TasksApi(config);
+const conversations = new ConversationsApi(config);
+const files = new FilesApi(config);
 ```
 
 <Note>
-  For local development, set `basePath` to `http://localhost:8095`.
+  For local development, set `basePath` to `http://localhost:8095` (the
+  default `openapi-gw` port in [Procfile.staging](https://github.com/beeos-ai/openagent/blob/main/backend/Procfile.staging)).
 </Note>
 
 ## Catalog
 
-### List providers
-
 ```typescript
-const providers = await deployApi.listProviders();
-console.log(providers.data);
-// [{ meta: { id: "default", name: "BeeOS Cloud", ... }, capabilities: { ... } }]
+const providers = await deploy.listProviders();
+const regions = await deploy.listDeployRegions({ providerId: "default" });
+const models = await deploy.listDeployModels({ agentFramework: "beeos-claw" });
 ```
 
-### List regions
+## Instance lifecycle
 
 ```typescript
-const regions = await deployApi.listDeployRegions({ providerId: "default" });
-console.log(regions.data);
-// [{ id: "us-east-1", name: "US East", available: true }]
-```
-
-### List deploy models
-
-```typescript
-const models = await deployApi.listDeployModels({ agentFramework: "beeos-claw" });
-console.log(models.data);
-// [{ id: "gpt-4o", name: "GPT-4o", tier: "premium", reasoning: false }]
-```
-
-## Instances
-
-### Deploy an instance
-
-```typescript
-const instance = await instancesApi.deployInstance({
+const created = await instances.deployInstance({
   deployInstanceRequest: {
     name: "my-agent",
     agentFramework: "beeos-claw",
     modelPrimary: "gpt-4o",
   },
 });
-console.log(instance.data.id, instance.data.status);
+
+const inst = await instances.getInstance({ id: created.data!.id });
+
+await instances.startInstance({ id: inst.data!.id });
+await instances.stopInstance({ id: inst.data!.id });
+await instances.restartInstance({ id: inst.data!.id });
+await instances.destroyInstance({ id: inst.data!.id });
 ```
 
-### List instances
+`listInstances` supports pagination + status filter:
 
 ```typescript
-const list = await instancesApi.listInstances({
+const list = await instances.listInstances({
   page: 0,
   pageSize: 20,
   status: "running",
 });
-
-for (const inst of list.data) {
-  console.log(inst.id, inst.name, inst.status);
-}
-```
-
-### Get instance
-
-```typescript
-const inst = await instancesApi.getInstance({ id: "inst_abc123" });
-console.log(inst.data);
-```
-
-### Lifecycle operations
-
-```typescript
-await instancesApi.startInstance({ id: "inst_abc123" });
-await instancesApi.stopInstance({ id: "inst_abc123" });
-await instancesApi.restartInstance({ id: "inst_abc123" });
-await instancesApi.destroyInstance({ id: "inst_abc123" });
 ```
 
 ## Agents
 
-### List agents
-
 ```typescript
-const agents = await agentsApi.listAgents({
+const list = await agents.listAgents({
   instanceId: "inst_abc123",
   limit: 20,
 });
 
-for (const agent of agents.data) {
-  console.log(agent.id, agent.name, agent.status);
-}
+const agent = await agents.getAgent({ agentId: "agent_abc123" });
+
+await agents.patchAgent({
+  agentId: agent.data!.id,
+  patchAgentRequest: { visibility: "public" },
+});
 ```
 
-### Get agent details
+### Invoke (blocking)
+
+The flagship per-agent operation. See
+[Calling agents](/guides/calling-agents) for the full contract.
 
 ```typescript
-const agent = await agentsApi.getAgent({ agentId: "agent_abc123" });
-console.log(agent.data.name, agent.data.visibility);
-```
-
-### Invoke an agent
-
-Send a message and receive a blocking reply:
-
-```typescript
-const reply = await agentsApi.invokeAgent({
+const reply = await agents.invokeAgent({
   agentId: "agent_abc123",
   invokeAgentRequest: {
     message: "Hello, what can you do?",
   },
 });
-
-console.log(reply.data.reply);
+console.log("Reply:", reply.data?.reply);
+console.log("Channel:", reply.data?.context_id);
 ```
 
-For streaming responses, use the raw fetch with `Accept: text/event-stream`:
+### Invoke with idempotency + attachments (0.4.0)
+
+```typescript
+const reply = await agents.invokeAgent({
+  agentId: "agent_abc123",
+  invokeAgentRequest: {
+    message: "Summarize the attached PDF.",
+    idempotency_key: "user_42:summarize_q3_report",
+    attachments: [{ file_id: "file_abc123", filename: "q3-report.pdf" }],
+    metadata: { campaign: "marketing-q3" },
+  },
+});
+```
+
+`idempotency_key` makes the call safe to retry within the TTL window
+(see [ADR 0021](https://github.com/beeos-ai/openagent/blob/main/backend/docs/adr/0021-idempotency-key-ttl.md)
+for the contract). Repeat the same key → identical response, no
+double-invocation.
+
+### Streaming invoke (SSE)
+
+The SDK does not abstract SSE — fall back to `fetch` with
+`Accept: text/event-stream`. See [Streaming](/guides/streaming) for the
+frame shapes:
 
 ```typescript
 const res = await fetch(
@@ -158,12 +164,12 @@ const res = await fetch(
   {
     method: "POST",
     headers: {
-      Authorization: "Bearer oag_YOUR_KEY",
+      Authorization: `Bearer ${process.env.BEEOS_API_KEY}`,
       "Content-Type": "application/json",
       Accept: "text/event-stream",
     },
-    body: JSON.stringify({ message: "Hello!" }),
-  }
+    body: JSON.stringify({ message: "Tell me a long story." }),
+  },
 );
 
 const reader = res.body!.getReader();
@@ -175,42 +181,147 @@ while (true) {
 }
 ```
 
-## Error handling
-
-The SDK throws on non-2xx responses. Wrap calls in try/catch:
+## Tasks (async invocation)
 
 ```typescript
+const created = await tasks.createTask({
+  agentId: "agent_abc123",
+  createTaskRequest: {
+    message: "Run the full Q3 audit.",
+    idempotency_key: "audit_q3_2026",
+  },
+});
+const taskId = created.data!.task_id;
+
+// Poll
+let task = await tasks.getTask({ agentId: "agent_abc123", taskId });
+while (task.data?.status !== "completed" && task.data?.status !== "failed") {
+  await new Promise(r => setTimeout(r, 2_000));
+  task = await tasks.getTask({ agentId: "agent_abc123", taskId });
+}
+
+// Or list cross-agent (new in 0.4.0)
+const all = await tasks.listUserTasks({ state: "running", limit: 50 });
+
+// Cancel
+await tasks.cancelTask({ agentId: "agent_abc123", taskId });
+```
+
+For server-push notifications, register a webhook with HMAC signing:
+
+```typescript
+await tasks.registerTaskWebhook({
+  agentId: "agent_abc123",
+  taskId,
+  registerTaskWebhookRequest: {
+    url: "https://example.com/hooks/beeos",
+    secret: "whsec_…",
+    events: ["completed", "failed", "cancelled"],
+  },
+});
+```
+
+The webhook payload is HMAC-SHA256 signed; the delivery log is
+queryable via `listWebhookDeliveries` + replayable via
+`redeliverWebhook` (new endpoints in 0.4.0 — see
+[Webhooks](/guides/webhooks)).
+
+## Conversations
+
+```typescript
+const conv = await conversations.createConversation({
+  agentId: "agent_abc123",
+  createConversationRequest: { title: "Quarterly planning" },
+});
+
+await conversations.sendConversationMessage({
+  agentId: "agent_abc123",
+  conversationId: conv.data!.id,
+  sendConversationMessageRequest: { message: "Start the planning session." },
+});
+
+const msgs = await conversations.listConversationMessages({
+  agentId: "agent_abc123",
+  conversationId: conv.data!.id,
+  since: 0,
+});
+```
+
+Compare against tasks: tasks are single-shot with a terminal state;
+conversations stay open until you delete them. See
+[Conversations](/guides/conversations).
+
+## Files
+
+```typescript
+const presigned = await files.presignUpload({
+  presignUploadRequest: {
+    filename: "report.pdf",
+    content_type: "application/pdf",
+    size_bytes: 4_582_910,
+  },
+});
+
+await fetch(presigned.data!.url, {
+  method: "PUT",
+  headers: { "Content-Type": "application/pdf" },
+  body: pdfBytes,
+});
+
+// Later: read back metadata + a fresh signed download URL
+const meta = await files.presignDownload({ id: presigned.data!.file_id });
+```
+
+Use the resulting `file_id` in `attachments[].file_id` on
+`invokeAgent` or `createTask`.
+
+## Error handling
+
+Non-2xx responses throw `Response` (the underlying `fetch` Response).
+Inspect `.status` and `.json()` for the BeeOS error envelope
+(`{ success: false, error: { code, message } }`):
+
+```typescript
+import { ResponseError } from "@beeos-ai/sdk";
+
 try {
-  await instancesApi.getInstance({ id: "nonexistent" });
-} catch (error) {
-  if (error instanceof Response) {
-    const body = await error.json();
-    console.error("API error:", body);
+  await instances.getInstance({ id: "nonexistent" });
+} catch (e) {
+  if (e instanceof ResponseError) {
+    const body = await e.response.json();
+    console.error("API error:", body.error.code, body.error.message);
+  } else {
+    throw e;
   }
 }
 ```
 
+See [Error reference](/reference/errors) for the full code list.
+
 ## TypeScript types
 
-All request/response types are exported:
+Every request and response is fully typed:
 
 ```typescript
 import type {
-  InstanceDataDTO,
   DeployInstanceRequest,
-  ProviderCatalogItem,
-  AgentDTO,
   InvokeAgentRequest,
   InvokeAgentResponse,
+  TaskResponse,
+  ListTasksResponse,
+  ConversationResponse,
+  PresignUploadRequest,
 } from "@beeos-ai/sdk";
 ```
 
 ## Source and generation
 
 The SDK is auto-generated from
-[`beeos-platform-v1.yaml`](https://github.com/beeos-ai/openagent/blob/main/backend/openapi/beeos-platform-v1.yaml)
-using OpenAPI Generator (`typescript-fetch`). The published package mirrors
-the generated output from the monorepo.
+[`backend/openapi/beeos-platform-v1.yaml`](https://github.com/beeos-ai/openagent/blob/main/backend/openapi/beeos-platform-v1.yaml)
+using OpenAPI Generator
+([`sdks/openapi-sdk/generate.sh`](https://github.com/beeos-ai/openagent/blob/main/sdks/openapi-sdk/generate.sh)).
+Wire-level changes land in [SDK Changelog](/sdks/changelog) and
+migration recipes live in [SDK Migration](/sdks/migration).
 
-- **npm:** [@beeos-ai/sdk](https://www.npmjs.com/package/@beeos-ai/sdk)
-- **GitHub:** [beeos-ai/sdk](https://github.com/beeos-ai/sdk)
+- npm: [`@beeos-ai/sdk`](https://www.npmjs.com/package/@beeos-ai/sdk)
+- GitHub: [`beeos-ai/sdk`](https://github.com/beeos-ai/sdk)

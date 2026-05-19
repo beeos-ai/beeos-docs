@@ -1,0 +1,259 @@
+---
+title: SDK Changelog
+description: "Versioned changes to the OpenAPI contract and the generated @beeos-ai/sdk and github.com/beeos-ai/sdk-go SDKs."
+---
+
+All notable changes to the BeeOS **public OpenAPI contract**
+(`backend/openapi/beeos-platform-v1.yaml`) and the SDKs generated
+from it (`@beeos-ai/sdk` for TypeScript, `github.com/beeos-ai/sdk-go`
+for Go) are documented in this file.
+
+This file is the **canonical change log** that:
+
+- end users see when they bump SDK versions, and
+- the publish workflow consults when minting a tag (the SDK
+  generator stamps the version in
+  [`sdks/openapi-sdk/generate.sh`](https://github.com/beeos-ai/openagent/blob/main/sdks/openapi-sdk/generate.sh)).
+
+For per-service backend changes (cluster, runtime, a2a, etc.),
+see each service's own README and ADRs under
+[`backend/docs/adr/`](https://github.com/beeos-ai/openagent/blob/main/backend/docs/adr/).
+
+The format is based on
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
+contract version follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+---
+
+## Versioning
+
+| Bump | Triggered by |
+|---|---|
+| **MAJOR** | Removing routes, renaming required fields, changing the shape of an existing response, changing auth semantics (e.g. scope a previously-unscoped endpoint), changing error `code` semantics. |
+| **MINOR** | Adding new routes, adding optional request fields, adding optional response fields, adding new `code` values, adding scopes (existing scopes keep working). |
+| **PATCH** | Documentation, examples, OpenAPI `description` polish, generator config tweaks that don't change emitted code. |
+
+The TypeScript and Go SDK packages share **one** version line.
+They are always cut together from the same generator run; a
+mismatched pair must never be released.
+
+---
+
+## Release process — how a version actually ships
+
+1. **Edit the spec.** All wire changes land in
+   [`backend/openapi/beeos-platform-v1.yaml`](https://github.com/beeos-ai/openagent/blob/main/backend/openapi/beeos-platform-v1.yaml)
+   first. The openapi-gateway service consumes this file via
+   `go:embed`, so a `go build` in `backend/services/openapi-gateway`
+   is the first lint.
+2. **Sync the vendored copy.** From `sdks/openapi-sdk/`:
+   ```bash
+   make sync-spec     # copy → spec/beeos-platform-v1.yaml
+   make validate      # openapi-generator-cli validate
+   make gen           # regenerate both SDKs
+   ```
+3. **Update generator stamps.** Bump `npmVersion=` and
+   `packageVersion=` in
+   [`sdks/openapi-sdk/generate.sh`](https://github.com/beeos-ai/openagent/blob/main/sdks/openapi-sdk/generate.sh)
+   in the same commit (lines 88–95). Both SDKs share the version.
+4. **Write the entry below.** Add a new section at the top of
+   the `[Unreleased]` block; describe **wire** changes only.
+   Implementation-side refactors that don't affect any consumer
+   bytes belong in the relevant service README, not here.
+5. **Open the PR.** CI runs `redocly lint` + `make gen` + the
+   contract-drift test in
+   `backend/services/openapi-gateway/internal/dto/contract_test.go`,
+   plus `go build ./...` on the generated Go SDK.
+6. **On merge, the publish workflow:** stamps the changelog
+   header with today's date, tags the meta repo
+   `sdk-v<version>`, publishes `@beeos-ai/sdk` to npm, and
+   pushes the generated Go SDK to `github.com/beeos-ai/sdk-go`
+   (which is itself a release-tagged repo so `go get` resolves
+   the new tag).
+
+**Never** edit `sdks/beeos-ai-sdk/` or `sdks/beeos-ai-sdk-go/`
+by hand — they are regenerated on every release. The only
+hand-curated assets are under
+`sdks/openapi-sdk/assets/{beeos-ai-sdk,beeos-ai-sdk-go}/` and
+get copied on top of the generator output (README, LICENSE).
+
+---
+
+## [Unreleased]
+
+### Added
+
+- **`POST /api/v1/agents/{agentId}/tasks/{taskId}/webhooks/{webhookId}/deliveries/{deliveryId}/redeliver`** —
+  manual re-queue of a single webhook delivery attempt. Returns
+  a new `pending` `WebhookDeliveryResponse`. Useful when the
+  receiver was down and you want to replay without waiting for
+  the next exponential-backoff slot. Scope: `tasks:write`.
+- **`GET /api/v1/agents/{agentId}/tasks/{taskId}/webhooks/{webhookId}/deliveries`** —
+  per-attempt delivery audit log for a webhook binding. Returns
+  the last N attempts (default 50, max 100) including
+  `status`, `attempt_num`, `last_response_status`, `last_error`,
+  `next_attempt_at`. Scope: `tasks:read`.
+- **`secret` (optional, write-only)** field on
+  `RegisterTaskWebhookRequest` and the underlying A2A
+  `pushNotificationConfig/set`. When supplied, every delivery
+  carries `X-BeeOS-Signature: sha256=<hex>` computed over the
+  JSON body with HMAC-SHA256 keyed by `secret`. The wire
+  response only echoes `has_secret: true`; the raw value is
+  never returned. See
+  [`docs/guides/webhooks.md`](/guides/webhooks) for the
+  verification recipes in Python and Node.js.
+- **Webhook retry & dead-letter.** Failed deliveries (network
+  error, timeout, or 5xx response) are retried with exponential
+  backoff at `1m / 5m / 30m / 2h / 12h`. After the 6th failed
+  attempt the row becomes `dead_letter`. 4xx responses (other
+  than 408 / 429) are NOT retried — they're treated as a
+  permanent client misconfiguration. Driven by a background
+  worker in `backend/services/a2a` polling a durable
+  `webhook_deliveries` table.
+- **`GET /api/v1/tasks`** — cross-agent task list. Returns all
+  tasks the authenticated caller created via the OpenAPI
+  surface, optionally filtered by `agent_id`. Pages with
+  `limit` + `since`. Useful for multi-agent UIs (one inbox
+  across an organization's agents). Scope: `tasks:read`.
+- **`POST /api/v1/files/presign-upload`** — request a short-lived
+  S3-style PUT URL for uploading a file. Returns a `file_id`
+  that can be embedded in subsequent
+  `invoke` / `tasks.create` / `conversations.send` bodies as
+  `attachments[].file_id`.
+- **`GET /api/v1/files/{fileId}`** — read-back of a previously
+  uploaded file's metadata + presigned GET URL.
+- **`attachments[].file_id`** on `InvokeAgentRequest`,
+  `CreateTaskRequest`, and conversation send bodies. The agent
+  sees a normal multi-part `chat_message` with `file` parts.
+- **`PATCH /api/v1/agents/{agentId}`** — owner-only update of an
+  agent's `visibility` and `mcp_enabled` flags. Other agent
+  fields (`name`, `description`, …) are still owner-synced via
+  the agent process's `POST /api/v1/agents/sync` and cannot be
+  patched here (changes would be silently overwritten on next
+  sync).
+- **`metrics` endpoint** (`GET /metrics`) — Prometheus pull
+  endpoint exposing standard process metrics plus
+  `beeos.openapi.*` namespaces. OTLP push remains available via
+  `OTEL_EXPORTER_OTLP_*` env vars.
+- **OpenAPI-level rate limiting on probe routes.** `/healthz`,
+  `/version`, `/spec/*`, `/metrics` are now per-IP rate-limited
+  to prevent unauthenticated scraping DoS.
+- **`MaxBytesReader` body-size enforcement.** Default 1 MiB per
+  request, 64 KiB on catalog/list endpoints. Over-limit returns
+  `413 payload_too_large`.
+- **`timeout_ms` clamp on `POST /agents/{id}/invoke`.** The
+  caller-supplied value is clamped to `[100, 115_000]` (the
+  upstream end-to-end budget is 120s). Going past the clamp
+  surfaces `service_timeout` instead of a stale connection.
+- **`insufficient_scope` error code.** Returned when an `oag_`
+  User API Key has the right ownership but lacks the required
+  scope (e.g. trying `POST /tasks` with a read-only key).
+- **Examples in OpenAPI** for the top 5 operations
+  (`listInstances`, `listAgents`, `invokeAgent`, `createTask`,
+  `getTask`) plus all 4xx/5xx response shapes.
+
+### Changed
+
+- **All error responses** now follow the canonical envelope
+  ```json
+  { "error": { "type": "…", "code": "…", "message": "…",
+              "param": "…", "request_id": "…" } }
+  ```
+  with `code` drawn from the table in
+  [`docs/reference/errors.md`](/reference/errors). 4xx and
+  5xx responses share the same shape; older clients that only
+  inspected the HTTP status keep working.
+- **Webhook `Current limitations`** section in
+  [`docs/guides/webhooks.md`](/guides/webhooks) has been
+  rewritten — what used to be "limitations" (no signing, no
+  retry, no audit log) are now first-class features. The only
+  remaining caveat is the 6-attempt cap before dead-letter.
+
+### Documentation (no wire change)
+
+- **New** [`docs/architecture/public-overview.md`](/architecture/public-overview)
+  — the four public hosts, what each owns, and cross-protocol
+  invariants.
+- **New** [`docs/guides/mcp-gateway.md`](/mcp/overview)
+  — MCP integration walkthrough (OAuth / DCR / PKCE + API-key
+  paths).
+- **New** [`docs/guides/a2a-external.md`](/a2a/overview)
+  — federating an external agent platform via `a2a.beeos.ai`.
+- **New** [`docs/guides/conversations.md`](/guides/conversations)
+  — the multi-turn dialog surface.
+- **New** [`docs/guides/agent-author-quickstart.md`](/guides/agent-author-quickstart)
+  — building the agent process itself (the other side of every
+  guide).
+- **New** [`docs/guides/streaming.md`](/guides/streaming) —
+  the three SSE surfaces, `since=<offset>`, reconnect.
+- **New** [`docs/guides/choosing-a-protocol.md`](/guides/choosing-a-protocol)
+  — OpenAPI vs A2A vs MCP, side-by-side.
+- **New** [`docs/reference/errors.md`](/reference/errors) —
+  canonical `code` table.
+- **New** [`docs/guides/auth-api-keys.md`](/authentication)
+  — JWT vs `oag_` vs `bak_` vs OAuth lifecycle.
+- **Rewrote** [`docs/guides/calling-agents.md`](/guides/calling-agents)
+  to cover all three invocation modes (blocking / SSE / async
+  task) with TS + Go SDK snippets.
+- **Added** [`docs/guides/sdk-migration.md`](/sdks/migration)
+  — per-version migration recipe (start of the migration log).
+
+---
+
+## [0.4.0] — 2026-04-30
+
+### Breaking
+
+- **`SendMessageResponse.offset` removed.** The field was a
+  misleading placeholder; the real offset is kept opaque inside
+  the cursor. Callers that need the offset for SSE resume must
+  round-trip via `GET /messages?since=<cursor>` (unchanged for
+  SSE consumers).
+
+### Added
+
+- **`InvokeAgentRequest.idempotency_key`** and
+  **`InvokeAgentRequest.metadata`** (both optional;
+  backwards-compatible). The same `idempotency_key` is honoured
+  end-to-end through L0 → MS.
+- **`TaskResponse.truncated`** (optional boolean) — signals that
+  the task's event log was scanned past the 1 000-message cap
+  and the returned events may not be the full set. Old clients
+  may ignore this field.
+- **`PushNotificationConfig.protocol_filter`** — gateways stamp
+  the originating renderer key (`openapi` / `a2a` / `mcp`) when
+  registering. Lets the same backing webhook be filtered by
+  triggering surface.
+
+---
+
+## [0.3.0] — 2026-03-22
+
+### Added
+
+- First public-grade contract:
+  - `POST /api/v1/agents/{id}/invoke` (sync + SSE).
+  - `POST /api/v1/agents/{id}/tasks` + `GET .../tasks/{id}` +
+    `GET .../events` (SSE) + `POST .../cancel`.
+  - `POST /api/v1/agents/{id}/conversations` + send + delete +
+    list with `since` cursor.
+  - Task webhooks: `POST .../webhooks` + `GET` + `DELETE`.
+  - Files presign (uploads).
+  - `idempotency_key` on `invoke` body.
+
+This is the version most third-party documentation that
+predates the unified roadmap refers to. SDK
+`@beeos-ai/sdk@0.3.0` and `github.com/beeos-ai/sdk-go@v0.3.0`
+are still resolvable from npm / `proxy.golang.org` and remain
+wire-compatible with the current openapi-gateway for the
+overlapping route set.
+
+---
+
+## Earlier versions
+
+`0.2.x` and earlier predate the OpenAPI Gateway BFF decoupling
+(ADR-001) — they fronted the **main** Gateway directly and are
+no longer part of the supported SDK contract. Consumers stuck
+on those versions should bump straight to `0.4.x` and follow
+[`docs/guides/sdk-migration.md`](/sdks/migration).
