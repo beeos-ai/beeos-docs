@@ -1,0 +1,331 @@
+---
+title: 会话 (Conversations)
+description: 与智能体的长连续多轮对话。对比任务（单发）选用合适的原语。
+---
+
+<Note>
+**受众**：构建聊天 UI、多轮 assistant、或者任何需要给同一智能体发
+**多条消息**而不重建上下文的工作流的 SDK 用户。
+</Note>
+
+<Note>
+如果你只需要**单次 request/reply** 或**带 deadline 的单个长任务**，
+请改看 [调用智能体](/zh/guides/calling-agents)。
+</Note>
+
+---
+
+## 1. 我该选哪个
+
+```
+┌────────────────────────────────────────────────────────────────────┐
+│ 单条 prompt、单条回答、转身就走？                                  │
+│       → POST /agents/{id}/invoke    (同步 / SSE / 异步)            │
+│                                                                    │
+│ 一个大背景任务、完成后自动关闭？                                   │
+│       → POST /agents/{id}/tasks     (任务 API，带 deadline)        │
+│                                                                    │
+│ 开放式聊天 —— 多轮、同上下文、无固定终点？                         │
+│       → POST /agents/{id}/conversations  (本指南)                  │
+└────────────────────────────────────────────────────────────────────┘
+```
+
+任务和会话都骑在 Message Service 同一根底层消息通道上 —— 差别纯粹是
+网关层的 UX 选择：
+
+| 属性 | 任务 (Task) | 会话 (Conversation) |
+|---|---|---|
+| `single_shot` | `true` —— 通道在首次终止回复后自动关闭 | `false` —— 多轮间保持开放 |
+| Deadline | create 时的 `deadlineMs`，过期 MS 自动关闭（最大 7 天） | 无 —— Redis 自然 24h 未活动 TTL；活跃 SSE / `POST /messages` 续期 |
+| 状态机 | `pending` → `processing` → `completed` / `failed` / `cancelled`（ADR-0017） | 朴素 `state` 字段：`open` 或 `closed` |
+| 生命周期终止 | 首次终止回复自动关通道；`POST .../cancel` 中断飞行中 | `DELETE /conversations/{id}` 关闭；否则活到 TTL |
+| `POST /messages` 语义 | 不适用 —— 初始消息就是 create body | **非阻塞 202**；回复通过 SSE / history 到达 |
+| Webhook 投递 | 有 —— `POST /tasks/{id}/webhooks`（见 [Webhook 指南](/zh/guides/webhooks)） | 无 —— 通过 SSE / 轮询观察 |
+| SSE 自动关闭 | 终止信封（`agent_reply`、`agent_reply_error` 等）触发关闭 —— `event: end reason=task_terminal` | 一直开到 `DELETE` 或客户端断开 —— 删除时 `event: end reason=channel_closed` |
+| 调用方回合预算 | 每次重试是独立任务（或 `POST /continue` 续传暂停） | 每会话多轮；允许分层并发 |
+
+经验法则：
+
+- **聊天 UI** → 会话
+- **Cron 任务 / 后台进程 / 批处理报告** → 任务
+- **一次性问答** → 阻塞 invoke（最简）
+
+---
+
+## 2. 生命周期（会话）
+
+```
+┌────────────────┐  POST .../conversations          ┌──────────────┐
+│  (无通道)      │ ──────────────────────────────▶ │  state=open  │
+└────────────────┘   201 + conv_id                  └──────┬───────┘
+                                                            │
+              ┌─────────────────────────────────────────────┤
+              │                                             │
+              │ POST .../messages         GET .../events    │
+              │ (202, 异步)               (SSE, 实时)       │
+              │ POST .../messages         GET .../messages  │
+              │ (202, 异步)               (分页)            │
+              │  ...                       ...              │
+              │                                             │
+              │ DELETE .../conversations/{id}               │
+              ▼                                             ▼
+        ┌─────────────────┐                       SSE: event: end reason=channel_closed
+        │  state=closed   │ ◀────  CloseReason="canceled"
+        └─────────────────┘
+              │
+              │ MS 宽限窗口（关闭后 5 分钟）
+              ▼
+        history 仍可通过 GET .../messages 读
+              │
+              │ TTL（Redis 默认 24h since last touch）
+              ▼
+        通道被驱逐；后续读 → 404
+```
+
+<Note>
+**注**：会话没有 `chat_cancel` 信封。没有单一飞行中的回合可中断 ——
+如果想阻止智能体继续最近一轮，`DELETE` 整个会话（关闭通道）。
+智能体收到正常通道关闭信号并停止流式输出。
+</Note>
+
+---
+
+## 3. 五个会话端点
+
+全部需要 `Authorization: Bearer <JWT or oag_...>`。API key 调用方
+create / send / delete 需要 `tasks:write` scope，list / get / messages /
+events 需要 `tasks:read`（见
+[认证与 API Key](/zh/authentication#作用域scope)）。
+
+| 方法 | 路径 | 用途 | Body | 返回 |
+|---|---|---|---|---|
+| `POST` | `/api/v1/agents/{agentId}/conversations` | 创建一条新对话通道 | `{ title?, metadata?: {...} }` | `201` + `Conversation` |
+| `GET` | `/api/v1/agents/{agentId}/conversations` | 列出**调用方**与该智能体的会话 | — | `200` + `{ conversations, next_since }` |
+| `GET` | `/api/v1/agents/{agentId}/conversations/{convId}` | 取一个会话 | — | `200` + `Conversation` |
+| `DELETE` | `/api/v1/agents/{agentId}/conversations/{convId}` | 关闭该会话 | — | `204` |
+| `POST` | `/api/v1/agents/{agentId}/conversations/{convId}/messages` | 发送一个用户回合（非阻塞） | `{ message, idempotency_key? }` | `202` + `{ message_id, created_at }` |
+| `GET` | `/api/v1/agents/{agentId}/conversations/{convId}/messages` | 分页历史 | `?since=<offset>&limit=<n>` | `200` + `{ messages, latest_offset }` |
+| `GET` | `/api/v1/agents/{agentId}/conversations/{convId}/events` | SSE 实时流 | `?since=<offset>` | SSE 流 |
+
+授权不变量：**调用方只能看到 / 修改自己的会话**。会话的
+`metadata.caller_owner_id` 在 create 时写入；每次读写调用都检查。
+所有权不匹配返回 403 `forbidden`（`"conversation is not owned by caller"`）。
+
+---
+
+## 4. `since` cursor（历史 + SSE）
+
+`since` 是会话单调消息日志上的**整数 offset**。wire 把它当不透明值，
+但模型如下方便你推理：
+
+```
+offset:    1     2     3     4     5     6      latest_offset = 6
+           │     │     │     │     │     │
+        user.q1 agent agent agent user.q2 agent_reply.q2
+                ^chunk ^chunk reply.q1
+```
+
+- `since=0`（或省略）—— **从头开始**。给晚到 SSE 客户端取完整 transcript 用。
+- `since=N` —— **从 offset `N+1` 续传**。传入你成功观察到的最后一个 offset。
+
+### `GET /messages`
+
+```
+GET /api/v1/agents/agent_abc/conversations/conv_xyz/messages?since=4&limit=200
+{
+  "messages": [
+    { "offset": 5, "type": "chat_message", "message_id": "m_...", ... },
+    { "offset": 6, "type": "agent_reply",  "message_id": "m_...", ... }
+  ],
+  "latest_offset": 6
+}
+```
+
+用上一页的 `latest_offset` 作为下一次 `since`。页大小：默认 200，
+最大 500（Message Service 上限）。
+
+### `GET /events`（SSE）
+
+```
+GET /api/v1/agents/agent_abc/conversations/conv_xyz/events?since=4
+```
+
+流先回放所有 offset `> 4` 的消息，然后保持连接接收新消息。每个 frame：
+
+```
+event: message
+data: {"type":"agent_message_chunk","message_id":"m_...","offset":7,
+       "in_reply_to":"m_q2","publisher_id":"agent:abc",
+       "payload":{"text":"hello"},"created_at":"2026-05-14T18:00:00Z"}
+```
+
+- `offset` **逐 frame**：追踪最新一个，重连时作为 `since=<latest>` 传入。
+  崩溃后重连的 SSE 客户端**不要**传 `since=0` —— 那会重放全部历史，
+  让你处理过的每个事件重复。
+- `event: end`（带 `reason`）在连接终止前**发一次**。可能的 reason：
+  - `channel_closed` —— 你（或同认证的对端）对这个会话调了 `DELETE`。
+  - `stream_closed` —— Message Service 关了上游流（罕见；通常是服务重启
+    或会话 TTL 到了）。
+
+<Note>
+会话上没有任务 SSE 的 `task_terminal` `end` reason 等价物 —— 开放式
+模型里没有终止 frame。连接只在关闭 / 断开时结束。
+</Note>
+
+### Keepalive
+
+空闲期连接没流量。浏览器和某些 HTTP 代理会在 ~60s 后关闭 idle 连接。
+缓解：
+
+1. 把客户端放在不会杀 idle SSE 的代理后（大多数 CDN 原生处理 SSE）；或
+2. socket 关闭就重连，把最新观察到的 `offset` 作为 `since=<offset>` 传入，
+   避免漏事件。
+
+---
+
+## 5. 实例 —— 聊天循环（Node.js fetch + EventSource）
+
+```typescript
+const BASE = "https://openapi.beeos.ai";
+const headers = { Authorization: `Bearer ${process.env.BEEOS_API_KEY}` };
+
+// 1. open a conversation
+const created = await fetch(
+  `${BASE}/api/v1/agents/agent_abc/conversations`,
+  {
+    method: "POST",
+    headers: { ...headers, "Content-Type": "application/json" },
+    body: JSON.stringify({ title: "Customer support — order #12345" }),
+  },
+).then((r) => r.json());
+const convId = created.data.id;
+
+// 2. start streaming agent replies
+const es = new EventSource(
+  `${BASE}/api/v1/agents/agent_abc/conversations/${convId}/events`,
+  { withCredentials: true } as any, // SDK passes the token via header
+);
+
+let latestOffset = 0;
+es.addEventListener("message", (evt) => {
+  const frame = JSON.parse(evt.data);
+  latestOffset = frame.offset ?? latestOffset;
+  if (frame.type === "agent_message_chunk") {
+    process.stdout.write(frame.payload.text);
+  } else if (frame.type === "agent_reply") {
+    console.log("\n[turn complete]\n");
+  }
+});
+es.addEventListener("end", (evt) => {
+  const { reason } = JSON.parse(evt.data);
+  console.log(`stream ended: ${reason}`);
+  es.close();
+});
+
+// 3. send turns whenever the user types
+async function send(userMsg: string) {
+  const r = await fetch(
+    `${BASE}/api/v1/agents/agent_abc/conversations/${convId}/messages`,
+    {
+      method: "POST",
+      headers: { ...headers, "Content-Type": "application/json" },
+      body: JSON.stringify({ message: userMsg }),
+    },
+  );
+  if (r.status !== 202) throw new Error(`send failed: ${r.status}`);
+  // 202 — reply arrives via the SSE stream above.
+}
+
+await send("Hi, where's my order?");
+// later...
+await send("Can you also cancel item 2?");
+```
+
+---
+
+## 6. 并发、幂等、附件
+
+### 多个飞行中回合
+
+会话 API 显式允许在智能体回复上一回合前排队多回合。回复按智能体
+产出顺序到达；每个 `agent_reply` 的 `in_reply_to` 字段回指最初的
+用户 message_id，所以即使回合交错，客户端也能关联。
+
+### 幂等
+
+在 `POST /messages` 上传 `idempotency_key`。Message Service 在
+`(channel_id, idempotency_key)` 上去重。网络重试同样 key 返回已存在
+的 `message_id` 不重发 —— 可安全接入自动重试。
+
+省略时网关生成新 UUID，所以不同 fetch 尝试的重试被当作**不同**消息。
+
+### 附件
+
+会话接受附件的方式与 `invoke` 和 `tasks` 一致 —— 通过
+`POST /api/v1/files/presign-upload` 上传，然后把返回的 `file_id` 包到
+下一个 `POST /messages` body：
+
+```json
+{
+  "message": "Here is the screenshot",
+  "attachments": [{ "file_id": "file_abc" }]
+}
+```
+
+网关把每个 `file_id` 解析成一个预签 download URL 嵌入 chat 信封，
+让智能体带外取字节。完整流程见
+[调用智能体 § 附件](/zh/guides/calling-agents)。
+
+---
+
+## 7. 删除语义
+
+```
+DELETE /api/v1/agents/{agentId}/conversations/{convId}
+204 No Content
+```
+
+发生了什么：
+
+1. 通道以 `reason=canceled` 关闭。
+2. `/events` 上的任何 SSE 连接收到最后一个
+   `event: end\ndata: {"reason":"channel_closed"}\n\n`，流终止。
+3. 会话现在是 `state=closed` —— 后续 `POST /messages` 返回 `409 conflict`
+   （`"channel closed"`）。
+4. **历史在关闭后 5 分钟的 MS 宽限窗口内仍可通过 `GET /messages` 读**；
+   之后通道被驱逐，读返回 `404 agent_not_found`
+   （`"conversation not found"`）。
+
+如果想无限期保留 transcript，**在调 DELETE 之前取出所有消息** ——
+网关不是长期归档，只是 Message Service 受 TTL 约束的日志。
+
+---
+
+## 8. 错误
+
+完整集合见 [错误参考](/zh/reference/errors)。此 API 上你最可能撞到的：
+
+| HTTP | `code` | 原因 |
+|---|---|---|
+| `400` | `invalid_param` | `convId` 空，或 `conv_id` 属于和 URL 路径不同的智能体 |
+| `400` | `invalid_param` | `conv_id refers to a non-conversation channel` —— 你在会话端点上用了任务 ID |
+| `403` | `forbidden` | 该会话不是你的 |
+| `403` | `insufficient_scope` | API key 缺 `tasks:read` / `tasks:write` |
+| `404` | `agent_not_found` | 会话不存在或已掉出 MS TTL |
+| `409` | `conflict` | 通道已关闭（如 `DELETE` 后 `POST /messages`） |
+| `413` | `payload_too_large` | 消息 body > 1 MiB —— 拆成多回合或用[附件](#附件)装大 blob |
+| `503` | `agent_unavailable` | `MESSAGE_SERVICE_URL` 未配置、MS 挂了，或智能体离线（仅 `POST /messages`；list / get / SSE 在历史日志上仍工作） |
+
+---
+
+## 9. 另请参阅
+
+- [调用智能体](/zh/guides/calling-agents) —— 三种单回合调用模式
+- [流式（SSE）](/zh/guides/streaming) —— `/events` 端点的 wire framing、
+  `since` 语义、重连 / keepalive 完整参考
+- [Webhook](/zh/guides/webhooks) —— **任务** API 的 push 通知（会话无等价物）
+- [错误参考](/zh/reference/errors) —— 会话端点可能发出的每个 `code`
+- [认证与 API Key](/zh/authentication) —— 包括完整 scope 表
+- OpenAPI 契约：
+  [`backend/openapi/beeos-platform-v1.yaml`](https://github.com/beeos-ai/openagent/blob/main/backend/openapi/beeos-platform-v1.yaml)
+  （在 `paths` 里搜 `conversations:`）

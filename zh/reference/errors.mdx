@@ -1,0 +1,198 @@
+---
+title: 错误参考
+description: BeeOS 公开接入面返回的每个 error.code、包装的 HTTP 状态、以及恢复提示。
+---
+
+每个 BeeOS OpenAPI 非 2xx 响应（以及每个 `is_error: true` 的 SSE
+`event: error` / `event: done`）都携带一个**稳定的机器可读 `code`**
+字段。本页是该 code 的单一真相源；wire 信封只是形状不同，词汇是一样的。
+
+完整目录从
+[`backend/shared/types/apierror/`](https://github.com/beeos-ai/openagent/blob/main/backend/shared/types/apierror/)
+生成，跨 Gateway、Agent Gateway、A2A Gateway、MCP Gateway、OpenAPI
+Gateway 和内部服务共享。本表中的 code 是**公开契约** —— 在 1.x
+主线内形状不变。新增 code 是 minor 版本升级；改名或移除 code 是 major
+版本升级。
+
+---
+
+## 错误怎么编码
+
+### 阻塞 JSON 响应（任何 4xx / 5xx）
+
+```json
+{
+  "success": false,
+  "error": {
+    "type": "api_error",
+    "code": "agent_not_found",
+    "message": "Agent not found.",
+    "details": {}
+  }
+}
+```
+
+HTTP 状态行携带与 `error.code` 相同的信息（见下表）。`type` 字段是
+RFC 9457 problem-type（"api_error" / "invalid_request_error" /
+"authentication_error" / "permission_error" / "rate_limit_error" /
+"not_found_error" / "conflict_error" / "validation_error"）；
+SDK 通常按 `code` 而非 `type` 分派。
+
+### SSE `event: error` frame（流式 invoke + 任务事件）
+
+```
+event: error
+data: {"type":"error","code":"service_timeout","status_code":504,"message":"agent invocation timed out"}
+```
+
+`code` / `status_code` 与同等条件下阻塞 JSON 路径返回的完全一致。
+完整 SSE frame 语义见 [流式](/zh/guides/streaming)。
+
+### SSE `event: done` 终止 frame
+
+流以错误结束时，`done.code` 镜像 error frame 的 code，只消费 `done`
+的客户端也能分派：
+
+```
+event: done
+data: {"type":"done","text":"","context_id":"ch-...","is_error":true,"error":"agent invocation timed out","code":"service_timeout"}
+```
+
+有一个**仅流式**的 code 在阻塞 JSON 里从不出现：
+
+- **`agent_reply_error`** —— 智能体本身返回了带内错误消息
+  （`agent_reply` 带 `is_error: true`）。HTTP / SSE 传输成功；
+  智能体报告了域级失败。`done.text` 携带智能体的错误文本。
+
+---
+
+## Code 目录
+
+### 4xx —— 客户端错误
+
+| `code` | HTTP | wire 信封 | 原因 | 恢复 |
+|---|---|---|---|---|
+| `invalid_json` | 400 | JSON | 请求 body 不是合法 JSON | 修客户端序列化器 |
+| `invalid_body` | 400 | JSON | body 已解析但 schema 校验失败 | 看 `message` 哪个字段 |
+| `invalid_param` | 400 | JSON、SSE error | query / path / body 参数被拒（如 `taskId` 空、`deadline_ms` > 7 天） | 修参数 |
+| `missing_param` | 400 | JSON | 缺少必填参数 | 加上参数 |
+| `unauthorized` | 401 | JSON | `Authorization` header 缺失或非法 | 刷新 / 重发凭证 —— 见 [认证与 API Key](/zh/authentication) |
+| `invalid_token` | 401 | JSON | JWT / `oag_` 签名或 hash 校验失败 | 同 `unauthorized` |
+| `missing_token` | 401 | JSON | `Authorization` header 为空 | 加上 header |
+| `forbidden` | 403 | JSON、SSE error | 调用方不拥有智能体（且非公开） | 用拥有该资源的凭证 |
+| `insufficient_scope` | 403 | JSON | API key 缺该路由所需 scope —— 见 [scope 表](/zh/authentication#作用域scope)。`error.metadata.required_scope` 以逗号分隔回显可接受的 scope 集合（任一即可）。JWT 调用方永远不会撞这个 | 签发带正确 scope 的新 key；轮换调用方 |
+| `agent_not_found` | 404 | JSON、SSE error | `agentId`（或 `taskId`）调用方 ACL 内不认识 | 检查所有权 / 可见性 |
+| `conflict` | 409 | JSON、SSE error | 智能体拒绝调用（忙 / 拒接），或重复幂等 key 但 payload 已变，或任务终止 | 看 `message`：`agent rejected the request` / `task is already closed` / `duplicate idempotency key`。仅对临时拒绝重试 |
+| `payload_too_large` | 413 | JSON | 请求 body 超过该路由大小上限 | catalog / instances / webhook 路由上限 64 KiB；`invoke` / `tasks` / `conversations` 上限 1 MiB。大附件用 `POST /api/v1/files/presign-upload`，别 inline 字节 |
+| `rate_limited` | 429 | JSON | 每调用方 × 每端点配额耗尽 | 尊重 `Retry-After`；配额列在[运维 runbook](https://github.com/beeos-ai/openagent/blob/main/backend/docs/runbooks/0.5-unified-task-core-validation.md#reference-rate-limit-quotas-t5) |
+| `login_rejected` | 422 | JSON | 登录凭证错误（**不是** refresh-token 失败） | 重新提示用户；**不要**清除现有 session |
+
+### 5xx —— 服务端错误
+
+| `code` | HTTP | wire 信封 | 原因 | 恢复 |
+|---|---|---|---|---|
+| `internal_error` | 500 | JSON、SSE error | 意外服务端故障（panic、marshal 失败等） | 指数退避重试；持续触发请报 bug |
+| `agent_offline` | 503 | JSON、SSE error | 智能体记录存在但无活跃 session | 短暂重试；持续触发说明智能体 pod 挂了 |
+| `agent_service_unavailable` | 503 | JSON、SSE error | OpenAPI Gateway 丢失了到 Message Service / chatinvoke 的连接（如 `MESSAGE_SERVICE_URL` 未配置、MS 挂） | 重试；查平台健康 |
+| `auth_unavailable` | 503 | JSON | Auth Service 不可达 | 重试；**不要**强制登出 |
+| `auth_transient` | 503 | JSON | Auth gRPC 临时抖动（超时 / 副本切换） | 重试；**不要**强制登出 —— wire 级 "session 未被杀" 信号 |
+| `refresh_transient` | 503 | JSON | JWT 刷新因临时服务端故障失败 | 重试；**不要**强制登出 |
+| `session_unavailable` | 503 | JSON | 基于 cookie 登录时 session 存储不可达 | 重试登录 |
+| `service_timeout` | 504 | JSON、SSE error | OpenAPI Gateway 等智能体超时。`timeout_ms` 默认 120000（legacy）服务端钳制在 115000，让响应有预算 flush 在底层 `http.Server.WriteTimeout`（120s）触发前 | 长任务用异步 [`tasks`](/zh/guides/calling-agents#3-异步任务推荐用于长任务) API；不要重试同一阻塞 invoke，因为智能体可能还在跑 |
+
+### 仅流式 code
+
+| `code` | frame | 原因 |
+|---|---|---|
+| `agent_reply_error` | 仅 `done.code` | 智能体返回了 `is_error: true` 的 `agent_reply`。**传输成功** —— 智能体本身失败。看 `done.text` 拿智能体的解释。 |
+
+---
+
+## `chatinvoke` 哨兵 → wire code 映射
+
+OpenAPI Gateway 的 `invokeErrToAPIError`
+（[handlers_agents.go](https://github.com/beeos-ai/openagent/blob/main/backend/services/openapi-gateway/internal/http/handlers_agents.go)）
+把 [`pkg/chatinvoke`](https://github.com/beeos-ai/openagent/blob/main/backend/pkg/chatinvoke/invoker.go)
+的哨兵错误折叠成 wire 级 code：
+
+| chatinvoke 哨兵 | wire `code` | HTTP |
+|---|---|---|
+| `ErrInvokerAgentNotFound` | `agent_not_found` | 404 |
+| `ErrInvokerTaskNotFound` | `agent_not_found` | 404 |
+| `ErrInvokerAgentOffline` | `agent_service_unavailable`（msg = "agent is offline"） | 503 |
+| `ErrInvokerMisconfigured` | `agent_service_unavailable`（msg = "message service not configured"） | 503 |
+| `ErrInvokerStreamUnavailable` | `agent_service_unavailable`（msg = "streaming not configured"） | 503 |
+| `ErrInvokerTimeout` | `service_timeout` | 504 |
+| `ErrInvokerTaskRejected` | `conflict`（msg = "agent rejected the request"） | 409 |
+| `ErrInvokerTaskClosed` | `conflict`（msg = "task is already closed"） | 409 |
+| `ErrInvokerDuplicate` | `conflict`（msg = "duplicate idempotency key"） | 409 |
+| `ErrInvokerPermissionDenied` | `forbidden` | 403 |
+| 其他 | `internal_error` | 500 |
+
+<Note>
+**注**：本契约 P0-B 之前版本在面向客户端的文档里用过不同的 `code`
+值 `task_rejected` / `agent_busy` / `agent_unavailable`。那些从来
+不是 wire code —— 实际 wire 一直是 `conflict` / `agent_service_unavailable`，
+判别符在 `message`。SDK 客户端**必须**按本表的 code 值分派，**不要**
+按旧版文档值。
+</Note>
+
+---
+
+## TypeScript SDK recipe
+
+```ts
+try {
+  const reply = await agents.invokeAgent({ agentId, invokeAgentRequest: { message } });
+  // ... use reply
+} catch (e) {
+  if (e instanceof ResponseError && e.response.status === 504) {
+    // service_timeout — switch to async tasks
+  } else if (e instanceof ResponseError) {
+    const body = await e.response.json();
+    switch (body.error?.code) {
+      case "agent_not_found":     /* surface "agent not found" */ break;
+      case "forbidden":           /* user lacks permission     */ break;
+      case "conflict":            /* agent busy / duplicate    */ break;
+      case "agent_service_unavailable":
+      case "agent_offline":       /* retry later               */ break;
+      default:                    /* generic error             */ break;
+    }
+  }
+}
+```
+
+## Go SDK recipe
+
+```go
+_, _, err := client.AgentsAPI.InvokeAgent(ctx, agentID).
+    InvokeAgentRequest(req).Execute()
+if err != nil {
+    if apiErr, ok := err.(*beeos.GenericOpenAPIError); ok {
+        var env struct {
+            Error struct {
+                Code    string `json:"code"`
+                Message string `json:"message"`
+            } `json:"error"`
+        }
+        _ = json.Unmarshal(apiErr.Body(), &env)
+        switch env.Error.Code {
+        case "agent_not_found":
+            // ...
+        case "service_timeout":
+            // fall back to async tasks
+        }
+    }
+}
+```
+
+---
+
+## 另请参阅
+
+- [认证与 API Key](/zh/authentication)
+- [调用智能体](/zh/guides/calling-agents)
+- [OpenAPI 契约](https://github.com/beeos-ai/openagent/blob/main/backend/openapi/beeos-platform-v1.yaml)
+  —— 每个 operation 的 `4XX` / `5XX` 响应都会引用这些 code
+- [`backend/shared/types/apierror/`](https://github.com/beeos-ai/openagent/blob/main/backend/shared/types/apierror/)
+  —— Go 规范定义

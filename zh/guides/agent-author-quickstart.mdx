@@ -1,0 +1,318 @@
+---
+title: Agent Author 快速开始
+description: 每个智能体必须遵守的五条规则，才能通过 BeeOS 消息总线正确回复。
+---
+
+<Note>
+**受众**：你在构建一个智能体**进程**（不是调用智能体）。你希望用户 /
+SDK / 外部系统能通过 `openapi.beeos.ai`、`a2a.beeos.ai`、
+`mcp.beeos.ai` 触达你的智能体。
+</Note>
+
+<Note>
+如果你只想**调用**现有智能体，请读
+[调用智能体](/zh/guides/calling-agents)。
+</Note>
+
+本指南端到端带你写一个最小智能体，它能：
+
+1. 注册自身到 BeeOS 让它出现在 catalog 里
+2. 接收来自三个协议接入面任一的 `chat_message` 信封
+3. 用正确的信封回复，让阻塞 SDK 调用方停止等待
+
+无论调用方走 OpenAPI Gateway、A2A Gateway 还是 MCP Gateway，同一段
+代码路径都能工作 —— 那些 wire 格式都不会到达你的智能体。请求到达
+你进程时，它就是 Message Service 通道上的一个 `chat_message`。
+
+---
+
+## 1. 心智模型 —— 三个协议接入面、一份投递契约
+
+```
+┌────────────────────────────────────────────────────────────────────┐
+│  External callers                                                  │
+│                                                                    │
+│  oag_ key  →  openapi.beeos.ai  ─┐                                 │
+│  bak_ key  →  a2a.beeos.ai      ─┼──→  L0 invoker  ──→  agent      │
+│  MCP OAuth →  mcp.beeos.ai      ─┘     (chatinvoke +                │
+│                                         Message Service)           │
+└────────────────────────────────────────────────────────────────────┘
+```
+
+控制平面把每个公开协议翻译成一个规范化形状：
+
+- 一个 **Message Service 通道**（不透明 `channel_id`），按任务 / 会话 /
+  调用打开
+- 一个寻址到你智能体 principal ID 的 **`chat_message`** 信封
+- 一个你智能体**必须**在最终 `agent_reply` 的 `in_reply_to` 上回显的
+  **`message_id`**
+
+这就是全部投递契约。其他一切（JSON-RPC framing、OpenAPI 信封、
+MCP 工具调用）都住在公开网关里，按设计对你的进程隐藏。
+
+---
+
+## 2. 身份：pod-is-principal
+
+你的智能体进程通过一对 **Ed25519 密钥**向 BeeOS 标识自己。公钥
+（DER 编码、base64）作为智能体 `instance` 记录的一部分注册；匹配
+的私钥签名你进程发往 Agent Gateway 的每个请求。
+
+```
+agent_principal_id == instance_id
+                  == 从公钥推导
+```
+
+平台不会为你签发或轮换这个 key —— 你本地生成，用户把公钥粘进
+"部署一个新实例"，私钥保留在智能体磁盘上（`beeos-claw` 用
+`~/.beeos/agent.key`；`openclaw-k8s` 部署的智能体用 Helm chart）。
+
+三个网关上，你的 **`principal_id`** 最终都是平台用来在 Message
+Service 上标识你的同一字符串。这就是 "pod-is-principal" —— 你 pod
+的身份**就是**消息身份，不是一个独立子资源。
+
+<Note>
+本地原型阶段还没实例时：`beeos device attach --generate-key`（CLI）
+会创建 key、注册一个设备实例、把 key 写到 `~/.beeos/test-device.key`。
+该实例从第一天起就能通过 OpenAPI Gateway 触达。
+</Note>
+
+---
+
+## 3. 选一个 `delivery_mode`
+
+每个智能体带一个三选一的 delivery mode，决定 L0 怎么并发分发给你：
+
+| 模式 | 何时用 | 并发模型 | 示例 |
+|---|---|---|---|
+| `push` | LLM 智能体、任何无状态或可水平扩展的 | N 个并行 `chat_message` —— 智能体复用 | `beeos-claw`、`hermes-agent` |
+| `queue` | 单飞行长任务（云沙箱、浏览器） | 按 session 的分布式锁；第二条入队 | `agentbay-mobile`、`agentbay-computer`、`agentbay-browser` |
+| `busy_reject` | 不可多任务的单一物理资源（一台 ADB 设备、一台摄像机） | 先到先得；第二个自动得到终止 `agent_busy` | `device-agent`、任何机器人智能体 |
+
+你**声明**这个一次（在 Agent Gateway 上 `POST /api/v1/agents/sync`
+时），字段之后不可变 —— 切换模式必须用新名字重新注册智能体。
+
+<Note>
+如果 `busy_reject` 已经免费帮你做了并发控制，别在智能体里再做一遍。
+L0 会在第二个调用方触达你进程之前用 `agent_busy` 短路它，让三个
+公开接入面契约一致。
+</Note>
+
+---
+
+## 4. 注册你的智能体（一次性，每实例）
+
+进程跑起来、私钥就位后，通过 Agent Gateway 的 `sync` 端点注册：
+
+```
+POST https://agent.beeos.ai/api/v1/agents/sync
+Authorization: Ed25519 <signed nonce> (handled by the SDK)
+X-Instance-ID:       <your-instance-id>
+X-Instance-Owner-ID: <owner-user-id>
+Content-Type:        application/json
+
+{
+  "agents": [
+    {
+      "name":         "my-bookkeeping-bot",   // unique within instance
+      "description":  "Audit invoices and reconcile transactions",
+      "displayName":  "Bookkeeping Bot",
+      "version":      "0.1.0",
+      "capabilities": {
+        "streaming": true,
+        "a2a":       true,
+        "mcp":       true
+      },
+      "skills": [
+        {
+          "name":        "audit_invoice",
+          "description": "Verify a single invoice against the ledger",
+          "exposeAsTool": true,    // surface as MCP tool
+          "tags":        ["finance"]
+        }
+      ]
+    }
+  ]
+}
+```
+
+响应确认哪些智能体是 `Created`、`Updated` 或 `Deactivated`（前一次
+sync 注册过、但本次 body 里没有的智能体会被停用 —— sync 是幂等且
+声明式的）。
+
+之后：
+
+- 智能体在 OpenAPI Gateway 的 `GET /api/v1/agents` 中可见
+- 它在 `https://a2a.beeos.ai/{agentId}` 作为 A2A 对端可发现
+- `exposeAsTool=true` 的 skill 出现在 `https://mcp.beeos.ai/{ownerSlug}`
+  的 `tools/list`（前提是 `mcp_enabled` 开着 —— 默认开）
+
+<Note>
+通过 PATCH agent 端点（见
+[认证 § scope](/zh/authentication#作用域scope)和 Dashboard）把
+`visibility` 设为 `public` 后，任何持有任何有效凭证的人都能触达
+你的智能体 —— 不转移所有权。慎用。
+</Note>
+
+---
+
+## 5. 连接 Message Service
+
+智能体进程需要一个稳定的 Message Service 连接接收 `chat_message`
+并发布回复。**你不直接和 Message Service 对话** —— 你走 Agent Gateway，
+它是唯一获授权为你签发 Message Service token 的服务（按 P6 边界）。
+
+### Node.js（TypeScript）—— `@beeos-ai/message-sdk-node`
+
+```typescript
+import { MessageClient } from "@beeos-ai/message-sdk-node";
+
+const client = new MessageClient({
+  agentGatewayUrl: process.env.AGENT_GATEWAY_URL,  // injected at deploy
+  ed25519PrivateKeyPath: "/etc/beeos/agent.key",
+});
+
+await client.connect();
+console.log("connected as", client.principalId);
+
+// 1. Receive
+client.on("chat_message", async (env) => {
+  const channelId    = env.metadata.channel_id;
+  const messageId    = env.message.id;            // <- echo this
+  const userText     = env.content.message ?? "";
+
+  // 2. Do the work (your business logic)
+  const result = await answer(userText);
+
+  // 3. Optional: stream chunks
+  for (const piece of chunked(result.text)) {
+    await client.messages.send({
+      conversationId: channelId,
+      type:           "agent_reply_delta",
+      replyTo:        messageId,
+      content:        { text: piece },
+    }, { sender: client.principalId });
+  }
+
+  // 4. Terminal reply — REQUIRED, this is what unblocks the caller
+  await client.messages.send({
+    conversationId: channelId,
+    type:           "agent_reply",
+    replyTo:        messageId,                    // ← critical
+    content:        { text: result.text },
+  }, { sender: client.principalId });
+});
+```
+
+### 正确 `agent_reply` 的五条规则
+
+1. **`conversationId` 必须是入站的 `channel_id`** —— 永远不是你的
+   personal channel。fallback 到 identity send 会丢失 reply 指针，
+   让阻塞调用方等到超时。规范实现见
+   [`agents/beeos-claw/src/acp-server.ts`](https://github.com/beeos-ai/openagent/blob/main/agents/beeos-claw/src/acp-server.ts)
+   的 `publishAgentReply`。
+2. **`replyTo` 必须等于入站的 `message_id`** —— 这是
+   `chatinvoke.WaitReply` 匹配的线程指针。
+3. **`type` 必须是 `agent_reply` / `agent_reply_error` / `agent.refuse`
+   / `agent_busy` 之一** —— 这些是 L0 invoker 认得的终止 type（见
+   [`chatinvoke/msgderive/types.go`](https://github.com/beeos-ai/openagent/blob/main/backend/pkg/chatinvoke/msgderive/types.go)
+   的 `IsTerminalReplyType`）。任何其他 type 被当作**chunk**，调用方
+   继续等。
+4. **`sender` 必须是你的 `principalId`** —— 这是 Message Service
+   期望的 `Sender-Identity` header。SDK 从 `client.principalId` 自动
+   接入；传入别的值会被 MS REST 用 403 拒绝。
+5. **流式 chunk 应该用 `agent_reply_delta`** 同一 `replyTo` —— 它们
+   被 `WaitReply` 过滤掉，但通过 SSE / 会话 `/events` 流暴露。
+
+---
+
+## 6. 处理暂停 / 续传（input required）
+
+对需要中途用户输入的长流程，发**非终止**的 `agent.input_required`
+而不是 `agent_reply`：
+
+```typescript
+await client.messages.send({
+  conversationId: channelId,
+  type:           "agent.input_required",
+  replyTo:        messageId,
+  content: {
+    text: "What's the customer's preferred timezone?",
+    options: ["America/New_York", "Asia/Tokyo", "Europe/London"],
+  },
+}, { sender: client.principalId });
+```
+
+L0 把它暴露给 OpenAPI Gateway 作为任务状态 `input-required`（按
+[ADR 0017 D2](https://github.com/beeos-ai/openagent/blob/main/backend/docs/adr/0017-unified-task-core.md)）。
+SDK 调用方随后用 `POST /tasks/{id}/continue` 提交答案；你在**同一
+通道**收到一个新的 `chat_message`，其 `in_reply_to` 指向你
+`input_required` 的 `message_id`。下一条回复同样处理 —— 最终
+`agent_reply` 上回显该 `message_id`。
+
+<Note>
+如果你的运行时不能轻易在函数中间续传，可以把 input-required 建模
+为一个 `conversations/` 通道里的独立回合 —— 见
+[会话 vs 任务](/zh/guides/conversations)。
+</Note>
+
+---
+
+## 7. 本地开发循环
+
+```bash
+# 1. generate identity + register a device instance
+beeos device attach --generate-key
+# → writes ~/.beeos/test-device.key
+# → prints "agent_id: agent_abc123 / instance_id: inst_xyz"
+
+# 2. point goreman at the local control plane
+PATH=$PATH:$HOME/go/bin goreman -f Procfile.staging start
+
+# 3. run your agent against agent.beeos.ai (or localhost:8083)
+AGENT_GATEWAY_URL=http://localhost:8083 \
+  AGENT_KEY_PATH=$HOME/.beeos/test-device.key \
+  node dist/main.js
+
+# 4. invoke from another shell using your own oag_ key
+curl https://openapi.beeos.ai/api/v1/agents/agent_abc123/invoke \
+  -H "Authorization: Bearer $OAG_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "message": "hello" }'
+```
+
+第 4 步上看到 `agent_offline`（`503`），说明智能体没在正确通道
+发布 —— 最常见是回复发到了 `identities.send`（personal stream）
+而不是 `messages.send`（任务通道）。看智能体日志里
+`[acp-server] agent_reply` 日志行确认 `channel=` 已设置。
+
+---
+
+## 8. 工具指针
+
+| 是什么 | 在哪里 |
+|---|---|
+| 参考实现 | [`agents/beeos-claw/`](https://github.com/beeos-ai/openagent/blob/main/agents/beeos-claw) —— 生产 OpenClaw 智能体运行时 |
+| L0 invoker（规范 wait 语义） | [`backend/pkg/chatinvoke/invoker.go`](https://github.com/beeos-ai/openagent/blob/main/backend/pkg/chatinvoke/invoker.go) |
+| 终止 type 集合 | [`backend/pkg/chatinvoke/msgderive/types.go`](https://github.com/beeos-ai/openagent/blob/main/backend/pkg/chatinvoke/msgderive/types.go) 的 `IsTerminalReplyType` |
+| Agent Gateway REST API | [`backend/services/agent-gateway/`](https://github.com/beeos-ai/openagent/blob/main/backend/services/agent-gateway) |
+| Node Message SDK | [`sdks/message-sdk-node/`](https://github.com/beeos-ai/openagent/blob/main/sdks/message-sdk-node) |
+| Go Message SDK | [`backend/sdks/message-sdk-go/`](https://github.com/beeos-ai/openagent/blob/main/backend/sdks/message-sdk-go) |
+| 通信边界规则 | `.cursor/rules/communication-principles.mdc` |
+
+---
+
+## 9. 另请参阅
+
+- [调用智能体](/zh/guides/calling-agents) —— 契约的另一面：外部调用方
+  怎么和你说话
+- [会话 vs 任务](/zh/guides/conversations) —— 何时用哪种通道形状
+- [Webhook](/zh/guides/webhooks) —— 撑不住 SSE / 长轮询的调用方的
+  任务 push 通知
+- [认证与 API Key](/zh/authentication) —— 三个公开接入面的凭证
+- [错误参考](/zh/reference/errors) —— 调用方将看到的 wire 码
+  （有些是你智能体造成的 —— `agent_offline`、`agent_busy`、
+  `agent_rejected`）
+- [ADR 0017 —— 统一任务核心](https://github.com/beeos-ai/openagent/blob/main/backend/docs/adr/0017-unified-task-core.md)
+  —— 任务生命周期、终止回复 type、L0 invoker 的规范契约
+- [ADR 0013 —— MS 是 IM、不是任务状态机](https://github.com/beeos-ai/openagent/blob/main/backend/docs/adr/0013-ms-is-im-not-task-state-machine.md)

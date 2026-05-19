@@ -1,0 +1,403 @@
+---
+title: Webhook
+description: 通过 HMAC 签名 payload、指数退避重试、审计日志接收任务终止态通知。
+---
+
+Webhook 让你通过 POST 而不是轮询接收任务生命周期更新。在任务上
+注册回调 URL，任务每次状态切换都会命中它。
+
+<Note>
+**状态 —— P2-A 已完整落地**：回调
+(1) 用 HMAC-SHA256 **可签名**（`X-BeeOS-Signature`），
+(2) 失败按文档化的指数退避**重试**（1m → 5m → 30m → 2h → 12h，
+    之后死信），
+(3) 通过 `GET .../deliveries` 和
+    `POST .../deliveries/{id}/redeliver` **可审计 + 可重放**。
+</Note>
+
+<Note>
+单次尝试 10s 超时仍**按尝试**生效，但失败尝试现在能熬过进程崩溃，
+由后台重试 worker 接管。
+</Note>
+
+---
+
+## 1. 生命周期
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant openapi-gw
+    participant A2A
+    participant YourReceiver
+
+    Client->>openapi-gw: POST /agents/{agentId}/tasks/{taskId}/webhooks {url, token?}
+    openapi-gw->>A2A: SetPushNotificationConfig (gRPC)
+    A2A-->>openapi-gw: webhook_id
+    openapi-gw-->>Client: 201 {webhook_id, url, task_id, created_at}
+
+    Note over A2A: ... task progresses ...
+    A2A->>YourReceiver: POST {url} (state transition)
+    YourReceiver-->>A2A: 200 (best-effort; ignored on 5xx)
+    Note over A2A: terminal state → final delivery
+    A2A->>YourReceiver: POST {url} (final: true)
+```
+
+---
+
+## 2. 注册 webhook
+
+### 请求
+
+```http
+POST /api/v1/agents/agent_abc123/tasks/ch-uuid/webhooks
+Authorization: Bearer oag_...
+Content-Type: application/json
+
+{
+  "url": "https://example.com/beeos/hook",
+  "token": "optional-bearer-shared-secret",
+  "secret": "wh_sec_a3b1...4f"
+}
+```
+
+| 字段 | 必填 | 说明 |
+|---|---|---|
+| `url` | 是 | 绝对的 `http://` 或 `https://`。除 scheme 校验外不验证路径。 |
+| `token` | 否 | 共享密钥。设置后 BeeOS 在每次回调上发 `Authorization: Bearer <token>`。空则匿名回调。 |
+| `secret` | 否 | **P2-A** HMAC-SHA256 签名 key（16-256 字符）。设置后每次回调带 `X-BeeOS-Signature`（格式 `t=<unix>,v1=<hex>` —— 见 [§6 HMAC 签名](#6-hmac-签名-p2-a)）。只写 —— Get / List 永不返回。 |
+
+### 响应（201）
+
+```json
+{
+  "success": true,
+  "data": {
+    "webhook_id": "wh-uuid",
+    "task_id": "ch-uuid",
+    "url": "https://example.com/beeos/hook",
+    "has_secret": true,
+    "created_at": "2026-05-14T18:00:00Z"
+  }
+}
+```
+
+`token` 和 `secret` 在**任何** list / get 响应里都**永不**返回 ——
+注册后仅服务端使用。`has_secret` 布尔值让 UI / SDK 不暴露 secret
+本身的情况下显示 "已启用签名"。轮换 secret 用一个新值 Set 即可
+（传 `""` 不影响现有 secret —— 要清空请 DELETE + 重新注册）。
+
+### 列出 / 删除
+
+```http
+GET    /api/v1/agents/{agentId}/tasks/{taskId}/webhooks
+DELETE /api/v1/agents/{agentId}/tasks/{taskId}/webhooks/{webhookId}
+```
+
+一个任务可以持有任意数量的 webhook（目前没有显式上限）。删除立即生效 ——
+不取消进行中的投递，但删除后不再有新尝试。
+
+---
+
+## 3. 当前限制
+
+约束投递契约的几点：
+
+| 限制 | 行为 | 解决 |
+|---|---|---|
+| **单次尝试 10s 超时** | 接收方超过 10s 请求被取消。开了重试后会按退避日程重新尝试。 | handler 保持快速（< 1s）。把 payload 排入后台队列，立即 200 ACK。 |
+| **不跟随重定向** | HTTP 3xx 响应被当作最终结果，**不**跟随。retry 调度器把它和其他非 2xx 一样处理（会重试）。 | 注册实际目的地 URL，不要注册重定向器。 |
+| **并发上限 5** | 每次 `firePushWebhooks` 调用最多 5 路 webhook 并行扇出。订阅者多的任务会看到扇出排队。 | 单任务不要注册 > 5 个 webhook；在你的边界合并。 |
+| **payload schema 未版本化** | payload 格式取决于注册时绑定的 renderer（见 §4）。renderer 在注册时固定。 | 在接收方代码里盖自己的版本；BeeOS 若改 renderer 按 ADR-0017 是加法（额外字段）。 |
+| **最多 6 次尝试** | 1m / 5m / 30m / 2h / 12h 日程跑完后，行进入 `dead_letter`。 | 修复接收方后通过 [§7 deliveries / redeliver](#7-投递审计日志--手动重放-p2-a-part-3) 手动重放。 |
+
+---
+
+## 4. Payload 格式
+
+BeeOS 支持三种 renderer，由注册时的 `protocol_filter` 列选择。
+通过此 OpenAPI 端点注册的 webhook 始终用 **`openapi`** renderer。
+
+### `openapi` renderer —— TaskEvent 信封
+
+匹配 `GET /tasks/{id}/events` 的 SSE 流 payload，可共享 decoder。
+每次状态切换（中间态 + 终态）都发。
+
+```http
+POST {your-url}
+Content-Type: application/json
+X-BeeOS-Webhook-Format: openapi
+Authorization: Bearer <your-token>       ← 仅当你 register 时设了 `token`
+```
+
+```json
+{
+  "type": "task_status",
+  "task_id": "ch-uuid",
+  "context_id": "ch-uuid",
+  "status": "succeeded",
+  "final": true,
+  "timestamp": "2026-05-14T18:01:23.456Z"
+}
+```
+
+可能的 `status` 值：`queued`、`running`、`input_required`、
+`auth_required`、`succeeded`、`failed`、`canceled`、`timeout`、
+`rejected`（见
+[调用智能体 §状态参考](/zh/guides/calling-agents#状态参考-adr-0017)）。
+`final: true` 仅在终止态。
+
+### `a2a` 与 `generic` renderer
+
+供 A2A JSON-RPC 客户端和无 protocol filter 注册的通用 / 旧版订阅者
+使用。OpenAPI Gateway 不可选 —— 仅文档参考。详见
+[`webhook_renderer.go`](https://github.com/beeos-ai/openagent/blob/main/backend/services/a2a/pkg/application/webhook_renderer.go)。
+
+---
+
+## 5. 接收方 checklist
+
+针对当前投递语义，生产级接收方需要：
+
+1. **跑在 HTTPS 上。** 无例外 —— `token` 和 `secret` 在传输中都敏感。
+2. **先验签**（`X-BeeOS-Signature`）—— 注册了 `secret` 时。用 [§6](#6-hmac-签名-p2-a)
+   的 recipe。不匹配或时间戳过旧返回 `401`。
+3. **再验可选的 `Authorization` bearer token** —— 注册了 `token` 时。
+   不匹配返回 `401`。
+4. **1s 内 ACK**（10s 上限）。payload 内部排队；不在 inline 跑业务逻辑。
+5. **保持幂等** —— retry 调度器可能引入重复（at-least-once 投递）。
+   按 `(task_id, status, timestamp)` 作为 key，在接收方去重。
+6. **对必须不丢的终止态 webhook**（如计费相关），周期性轮询
+   `GET /tasks/{id}`。Webhook 是"快速通知"；API 是"真相"。
+7. **丢弃未知 `type` 值** —— renderer 的扩展按 ADR-0017 是加法（额外
+   字段 / 新类型）；不要对新事件类型崩溃。
+
+```ts
+app.post("/beeos/hook", express.json(), async (req, res) => {
+  const expected = `Bearer ${process.env.BEEOS_WEBHOOK_TOKEN}`;
+  if (req.header("authorization") !== expected) return res.sendStatus(401);
+  await queue.add(req.body);          // fast ACK, real work later
+  res.sendStatus(200);
+});
+```
+
+---
+
+## 6. HMAC 签名（P2-A）
+
+注册时设 `secret` 开启 HMAC-SHA256 body 签名（见 §2）。投递器随后
+在每次回调上发两个额外 header：
+
+- `X-BeeOS-Event: task.state`
+- `X-BeeOS-Task-Id: ch-uuid`
+- `X-BeeOS-Signature: t=<unix>,v1=<hex>`，其中
+  `hex = hmac_sha256(secret, "<unix>." || body)`
+
+其他 header（`X-BeeOS-Webhook-Format`、可选的
+`Authorization: Bearer <token>`）不变。轮换期可同时**叠加**签名 +
+bearer token。
+
+### 验证 recipe —— Python
+
+```python
+import hmac, hashlib, time, json
+from flask import abort, request
+
+WEBHOOK_SECRET = open("/etc/secrets/beeos-webhook").read().strip().encode()
+CLOCK_SKEW_SEC = 300                                # ±5 min
+
+def verify_signature() -> None:
+    sig_header = request.headers.get("X-BeeOS-Signature", "")
+    parts = dict(p.split("=", 1) for p in sig_header.split(",") if "=" in p)
+    try:
+        ts = int(parts.get("t", ""))
+    except ValueError:
+        abort(400, "malformed signature header")
+    if abs(time.time() - ts) > CLOCK_SKEW_SEC:
+        abort(401, "stale or future-dated signature")
+    body = request.get_data()
+    expected = hmac.new(
+        WEBHOOK_SECRET,
+        f"{ts}.".encode() + body,
+        hashlib.sha256,
+    ).hexdigest()
+    if not hmac.compare_digest(expected, parts.get("v1", "")):
+        abort(401, "bad signature")
+```
+
+### 验证 recipe —— Node.js / Express
+
+```typescript
+import crypto from "node:crypto";
+
+const WEBHOOK_SECRET = process.env.BEEOS_WEBHOOK_SECRET!;
+const CLOCK_SKEW_SEC = 300;
+
+app.post("/beeos/hook",
+  express.raw({ type: "application/json" }),       // raw bytes for HMAC
+  (req, res, next) => {
+    const sig = String(req.header("x-beeos-signature") ?? "");
+    const parts = Object.fromEntries(sig.split(",").map((p) => p.split("=")));
+    const ts = Number(parts.t);
+    if (!Number.isFinite(ts) || Math.abs(Date.now() / 1000 - ts) > CLOCK_SKEW_SEC) {
+      return res.sendStatus(401);
+    }
+    const body = req.body as Buffer;
+    const expected = crypto
+      .createHmac("sha256", WEBHOOK_SECRET)
+      .update(`${ts}.`)
+      .update(body)
+      .digest("hex");
+    if (!crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(parts.v1 ?? ""))) {
+      return res.sendStatus(401);
+    }
+    // Now safe to JSON.parse(body.toString()).
+    next();
+  },
+  // ...your handler...
+);
+```
+
+**关键**：对**原始请求字节**做 hash，不是对重新序列化的 JSON 对象。
+重新序列化会改变空白 / key 顺序，HMAC 不会匹配。
+
+### 为什么有 ±5 分钟时差检查？
+
+没有时间戳检查时，捕获一次有效回调的攻击者可以永久重放。拒绝过旧或
+未来日期的时间戳缩小重放窗口。±5 分钟是 BeeOS 推荐值；封闭网络
+接收方可以更严。
+
+---
+
+## 7. 投递审计日志 + 手动重放（P2-A part 3）
+
+每次回调尝试现在都被记录为一行持久行，可通过两个 REST 端点列出和
+重放。这些行能熬过进程崩溃（lease 过期后 retry worker 接管），
+所以临时部署 / 滚动重启不再丢失飞行中的回调。
+
+### 重试日程
+
+失败一次后，按固定退避重排：
+
+| 第 N 次 → N+1 次 | 重排延迟 |
+|---|---|
+| 1 → 2 | 1 分钟 |
+| 2 → 3 | 5 分钟 |
+| 3 → 4 | 30 分钟 |
+| 4 → 5 | 2 小时 |
+| 5 → 6 | 12 小时 |
+| 6 → ✗ | 移入 `dead_letter` |
+
+行在尝试之间保持 `pending`（schedule 触发时 worker 把它从 `failed`
+翻回 `pending`）。
+[`POST .../redeliver`](#post-redeliver) 手动重放无论之前自动重试
+多少次，都会把行 clone 为一行新的 `pending`。
+
+### 生命周期状态
+
+| 状态 | 含义 | 终止态？ |
+|---|---|---|
+| `pending` | 排队待首次尝试或等待计划重试。 | 否 |
+| `succeeded` | 接收方返回 2xx。 | 是 |
+| `failed` | 上次尝试失败 / 非 2xx；下一次已计划。 | 否（中间态） |
+| `dead_letter` | 日程耗尽。需要手动 `redeliver`。 | 是 |
+
+### `GET .../deliveries`
+
+```http
+GET /api/v1/agents/{agentId}/tasks/{taskId}/webhooks/{webhookId}/deliveries?limit=50
+Authorization: Bearer oag_...
+```
+
+返回最近的投递行，新到旧。`limit` 钳制到 `[1, 200]`，默认 50。
+
+```json
+{
+  "success": true,
+  "data": {
+    "deliveries": [
+      {
+        "delivery_id": "del-uuid",
+        "webhook_id": "wh-uuid",
+        "task_id": "ch-uuid",
+        "renderer": "openapi",
+        "status": "succeeded",
+        "attempt_num": 1,
+        "last_response_status": 200,
+        "last_error": "",
+        "next_attempt_at": "2026-05-19T10:00:00Z",
+        "last_attempted_at": "2026-05-19T10:00:00Z",
+        "created_at": "2026-05-19T10:00:00Z",
+        "completed_at": "2026-05-19T10:00:00Z"
+      },
+      {
+        "delivery_id": "del-uuid-2",
+        "webhook_id": "wh-uuid",
+        "task_id": "ch-uuid",
+        "renderer": "openapi",
+        "status": "dead_letter",
+        "attempt_num": 6,
+        "last_response_status": 502,
+        "last_error": "http_status: 502",
+        "next_attempt_at": "2026-05-19T22:00:00Z",
+        "last_attempted_at": "2026-05-19T22:00:00Z",
+        "created_at": "2026-05-19T08:00:00Z",
+        "completed_at": "2026-05-19T22:00:00Z"
+      }
+    ]
+  }
+}
+```
+
+原始 payload 字节、bearer `token`、HMAC `secret` **永不**返回 ——
+只有诊断字段。要验证接收方应该看到什么，请查阅你自己的源任务
+状态切换日志；`renderer` 字段告诉你应用了哪个 payload schema。
+
+### `POST .../redeliver`
+
+```http
+POST /api/v1/agents/{agentId}/tasks/{taskId}/webhooks/{webhookId}/deliveries/{deliveryId}/redeliver
+Authorization: Bearer oag_...
+```
+
+把一行 `failed` 或 `dead_letter` clone 为一行新的 `pending`。clone
+重发**完全一致**的 payload 字节（和 HMAC 签名）—— 接收方可以把
+手动重放的回调和自动重试同等对待。
+
+返回 `202` + 新 pending 行：
+
+```json
+{
+  "success": true,
+  "data": {
+    "delivery_id": "del-uuid-new",
+    "status": "pending",
+    "attempt_num": 0,
+    "...": "..."
+  }
+}
+```
+
+错误：
+
+| 状态 | Code | 何时 |
+|---|---|---|
+| `404` | `not_found` | 投递不存在或不属于该 webhook。 |
+| `409` | `conflict` | 源行是 `pending` 或 `succeeded` —— 只有 `failed` / `dead_letter` 行能重放。 |
+| `403` | `forbidden` | 调用方不拥有该任务。 |
+
+每次 redeliver 调用都入队一行**新的** pending —— 反复调用产生反复
+投递。把此端点当作手动救场，不是调用方侧"网络出错就重试"的工具。
+
+---
+
+---
+
+## 另请参阅
+
+- [调用智能体](/zh/guides/calling-agents) —— 提交触发 webhook 的任务
+- [错误参考](/zh/reference/errors) —— webhook CRUD 端点返回的 code
+- [认证与 API Key](/zh/authentication) —— 注册端点所需凭证
+- [`backend/services/a2a/pkg/application/webhook_renderer.go`](https://github.com/beeos-ai/openagent/blob/main/backend/services/a2a/pkg/application/webhook_renderer.go) —— payload renderer 源码
+- [`backend/services/a2a/pkg/application/task_service.go`](https://github.com/beeos-ai/openagent/blob/main/backend/services/a2a/pkg/application/task_service.go) 的 `firePushWebhooks` —— 投递循环
+- [`backend/services/a2a/pkg/application/webhook_delivery_worker.go`](https://github.com/beeos-ai/openagent/blob/main/backend/services/a2a/pkg/application/webhook_delivery_worker.go) —— 重试队列 worker
