@@ -4,8 +4,7 @@
   "name": "BeeOS",
   "logo": {
     "light": "/images/logo-light.svg",
-    "dark": "/images/logo-dark.svg",
-    "height": 32
+    "dark": "/images/logo-dark.svg"
   },
   "favicon": "/images/favicon.svg",
   "colors": {
@@ -13,15 +12,24 @@
     "light": "#FFF2C4",
     "dark": "#F5AD1A"
   },
-  "topbarLinks": [
-    {
-      "name": "Dashboard",
-      "url": "https://beeos.ai"
+  "navbar": {
+    "links": [
+      {
+        "label": "Dashboard",
+        "href": "https://beeos.ai"
+      }
+    ],
+    "primary": {
+      "type": "button",
+      "label": "Get API Key",
+      "href": "https://beeos.ai/settings/api-keys"
     }
-  ],
-  "topbarCtaButton": {
-    "name": "Get API Key",
-    "url": "https://beeos.ai/settings/api-keys"
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/beeos-ai",
+      "x": "https://x.com/beeos_ai"
+    }
   },
   "navigation": {
     "languages": [
@@ -164,19 +172,5 @@
         ]
       }
     ]
-  },
-  "api": {
-    "baseUrl": "https://openapi.beeos.ai",
-    "auth": {
-      "method": "bearer",
-      "name": "Authorization"
-    },
-    "playground": {
-      "mode": "simple"
-    }
-  },
-  "footerSocials": {
-    "github": "https://github.com/beeos-ai",
-    "x": "https://x.com/beeos_ai"
   }
 }
