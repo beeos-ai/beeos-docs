@@ -1,24 +1,68 @@
+# ============================================================================
+# AUTO-SYNCED FROM backend/openapi/beeos-platform-v1.yaml
+# DO NOT EDIT HERE — edit the source in the openagent repo and run
+#   cd beeos-docs && npm run sync-spec
+# Last synced: 2026-05-19T20:31:12Z
+# Source SHA: acfb72e
+# ============================================================================
 openapi: 3.1.0
 info:
-  title: BeeOS Platform API
+  title: BeeOS OpenAPI (user contract)
   version: 1.0.0
   description: |
-    The **BeeOS Platform API** for managing agent instances and invoking agents.
-    SDKs are available for [TypeScript](https://www.npmjs.com/package/@beeos-ai/sdk)
-    and [Go](https://github.com/beeos-ai/sdk-go).
+    The **BeeOS OpenAPI** user contract. The sole implementer is
+    **[`services/openapi-gateway`](../services/openapi-gateway)** (`openapi-gw`,
+    local `:8095`). SDKs (Go / TypeScript) published under
+    [`sdks/beeos-ai-sdk-go`](../../sdks/beeos-ai-sdk-go) and
+    [`sdks/beeos-ai-sdk`](../../sdks/beeos-ai-sdk) are generated directly from
+    this document.
 
-    **Auth:** every operation requires either a user **JWT** or an **`oag_`**
-    User API Key passed via `Authorization: Bearer`.
+    The main user Gateway (`services/gateway`, `:9080`) serves web / mobile /
+    desktop clients and is **not** described by this document. It maintains its
+    own route set independent of the SDK contract.
+
+    **Auth:** every operation requires either a user **JWT** or a **`oag_`**
+    User API Key, both on `Authorization: Bearer`. Agent-level protocol
+    endpoints (A2A JSON-RPC with `bak_`, MCP) live in
+    [beeos-agent-integration-v1.yaml](beeos-agent-integration-v1.yaml) and are
+    hosted by A2A Gateway / MCP Gateway — not by `openapi-gateway`.
 servers:
   - url: https://openapi.beeos.ai
     description: Production
+  - url: https://openapi-staging.beeos.ai
+    description: Staging
+  - url: http://localhost:8095
+    description: Local dev (goreman)
 tags:
   - name: deploy
     description: Provider / region / model catalog.
   - name: instances
     description: Agent instance lifecycle (deploy, start, stop, restart, destroy).
   - name: agents
-    description: Agent listing, details, and invocation.
+    description: Agent listing, details, and synchronous invocation.
+  - name: tasks
+    description: |
+      Async agent tasks (the canonical task core — see ADR-0017
+      `0017-unified-task-core`). `tasks` differs from `agents/invoke` in three
+      ways: it returns 202 immediately with a `task_id` (no blocking on the
+      reply), exposes a polling endpoint plus an SSE event stream, and supports
+      cancel/continue lifecycle controls.
+  - name: conversations
+    description: |
+      Long-lived multi-turn dialogs. Unlike tasks (single-shot, finite, terminal
+      status), conversations are open until the caller closes them — messages
+      are individually persisted and addressable by offset. Use the conversation
+      API when you need to interleave caller and agent turns over an extended
+      session; use `tasks` when a single prompt has a bounded reply with optional
+      pause-and-resume.
+  - name: files
+    description: |
+      Presigned URLs for caller uploads (`POST /files/presign-upload`) and
+      result downloads (`GET /files/presign-download`) — the canonical
+      attachment mechanism shared by `agents/{id}/invoke` and
+      `agents/{id}/tasks`. Callers obtain a short-lived signed URL, upload the
+      bytes directly to object storage (S3 / MinIO), and pass the resulting
+      `file_id` in subsequent invoke / task requests via `attachments`.
 security:
   - bearerAuth: []
 paths:
@@ -37,6 +81,9 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ProvidersListResponse'
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
   /api/v1/deploy/regions:
     get:
       operationId: listDeployRegions
@@ -54,6 +101,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/DeployRegionsListResponse'
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
   /api/v1/deploy/models:
     get:
       operationId: listDeployModels
@@ -71,6 +122,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/DeployModelsListResponse'
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
 
   # ---------------------------------------------------------------------
   # Instances
@@ -116,6 +171,29 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/InstancePageResponse'
+              examples:
+                empty:
+                  summary: No instances yet
+                  value:
+                    success: true
+                    data: []
+                    total: 0
+                single:
+                  summary: One running instance
+                  value:
+                    success: true
+                    data:
+                      - id: "instance_abc123"
+                        name: "my-agent-1"
+                        providerId: "openclaw-k8s"
+                        status: "running"
+                        regionId: "us-east-1"
+                        createdAt: "2026-05-14T18:00:00Z"
+                    total: 1
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
     post:
       operationId: deployInstance
       tags: [instances]
@@ -133,6 +211,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/InstanceResponse'
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "409": { $ref: '#/components/responses/Conflict' }
+        "413": { $ref: '#/components/responses/PayloadTooLarge' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
 
   /api/v1/instances/{id}:
     parameters:
@@ -151,6 +236,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/InstanceResponse'
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
     delete:
       operationId: destroyInstance
       tags: [instances]
@@ -162,6 +252,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/StringResponse'
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "409": { $ref: '#/components/responses/Conflict' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
 
   /api/v1/instances/{id}/start:
     parameters:
@@ -180,6 +276,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/InstanceResponse'
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "409": { $ref: '#/components/responses/Conflict' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
   /api/v1/instances/{id}/stop:
     parameters:
       - name: id
@@ -197,6 +299,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/InstanceResponse'
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "409": { $ref: '#/components/responses/Conflict' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
   /api/v1/instances/{id}/restart:
     parameters:
       - name: id
@@ -214,6 +322,90 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/InstanceResponse'
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "409": { $ref: '#/components/responses/Conflict' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+
+  # ---------------------------------------------------------------------
+  # Files (P1-A — presign upload + resolve via Runtime FileService)
+  # ---------------------------------------------------------------------
+  /api/v1/files/presign-upload:
+    post:
+      operationId: presignFileUpload
+      tags: [files]
+      summary: Request a presigned upload URL.
+      description: |
+        Returns a single-use presigned PUT URL the client uses to upload
+        directly to BeeOS-managed object storage (S3 / MinIO in production,
+        local disk in dev). The returned `file_id` is stable and can be
+        attached to subsequent `POST /agents/{agentId}/invoke` /
+        `POST /agents/{agentId}/tasks` bodies via the `attachments[].file_id`
+        field — see [docs/guides/calling-agents.md](../../docs/guides/calling-agents.md)
+        for an end-to-end example.
+
+        Files are scoped to the authenticated user; there is no list endpoint
+        — callers must remember their own `file_id` values (the recommended
+        workflow is to inline them into the invoke / task body that needs
+        them immediately after upload).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PresignUploadRequest'
+      responses:
+        "200":
+          description: Presigned URL issued.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/PresignUploadResponse' }
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "413": { $ref: '#/components/responses/PayloadTooLarge' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+
+  /api/v1/files/{id}:
+    get:
+      operationId: getFile
+      tags: [files]
+      summary: Resolve a file_id to metadata + presigned download URL.
+      description: |
+        Returns the filename / content-type / size of a previously uploaded
+        file along with a presigned GET URL (TTL set by the storage
+        backend, typically 24h on S3). Agents receive the same URL when
+        the file is attached to an invoke / task envelope; this endpoint
+        exists so callers can fetch their own uploads back without going
+        through an agent.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, maxLength: 128 }
+      responses:
+        "200":
+          description: File metadata.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/FileMetaResponse' }
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
 
   # ---------------------------------------------------------------------
   # Agents
@@ -244,6 +436,32 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AgentListResponse'
+              examples:
+                empty:
+                  summary: No agents yet
+                  value:
+                    success: true
+                    data:
+                      agents: []
+                      total: 0
+                single:
+                  summary: One agent
+                  value:
+                    success: true
+                    data:
+                      agents:
+                        - id: "agent_abc123"
+                          name: "summariser"
+                          instance_id: "instance_xyz"
+                          visibility: "private"
+                          status: "active"
+                          delivery_mode: "push"
+                          created_at: "2026-05-14T18:00:00Z"
+                      total: 1
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
 
   /api/v1/agents/{agentId}:
     parameters:
@@ -262,6 +480,46 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AgentResponse'
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+    patch:
+      operationId: updateAgent
+      tags: [agents]
+      summary: Update mutable agent fields (visibility / mcp_enabled).
+      description: |
+        Patch a narrow set of caller-managed agent properties. The
+        whitelist is intentionally minimal — `description`, `name`,
+        `version`, `avatar_url`, `capabilities`, and `skills` are
+        reconciled from the pod-side `POST /api/v1/agents/sync` and
+        would silently revert on the next sync if patched here.
+
+        Authorisation: caller MUST own the agent — public agents are
+        readable by anyone but only the owner can flip visibility or
+        toggle MCP. Patches with no recognised fields fail with
+        `invalid_param`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateAgentRequest'
+      responses:
+        "200":
+          description: Updated agent details.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentResponse'
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "413": { $ref: '#/components/responses/PayloadTooLarge' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
 
   /api/v1/agents/{agentId}/invoke:
     parameters:
@@ -272,14 +530,15 @@ paths:
     post:
       operationId: invokeAgent
       tags: [agents]
-      summary: Send a message to an agent and receive a reply.
+      summary: Send a message to an agent and receive a reply (sync / SSE).
       description: |
-        Sends a message to the specified agent and blocks until the agent
-        replies (or times out).
+        Sends a `chat_message` to the specified agent via Message Service
+        channel-primitives and blocks until the agent replies (or times out).
 
         For streaming responses, set `Accept: text/event-stream` — the
         response body will be Server-Sent Events with `delta` and `done`
-        event types.
+        event types. For async fire-and-forget invocations, use the `tasks`
+        API instead.
       requestBody:
         required: true
         content:
@@ -290,15 +549,927 @@ paths:
         "200":
           description: |
             Blocking: JSON envelope with agent reply.
-            Streaming (`Accept: text/event-stream`): SSE stream.
+            Streaming (`Accept: text/event-stream`): SSE stream — see
+            `InvokeEventStream` for the per-frame schema (`delta`,
+            `error`, `done` types).
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/InvokeAgentResponse'
+              examples:
+                shortReply:
+                  summary: Synchronous reply
+                  value:
+                    success: true
+                    data:
+                      text: "BeeOS ships unified task core in 1.0.x. The release adds A2A v1.0 compatibility, slim A2A task schema, and chatinvoke as the canonical primitive."
+                      context_id: "ch-uuid"
+                      is_error: false
+                agentReplyError:
+                  summary: Agent in-band error (transport succeeded)
+                  value:
+                    success: true
+                    data:
+                      text: "I can't access that file — please grant read scope."
+                      context_id: "ch-uuid"
+                      is_error: true
             text/event-stream:
               schema:
-                type: string
-                description: SSE stream with `delta` and `done` events.
+                $ref: '#/components/schemas/InvokeEventStream'
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "409": { $ref: '#/components/responses/Conflict' }
+        "413": { $ref: '#/components/responses/PayloadTooLarge' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+
+  # ---------------------------------------------------------------------
+  # Tasks (async, ADR-0017 canonical task core)
+  # ---------------------------------------------------------------------
+  /api/v1/agents/{agentId}/tasks:
+    parameters:
+      - name: agentId
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+    post:
+      operationId: createTask
+      tags: [tasks]
+      summary: Submit an async task to an agent.
+      description: |
+        Creates a single-shot task channel and publishes the initial
+        `chat_message` envelope, then returns 202 with the task_id. The agent
+        reply lands asynchronously — callers either poll `GET /tasks/{taskId}`
+        or subscribe to the SSE event stream at `GET /tasks/{taskId}/events`.
+
+        The channel inherits the caller-supplied `deadline_ms` (capped at 7
+        days server-side). If the deadline elapses before the agent produces a
+        terminal message the task transitions to `timeout`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTaskRequest'
+      responses:
+        "202":
+          description: Task accepted. Reply will land asynchronously.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskCreatedResponse'
+              examples:
+                accepted:
+                  summary: Task accepted
+                  value:
+                    success: true
+                    data:
+                      task_id: "ch-task-uuid"
+                      context_id: "ch-task-uuid"
+                      created_at: "2026-05-14T18:00:00Z"
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "409": { $ref: '#/components/responses/Conflict' }
+        "413": { $ref: '#/components/responses/PayloadTooLarge' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+    get:
+      operationId: listAgentTasks
+      tags: [tasks]
+      summary: List the caller's tasks for this agent.
+      description: |
+        Returns the caller's tasks against this agent, filtered server-side
+        by participation (the caller's `user:<id>`) and client-side by
+        `target_agent_id == {agentId}` AND `protocol == "openapi"` so the
+        endpoint stays scoped to OpenAPI-created tasks (excludes conversations
+        and other-protocol channels).
+
+        Performance note: the wire DTO is INTENTIONALLY lightweight — it does
+        NOT carry the derived `status` / `result` / `error` because computing
+        those requires a per-task message-log scan (up to 1000 messages each
+        inside `GetTask`). Callers that need the precise status follow up
+        with `GET /tasks/{taskId}` per row, or subscribe to SSE
+        `GET /tasks/{taskId}/events`.
+      parameters:
+        - name: state
+          in: query
+          required: false
+          description: |
+            Filter by channel state. `active` is the backward-compat wire
+            alias for v2's `open`; `all` returns both. Default: `active`.
+          schema:
+            type: string
+            enum: [active, open, closed, all]
+            default: active
+        - name: since
+          in: query
+          required: false
+          description: Pagination cursor returned by the previous call (`next_since`).
+          schema: { type: string }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, format: int32, minimum: 1, maximum: 100 }
+      responses:
+        "200":
+          description: Paged list of tasks.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListTasksResponse'
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+
+  /api/v1/tasks:
+    get:
+      operationId: listUserTasks
+      tags: [tasks]
+      summary: List all of the caller's tasks across every agent.
+      description: |
+        Cross-agent task list (P2-B). Returns every task channel the
+        caller owns, newest first — the unified "my tasks" view for
+        SDKs that need to render a multi-agent inbox without
+        fanning out per-agent.
+
+        Same wire shape and `next_since` pagination as the
+        per-agent variant at
+        `GET /api/v1/agents/{agentId}/tasks`. Filtering an existing
+        per-agent call is equivalent to passing `agent_id`
+        explicitly.
+
+        Authorization: the caller's `owner_id` is the only ACL
+        gate. Tasks fan out across agents the caller has invoked,
+        whether or not they still have visibility on those agents
+        today — possession of the task row itself proves access at
+        submit time.
+
+        Only `protocol=openapi` channels surface here. Long-running
+        conversations live at `GET /api/v1/conversations` and are
+        not mixed in to keep status semantics stable (tasks have a
+        deadline; conversations don't).
+      parameters:
+        - name: agent_id
+          in: query
+          required: false
+          description: |
+            Narrow the result to a single agent. Equivalent to
+            calling `GET /agents/{agentId}/tasks` directly; kept on
+            this endpoint so callers can collapse their pagination
+            logic across the "all agents" and "single agent" paths.
+          schema: { type: string, maxLength: 128 }
+        - name: state
+          in: query
+          required: false
+          description: |
+            Filter by channel state. `active` is the legacy wire
+            alias for v2's `open`; `all` returns both. Default:
+            `active`.
+          schema:
+            type: string
+            enum: [active, open, closed, all]
+            default: active
+        - name: since
+          in: query
+          required: false
+          description: Opaque pagination cursor from the previous page's `next_since`.
+          schema: { type: string }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, format: int32, minimum: 1, maximum: 100, default: 50 }
+      responses:
+        "200":
+          description: Paged list of tasks across all agents.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListTasksResponse'
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+
+  /api/v1/agents/{agentId}/tasks/{taskId}:
+    parameters:
+      - name: agentId
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+      - name: taskId
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+    get:
+      operationId: getTask
+      tags: [tasks]
+      summary: Get a task's current state snapshot.
+      description: |
+        Returns the snapshot derived by `msgderive` from the task's
+        channel-message log — safe to call at any cadence; the resolver is a
+        pure function and terminal states short-circuit polling loops.
+      responses:
+        "200":
+          description: Current task snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskResponse'
+              examples:
+                running:
+                  summary: Task still running
+                  value:
+                    success: true
+                    data:
+                      task_id: "ch-task-uuid"
+                      context_id: "ch-task-uuid"
+                      agent_id: "agent_abc123"
+                      status: "running"
+                      created_at: "2026-05-14T18:00:00Z"
+                      updated_at: "2026-05-14T18:00:42Z"
+                succeeded:
+                  summary: Task terminal — success
+                  value:
+                    success: true
+                    data:
+                      task_id: "ch-task-uuid"
+                      context_id: "ch-task-uuid"
+                      agent_id: "agent_abc123"
+                      status: "succeeded"
+                      result: "Indexed 312 pages."
+                      created_at: "2026-05-14T18:00:00Z"
+                      updated_at: "2026-05-14T18:05:00Z"
+                failed:
+                  summary: Task terminal — failure
+                  value:
+                    success: true
+                    data:
+                      task_id: "ch-task-uuid"
+                      context_id: "ch-task-uuid"
+                      agent_id: "agent_abc123"
+                      status: "failed"
+                      error: "missing credentials for upstream Drive API"
+                      created_at: "2026-05-14T18:00:00Z"
+                      updated_at: "2026-05-14T18:00:09Z"
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+
+  /api/v1/agents/{agentId}/tasks/{taskId}/messages:
+    parameters:
+      - name: agentId
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+      - name: taskId
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+    get:
+      operationId: listTaskMessages
+      tags: [tasks]
+      summary: List the persisted message log for a task (paged by offset).
+      description: |
+        Returns the channel-message log for a task — `chat_message`,
+        `agent_reply_delta`, `agent_reply`, `chat_cancel`, `user.continue`,
+        etc. Same wire shape as `GET /conversations/{convId}/messages`
+        because a task's `task_id` IS the underlying conversation_id (a
+        task is just a single-shot channel with a deadline).
+
+        Auth path is intentionally cheaper than `getTask` (one MS
+        `GetConversation` + metadata check, no full message-log scan)
+        so paged reads stay O(1)-per-page in auth cost.
+      parameters:
+        - name: since
+          in: query
+          required: false
+          description: |
+            Return messages with `offset` > `since`. Combine with `limit` for
+            paginated reads. Default is 0 (start of task log).
+          schema: { type: integer, format: int64, minimum: 0 }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, format: int32, minimum: 1, maximum: 500 }
+      responses:
+        "200":
+          description: Page of messages.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListMessagesResponse'
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+
+  /api/v1/agents/{agentId}/tasks/{taskId}/events:
+    parameters:
+      - name: agentId
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+      - name: taskId
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+      - name: since
+        in: query
+        required: false
+        description: |
+          Replay cursor. Matches the `offset` field on the last received
+          event — clients persist this value and pass it back on
+          reconnect to resume without gaps or duplicates (Last-Event-ID
+          semantics; the wire spelling stays `since` for backward
+          compatibility with the pre-v2 SSE clients).
+
+          Special values:
+          * omitted / `0`  — full history replay (per MS `Subscribe`
+            contract). Useful for late-attaching SSE clients that want
+            the full task transcript.
+          * `<offset>`     — resume strictly AFTER the given offset.
+            The first event the client receives has `offset` > since.
+
+          The wire contract guarantees that the `offset` field on
+          emitted events is monotonically increasing per channel, so
+          re-using the last received offset as `since` cannot produce
+          gaps as long as the channel-message log retention covers
+          the gap (MS guarantees 24 h after last-touch).
+        schema: { type: integer, format: int64, minimum: 0 }
+    get:
+      operationId: streamTaskEvents
+      tags: [tasks]
+      summary: Subscribe to a task's event stream (SSE).
+      description: |
+        SSE proxy onto the underlying MS conversation. Each event is `message`
+        (JSON payload mirroring the on-channel envelope: `type`, `message_id`,
+        `offset`, `in_reply_to`, `publisher_id`, `payload`, `created_at`).
+
+        The stream auto-closes when the channel reaches a terminal envelope
+        (`agent_reply` / `agent_reply_error`) — clients should release the
+        connection on the synthesized `end` event.
+      responses:
+        "200":
+          description: SSE stream of channel-message envelopes.
+          content:
+            text/event-stream:
+              schema:
+                $ref: '#/components/schemas/TaskEventStream'
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+
+  /api/v1/agents/{agentId}/tasks/{taskId}/cancel:
+    parameters:
+      - name: agentId
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+      - name: taskId
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+    post:
+      operationId: cancelTask
+      tags: [tasks]
+      summary: Cancel an in-flight task.
+      description: |
+        Emits a `chat_cancel` envelope so the agent can abort its in-flight
+        turn cleanly, then closes the channel with `reason=canceled`.
+        Idempotent — re-issuing cancel on an already-canceled task is a no-op
+        and still returns the snapshot.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CancelTaskRequest'
+      responses:
+        "200":
+          description: Post-cancel task snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskResponse'
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "409": { $ref: '#/components/responses/Conflict' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+
+  /api/v1/agents/{agentId}/tasks/{taskId}/continue:
+    parameters:
+      - name: agentId
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+      - name: taskId
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+    post:
+      operationId: continueTask
+      tags: [tasks]
+      summary: Resume a task from input_required / auth_required.
+      description: |
+        Publishes a `user.continue` (or `user.auth_grant` when `auth_grant=true`)
+        envelope so the agent can resume from a paused
+        `input_required` / `auth_required` state. Returns the snapshot AFTER
+        the envelope is published — typically `running`, or still
+        `input_required` if the agent hasn't processed the resume yet.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ContinueTaskRequest'
+      responses:
+        "200":
+          description: Post-continue task snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskResponse'
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "409": { $ref: '#/components/responses/Conflict' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+
+  # ---------------------------------------------------------------------
+  # Conversations (long-lived multi-turn dialogs)
+  # ---------------------------------------------------------------------
+  /api/v1/agents/{agentId}/conversations:
+    parameters:
+      - name: agentId
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+    post:
+      operationId: createConversation
+      tags: [conversations]
+      summary: Open a new conversation.
+      description: |
+        Creates a long-lived dialog channel. Does NOT carry an initial
+        message — callers post the first `chat_message` via
+        `POST /conversations/{convId}/messages` once the conversation exists.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateConversationRequest'
+      responses:
+        "201":
+          description: Conversation created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationResponse'
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "413": { $ref: '#/components/responses/PayloadTooLarge' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+    get:
+      operationId: listConversations
+      tags: [conversations]
+      summary: List conversations for the calling user against this agent.
+      parameters:
+        - name: state
+          in: query
+          required: false
+          description: |
+            Filter by conversation state. `active` is a backward-compat
+            wire alias for v2's `open` — both return non-closed
+            conversations. `all` returns both open and closed.
+            Default: `active`.
+          schema:
+            type: string
+            enum: [active, open, closed, all]
+            default: active
+        - name: since
+          in: query
+          required: false
+          description: Pagination cursor returned by the previous call (`next_since`).
+          schema: { type: string }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, format: int32, minimum: 1, maximum: 100 }
+      responses:
+        "200":
+          description: Paged list of conversations.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListConversationsResponse'
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+
+  /api/v1/agents/{agentId}/conversations/{convId}:
+    parameters:
+      - name: agentId
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+      - name: convId
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+    get:
+      operationId: getConversation
+      tags: [conversations]
+      summary: Get a single conversation's metadata.
+      responses:
+        "200":
+          description: Conversation snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationResponse'
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+    delete:
+      operationId: deleteConversation
+      tags: [conversations]
+      summary: Close a conversation.
+      description: |
+        Closes the underlying MS channel. After close, no further messages
+        can be posted but historical messages remain readable via
+        `GET /messages`.
+      responses:
+        "204":
+          description: Conversation closed.
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "409": { $ref: '#/components/responses/Conflict' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+
+  /api/v1/agents/{agentId}/conversations/{convId}/messages:
+    parameters:
+      - name: agentId
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+      - name: convId
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+    post:
+      operationId: sendConversationMessage
+      tags: [conversations]
+      summary: Post a new caller message into the conversation.
+      description: |
+        Non-blocking — returns 202 with the persisted `message_id`. The agent
+        reply lands later via the SSE `/events` stream or a follow-up
+        `GET /messages?since=<offset>`. Conversations have no per-turn
+        timeout; use `tasks` when you need a bounded reply window.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SendMessageRequest'
+      responses:
+        "202":
+          description: Message persisted; agent reply will arrive asynchronously.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SendMessageResponse'
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "409": { $ref: '#/components/responses/Conflict' }
+        "413": { $ref: '#/components/responses/PayloadTooLarge' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+    get:
+      operationId: listConversationMessages
+      tags: [conversations]
+      summary: List messages in a conversation (paged by offset).
+      parameters:
+        - name: since
+          in: query
+          required: false
+          description: |
+            Return messages with offset > `since`. Combine with `limit` for
+            paginated reads. Default is 0 (start of conversation).
+          schema: { type: integer, format: int64, minimum: 0 }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, format: int32, minimum: 1, maximum: 200 }
+      responses:
+        "200":
+          description: Page of messages.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListMessagesResponse'
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+
+  # ---------------------------------------------------------------------
+  # Webhooks (task push notifications — ADR-0017 D4)
+  # ---------------------------------------------------------------------
+  /api/v1/agents/{agentId}/tasks/{taskId}/webhooks:
+    parameters:
+      - name: agentId
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+      - name: taskId
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+    post:
+      operationId: registerTaskWebhook
+      tags: [tasks]
+      summary: Register a webhook callback for terminal task events.
+      description: |
+        Subscribes a caller-supplied HTTPS endpoint to receive POST
+        callbacks when the task reaches a terminal state (`succeeded` /
+        `failed` / `canceled` / `timeout` / `rejected`). Idempotent on
+        `(task_id, url)` — re-registering the same URL updates the token.
+
+        Implementation note: openapi-gateway is zero-DB; the underlying
+        subscription is stored by A2A Service in its `webhooks` table.
+        The webhook fires regardless of which protocol created the task
+        (OpenAPI / A2A / MCP) — same row, different `protocol_filter`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterTaskWebhookRequest'
+      responses:
+        "201":
+          description: Webhook registered.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskWebhookResponse'
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+    get:
+      operationId: listTaskWebhooks
+      tags: [tasks]
+      summary: List registered webhooks for a task.
+      responses:
+        "200":
+          description: Webhook list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListTaskWebhooksResponse'
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+
+  /api/v1/agents/{agentId}/tasks/{taskId}/webhooks/{webhookId}:
+    parameters:
+      - name: agentId
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+      - name: taskId
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+      - name: webhookId
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+    delete:
+      operationId: deleteTaskWebhook
+      tags: [tasks]
+      summary: Unsubscribe a webhook.
+      responses:
+        "204":
+          description: Webhook removed.
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+
+  /api/v1/agents/{agentId}/tasks/{taskId}/webhooks/{webhookId}/deliveries:
+    parameters:
+      - name: agentId
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+      - name: taskId
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+      - name: webhookId
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+    get:
+      operationId: listWebhookDeliveries
+      tags: [tasks]
+      summary: List webhook delivery attempts (audit log).
+      description: |
+        Returns the most recent per-attempt rows for this webhook
+        subscription, newest first. P2-A — durable delivery audit
+        log + retry queue.
+
+        Each row carries the lifecycle status (`pending` /
+        `succeeded` / `failed` / `dead_letter`), the most recent
+        HTTP status code, the truncated last error, and the
+        scheduled time of the next attempt while the row is still
+        in-flight. Sensitive fields — the rendered payload bytes,
+        the optional bearer `token`, and the HMAC `secret` — are
+        NEVER returned.
+
+        Use this endpoint when:
+          * a callback didn't arrive and you need to confirm
+            whether BeeOS attempted it (`status=failed` /
+            `dead_letter` with a populated `last_error`);
+          * you're reconciling a missed webhook against
+            `GET /tasks/{id}` and want a definitive audit trail;
+          * you intend to manually replay a dead-lettered row via
+            `POST .../redeliver`.
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: |
+            Maximum number of delivery rows to return. Clamped to
+            [1, 200]; default 50.
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        "200":
+          description: List of recent delivery attempts.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListWebhookDeliveriesResponse'
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+
+  /api/v1/agents/{agentId}/tasks/{taskId}/webhooks/{webhookId}/deliveries/{deliveryId}/redeliver:
+    parameters:
+      - name: agentId
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+      - name: taskId
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+      - name: webhookId
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+      - name: deliveryId
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+    post:
+      operationId: redeliverWebhook
+      tags: [tasks]
+      summary: Manually replay a webhook delivery.
+      description: |
+        Clones a terminal-failure or dead-lettered delivery row
+        into a fresh `pending` row that the background dispatcher
+        will pick up on its next poll. The original row is
+        preserved for audit. The returned `WebhookDeliveryResponse`
+        is the new pending row — poll the delivery list or watch
+        the callback URL itself to observe outcome.
+
+        The source row MUST be in status `failed` or
+        `dead_letter`; replaying `pending` or `succeeded` rows
+        returns `409 conflict` with code
+        `conflict.invalid_state`. The clone replays the EXACT
+        payload bytes the receiver should have seen the first
+        time — HMAC signatures, headers, body — so receivers can
+        treat redeliver attempts identically to original
+        attempts.
+
+        Caveat: each redeliver call enqueues a NEW pending row,
+        so repeated clicks produce repeated deliveries. This
+        endpoint is for manual rescue, not for caller-side
+        retry-on-network-error.
+      responses:
+        "202":
+          description: Replay enqueued. Returns the new pending row.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, enum: [true] }
+                  data:
+                    $ref: '#/components/schemas/WebhookDeliveryResponse'
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "409": { $ref: '#/components/responses/Conflict' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+
+  /api/v1/agents/{agentId}/conversations/{convId}/events:
+    parameters:
+      - name: agentId
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+      - name: convId
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+      - name: since
+        in: query
+        required: false
+        description: |
+          Replay cursor. Matches the `offset` field on the last
+          received event — clients persist this value and pass it back
+          on reconnect to resume without gaps or duplicates
+          (Last-Event-ID semantics; the wire spelling stays `since`
+          for backward compatibility with the pre-v2 SSE clients).
+
+          Special values:
+          * omitted / `0`  — full history replay.
+          * `<offset>`     — resume strictly AFTER the given offset.
+
+          Unlike the task variant, this stream never auto-closes on
+          a terminal envelope — conversations stay open across many
+          turns and emit further `agent_reply` events. Persist `since`
+          across reconnect ranges to avoid dropping turns during
+          network blips.
+        schema: { type: integer, format: int64, minimum: 0 }
+    get:
+      operationId: streamConversationEvents
+      tags: [conversations]
+      summary: SSE stream of new messages on the conversation.
+      description: |
+        Same wire format as `tasks/{taskId}/events`. Unlike the task variant,
+        the conversation event stream does NOT auto-close on agent reply —
+        it stays open until the caller disconnects or the conversation is
+        closed via `DELETE /conversations/{convId}`.
+      responses:
+        "200":
+          description: SSE stream of channel-message envelopes.
+          content:
+            text/event-stream:
+              schema:
+                $ref: '#/components/schemas/TaskEventStream'
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
 
 components:
   securitySchemes:
@@ -307,8 +1478,56 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: |
-        Pass a user **JWT** or an **`oag_`** User API Key on the
-        `Authorization: Bearer <token>` header.
+        Pass a user **JWT** or a **`oag_`** User API Key on the
+        `Authorization: Bearer <token>` header. Both are validated by
+        `openapi-gateway` against the Auth service.
+
+        ## Scopes (`oag_` User API Keys only)
+
+        JWT-authenticated callers bypass the scope check (a user can do
+        anything they can already do in the dashboard). API-key callers
+        must carry **at least one** of the listed scopes per route:
+
+        | Scope                | Routes |
+        |----------------------|--------|
+        | `agents:read`        | `GET /agents`, `GET /agents/{agentId}` |
+        | `agents:write`       | `PATCH /agents/{agentId}` |
+        | `tasks:read`         | `GET /agents/{agentId}/tasks*`, `GET /agents/{agentId}/conversations*` |
+        | `tasks:write`        | `POST /agents/{agentId}/invoke`, all `POST /agents/{agentId}/tasks*` and `POST /agents/{agentId}/conversations*`, `DELETE` conversations, webhook CRUD |
+        | `files:read`         | `GET /files/{id}` |
+        | `files:write`        | `POST /files/presign-upload` |
+        | `instances:read`     | `GET /providers`, `GET /deploy/*`, `GET /instances*` |
+        | `instances:write`    | All `POST`/`DELETE` `/instances*` |
+
+        A missing or insufficient scope returns `403 insufficient_scope`
+        with the comma-separated acceptable scope set echoed in
+        `error.metadata.required_scope` (any one is sufficient).
+    agentApiKey:
+      type: apiKey
+      in: header
+      name: X-Agent-API-Key
+      description: |
+        `bak_…` **Agent API Key** bound to a specific agent. Accepted on the
+        sibling A2A Gateway (`a2a.beeos.ai`) and MCP Gateway (`mcp.beeos.ai`)
+        surfaces for the same agent — **not** by the platform OpenAPI host
+        directly. Declared here so the Mintlify "Try it" panel can render the
+        full multi-credential picker shared by `/guides/calling-agents`,
+        `/a2a/overview`, and `/mcp/overview`. Also accepted as
+        `Authorization: Bearer bak_…` on those hosts.
+    mcpOauth2:
+      type: oauth2
+      description: |
+        OAuth 2.1 + PKCE authorization-code flow used by spec-compliant MCP
+        clients (Claude Desktop, MCP Inspector) against the MCP Gateway
+        (`mcp.beeos.ai`). Server-to-server callers should use `bak_` or
+        `oag_` API keys instead — see `/mcp/oauth`.
+      flows:
+        authorizationCode:
+          authorizationUrl: https://mcp.beeos.ai/oauth/authorize
+          tokenUrl: https://mcp.beeos.ai/oauth/token
+          scopes:
+            mcp:tools:list: List the tools exposed by an MCP agent.
+            mcp:tools:call: Invoke an MCP tool against an agent.
   schemas:
     # -------- Envelope helpers --------
     SuccessEnvelope:
@@ -456,6 +1675,17 @@ components:
         connectivity:
           type: string
           description: One of `unknown` | `online` | `offline`.
+        connectivityReason:
+          type: string
+          description: |
+            Open-string reason annotating a non-online `connectivity`
+            value (independent of `haltReason`). Canonical values:
+            `device_disconnected` | `device_unauthorized` |
+            `instance_disconnected` (legacy alias `agent_disconnected`
+            still accepted during Phase 1 rollout). Empty when
+            connectivity is online. Lifecycle is tied to connectivity:
+            any transition into `online` strictly clears this field.
+          example: device_disconnected
         haltReason: { type: string }
         providerConfig:
           description: |
@@ -561,6 +1791,81 @@ components:
           type: string
           maxLength: 64
 
+    # -------- Files (P1-A) --------
+    PresignUploadRequest:
+      type: object
+      required: [filename, content_type]
+      properties:
+        filename:
+          type: string
+          maxLength: 512
+          description: Original filename hint; stored on the file record.
+        content_type:
+          type: string
+          maxLength: 255
+          description: |
+            MIME type of the bytes being uploaded (e.g. `image/png`).
+            Uploads with a different `Content-Type` may be rejected by
+            the storage backend.
+
+    PresignUploadResponse:
+      type: object
+      required: [file_id, upload_url]
+      properties:
+        file_id:
+          type: string
+          description: Stable identifier — attach via `attachments[].file_id`.
+        upload_url:
+          type: string
+          format: uri
+          description: |
+            Presigned PUT URL. Client uploads bytes directly with the same
+            `Content-Type` supplied in the request. Single-use; expires per
+            storage-backend policy.
+        download_url:
+          type: string
+          format: uri
+          description: |
+            Presigned GET URL for the same file, when the storage backend
+            supports it (S3 / MinIO). Empty for backends that don't presign
+            downloads — fall back to `GET /api/v1/files/{id}` in that case.
+        download_expires_in:
+          type: integer
+          format: int64
+          description: TTL of `download_url` in seconds.
+
+    FileMetaResponse:
+      type: object
+      required: [file_id]
+      properties:
+        file_id: { type: string }
+        filename: { type: string }
+        content_type: { type: string }
+        size: { type: integer, format: int64 }
+        download_url:
+          type: string
+          format: uri
+          description: |
+            Presigned GET URL (24h default TTL on S3). Agents receive the
+            same URL when the file is attached to an invoke / task envelope.
+
+    AttachmentRef:
+      type: object
+      required: [file_id]
+      properties:
+        file_id:
+          type: string
+          maxLength: 128
+          description: |
+            File identifier returned from
+            [`POST /api/v1/files/presign-upload`](#operation/presignFileUpload).
+        filename:
+          type: string
+          description: Optional override for the file_record's filename.
+        content_type:
+          type: string
+          description: Optional override for the file_record's MIME type.
+
     # -------- Agents --------
     AgentDTO:
       type: object
@@ -597,6 +1902,29 @@ components:
           properties:
             data:
               $ref: '#/components/schemas/AgentDTO'
+    UpdateAgentRequest:
+      type: object
+      description: |
+        Body for `PATCH /api/v1/agents/{agentId}` (P1-B). Whitelist
+        intentionally narrow — `description` / `name` / `version` /
+        `avatar_url` / `capabilities` / `skills` are owned by the pod-side
+        `POST /api/v1/agents/sync` and would silently revert if patched
+        here. The empty object is rejected with `invalid_param`.
+      properties:
+        visibility:
+          type: string
+          enum: [private, unlisted, public]
+          description: |
+            Agent ACL bucket. `private` is owner-only; `public` lets any
+            authenticated caller invoke; `unlisted` is invokable but
+            absent from public listings. The `org` bucket is reserved
+            for P1-C when the org-scope ACL lands.
+        mcp_enabled:
+          type: boolean
+          description: |
+            Whether the agent shows up under MCP Gateway's `tools/list`.
+            Independent of `visibility` — an `unlisted` agent can still
+            be MCP-exposed; a `public` agent without MCP is invoke-only.
     InvokeAgentRequest:
       type: object
       required: [message]
@@ -610,7 +1938,45 @@ components:
         timeout_ms:
           type: integer
           format: int64
-          description: Timeout in milliseconds (default 120000).
+          minimum: 0
+          maximum: 115000
+          description: |
+            Per-request timeout in milliseconds. Default 120000 (2 minutes).
+            Hard-capped at 115000 server-side so the response always has
+            time to flush before the HTTP `WriteTimeout` (120s) fires.
+            Values above 115000 are silently clamped; if the agent does not
+            reply within the effective window the server returns
+            `service_timeout` (HTTP 504) — see
+            [docs/reference/errors.md](../../docs/reference/errors.md).
+        idempotency_key:
+          type: string
+          description: |
+            Optional caller-generated idempotency key forwarded to Message
+            Service as the chat_message's `idempotency_key`. Retries that race
+            the same key dedup at MS (UNIQUE index on `channel_messages`).
+            When omitted, the gateway generates a fresh UUID. The same key
+            also doubles as the `message_id` an agent must echo back as
+            `in_reply_to` on its reply.
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+          description: |
+            Opaque caller-controlled key/value pairs merged into the channel
+            metadata (e.g. `trace_id`, `user_id`, business tags). Reserved
+            routing keys (`protocol`, `caller_owner_id`, `target_agent_id`,
+            `delivery_principal`) are silently scrubbed server-side and
+            cannot be overridden by the caller.
+        attachments:
+          type: array
+          maxItems: 16
+          items: { $ref: '#/components/schemas/AttachmentRef' }
+          description: |
+            Optional list of files previously uploaded via
+            [`POST /api/v1/files/presign-upload`](#operation/presignFileUpload).
+            Each `file_id` is resolved server-side to a presigned download
+            URL and embedded in the chat_message envelope so the receiving
+            agent can fetch the bytes without further BeeOS auth.
     InvokeAgentResponse:
       allOf:
         - $ref: '#/components/schemas/SuccessEnvelope'
@@ -626,7 +1992,888 @@ components:
                   description: Agent reply text.
                 context_id:
                   type: string
-                  description: Conversation context ID for multi-turn conversations.
+                  description: Conversation context ID (channel ID).
                 is_error:
                   type: boolean
                   description: Whether the agent's reply indicated an error.
+
+    # SSE event payload shape for POST /agents/{agentId}/invoke when
+    # `Accept: text/event-stream` is set. SSE responses are framed as
+    # `string` at the HTTP layer; each `data:` line carries a JSON
+    # payload typed by the `type` field (`delta` / `error` / `done`).
+    # Unlike TaskEventStream, invoke SSE does NOT name the event
+    # (no `event:` line) — clients distinguish frame shape via `type`
+    # in the JSON. The L0 chatinvoke invoker emits at most ONE `error`
+    # before the terminal `done`; clients can short-circuit on `done`
+    # (regardless of `is_error`).
+    InvokeEventStream:
+      type: string
+      description: |
+        Server-Sent Events stream for the streaming `invoke` path.
+
+        Frame format:
+        ```
+        data: {"type":"delta","text":"Hello "}
+        data: {"type":"delta","text":"world"}
+        data: {"type":"done","text":"Hello world","context_id":"ch-1","is_error":false}
+        ```
+
+        On agent error (audit-v4 P1-1 unified error frame):
+        ```
+        data: {"type":"error","code":"agent_unavailable","status_code":503,"message":"agent is offline"}
+        data: {"type":"done","is_error":true,"code":"agent_unavailable"}
+        ```
+
+        Frame schemas:
+        - `delta` — see [`InvokeAgentSSEDelta`](#/components/schemas/InvokeAgentSSEDelta)
+        - `error` — see [`InvokeAgentSSEError`](#/components/schemas/InvokeAgentSSEError)
+        - `done`  — see [`InvokeAgentSSEDone`](#/components/schemas/InvokeAgentSSEDone)
+
+    InvokeAgentSSEDelta:
+      type: object
+      required: [type, text]
+      properties:
+        type:
+          type: string
+          enum: [delta]
+        text:
+          type: string
+          description: Streaming chunk text. Concatenate in order for the full reply.
+
+    InvokeAgentSSEError:
+      type: object
+      required: [type, message]
+      description: |
+        Recoverable error frame. The stream still emits a final `done`
+        with `is_error: true` after this (audit-v4 P1-1) so SDKs can
+        branch on either signal.
+      properties:
+        type:
+          type: string
+          enum: [error]
+        code:
+          type: string
+          description: |
+            Stable sentinel string code. Canonical values include
+            `agent_not_found`, `agent_unavailable`, `agent_timeout`,
+            `forbidden`, `invalid_param`, `internal`.
+        status_code:
+          type: integer
+          format: int32
+          description: HTTP-equivalent status code (so SDKs can branch on either field).
+        message:
+          type: string
+          description: Human-readable error detail.
+
+    InvokeAgentSSEDone:
+      type: object
+      required: [type]
+      description: |
+        Terminal frame. Clients should release the SSE connection on
+        this frame. `is_error: true` may be paired with a populated
+        `error` / `code` carrying the same payload as the preceding
+        `InvokeAgentSSEError` frame so single-frame consumers can handle
+        errors without buffering history.
+      properties:
+        type:
+          type: string
+          enum: [done]
+        text:
+          type: string
+          description: Concatenated full reply text (echoes the deltas).
+        context_id:
+          type: string
+          description: Conversation context ID (channel ID).
+        is_error:
+          type: boolean
+          description: Whether the reply terminated in an error.
+        error:
+          type: string
+          description: Human-readable failure cause (only when `is_error=true`).
+        code:
+          type: string
+          description: |
+            Stable sentinel code (only when `is_error=true`). Matches
+            the `code` on the preceding `InvokeAgentSSEError` frame.
+
+    # Body schemas for the task + conversation SSE streams (see
+    # TaskEventStream for the wire-level framing). Pulling these out
+    # as standalone schemas lets SDK generators emit Go / TypeScript
+    # types for the message envelope and end-frame without dragging
+    # the entire SSE prose into client code.
+    TaskSSEMessage:
+      type: object
+      required: [type]
+      description: |
+        Body of an `event: message` frame on `/tasks/{taskId}/events`
+        and `/conversations/{convId}/events`. Mirrors MS's per-event
+        envelope plus the synthesized `offset` cursor.
+      properties:
+        type:
+          type: string
+          description: Message type — see the TaskEventStream type table.
+        message_id:
+          type: string
+        offset:
+          type: integer
+          format: int64
+          description: Monotonic per-channel offset for SSE resume cursors.
+        in_reply_to:
+          type: string
+        publisher_id:
+          type: string
+        payload:
+          description: Opaque JSON body of the per-type message.
+        created_at:
+          type: string
+          format: date-time
+
+    TaskSSEEnd:
+      type: object
+      required: [reason]
+      description: |
+        Body of the terminal `event: end` frame. SDKs treat any value
+        as a clean shutdown signal; the `reason` field disambiguates
+        whether the agent terminated (`task_terminal`), MS closed the
+        upstream stream (`stream_closed`), or the conversation channel
+        was deleted (`channel_closed`).
+      properties:
+        reason:
+          type: string
+          enum: [task_terminal, stream_closed, channel_closed]
+
+    # -------- Tasks (ADR-0017 canonical task lifecycle) --------
+    TaskStatus:
+      type: string
+      description: |
+        Canonical task lifecycle status. Aligned with Google A2A v1.0 +
+        BeeOS extensions per ADR-0017 D2. Internal `msgderive.TaskStatus`
+        names map 1:1 onto these wire values.
+
+        Non-terminal: `queued`, `running`, `input_required`, `auth_required`.
+        Terminal: `succeeded`, `failed`, `canceled`, `timeout`, `rejected`.
+
+        State transitions:
+        ```
+        queued → running → succeeded
+                       ├→ failed
+                       ├→ input_required ─→ running (on user.continue)
+                       └→ auth_required  ─→ running (on user.auth_grant)
+            (any non-terminal) → canceled (explicit close)
+                                → timeout  (reaper)
+                                → rejected (agent_busy / explicit refuse)
+        ```
+      enum:
+        - queued
+        - running
+        - input_required
+        - auth_required
+        - succeeded
+        - failed
+        - canceled
+        - timeout
+        - rejected
+
+    CreateTaskRequest:
+      type: object
+      required: [message]
+      properties:
+        message:
+          type: string
+          description: Initial user prompt. Wrapped into a `chat_message` envelope.
+        context_id:
+          type: string
+          description: |
+            Optional existing conversation/channel ID to reuse instead of
+            creating a fresh task channel. Rare; most callers omit this.
+        deadline_ms:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 604800000
+          description: |
+            Task deadline in milliseconds. When > 0, the channel auto-closes
+            with `status=timeout` if no terminal reply lands in this window.
+            Max 7 days (server-side cap).
+        idempotency_key:
+          type: string
+          description: |
+            Forwarded to MS's `channel_messages` UNIQUE index. Re-submitting
+            with the same key returns the original task_id rather than
+            spawning a duplicate. Recommended for retry-prone callers.
+        metadata:
+          type: object
+          additionalProperties: { type: string }
+          description: |
+            Caller-supplied correlation tags (trace_id, business labels).
+            Reserved chatinvoke routing keys (`protocol`, `caller_owner_id`,
+            `target_agent_id`, `delivery_principal`) are overwritten by
+            the gateway and stripped from the response.
+        attachments:
+          type: array
+          maxItems: 16
+          items: { $ref: '#/components/schemas/AttachmentRef' }
+          description: |
+            Optional list of files previously uploaded via
+            [`POST /api/v1/files/presign-upload`](#operation/presignFileUpload).
+            Resolved server-side and embedded in the initial chat_message
+            envelope.
+
+    TaskCreatedResponse:
+      allOf:
+        - $ref: '#/components/schemas/SuccessEnvelope'
+        - type: object
+          required: [data]
+          properties:
+            data:
+              type: object
+              required: [task_id, agent_id, status]
+              properties:
+                task_id:
+                  type: string
+                  description: Stable task identifier (== underlying channel_id).
+                agent_id:
+                  type: string
+                status:
+                  $ref: '#/components/schemas/TaskStatus'
+                created_at:
+                  type: string
+                  format: date-time
+
+    TaskResponse:
+      allOf:
+        - $ref: '#/components/schemas/SuccessEnvelope'
+        - type: object
+          required: [data]
+          properties:
+            data:
+              type: object
+              required: [task_id, agent_id, status]
+              properties:
+                task_id: { type: string }
+                agent_id: { type: string }
+                caller_id: { type: string }
+                status:
+                  $ref: '#/components/schemas/TaskStatus'
+                result:
+                  description: |
+                    Terminal agent reply payload, present only when
+                    `status=succeeded`. Opaque JSON — agents may return
+                    text (quoted string) or structured data.
+                error:
+                  type: string
+                  description: Human-readable failure cause, present when `status=failed`.
+                metadata:
+                  type: object
+                  additionalProperties: { type: string }
+                created_at:
+                  type: string
+                  format: date-time
+                started_at:
+                  type: string
+                  format: date-time
+                  description: First time the agent emitted any streaming output.
+                completed_at:
+                  type: string
+                  format: date-time
+                  description: Timestamp the task reached a terminal state.
+                deadline_at:
+                  type: string
+                  format: date-time
+                truncated:
+                  type: boolean
+                  description: |
+                    True when the server's message scan hit its internal
+                    cap (1000 messages) before reaching the end of the
+                    channel log. The reported `status` / `result` / `error`
+                    reflect only the scanned prefix; clients seeing this
+                    flag should follow up with `GET /tasks/{id}/events`
+                    (SSE) for the authoritative tail. Absent (false) on
+                    typical tasks.
+
+    # Lightweight task list row — derived strictly from MS channel fields
+    # so the list endpoint stays O(1)-per-row. Callers that need the
+    # full `TaskStatus` follow up per-task with `getTask`.
+    TaskSummary:
+      type: object
+      required: [task_id, agent_id, state]
+      properties:
+        task_id:
+          type: string
+          description: Stable task identifier (== underlying channel_id).
+        agent_id:
+          type: string
+        caller_id:
+          type: string
+          description: |
+            The owner user id of this task. Always equal to the caller
+            for tasks they themselves submitted; populated from the
+            channel metadata so it survives across sessions.
+        state:
+          type: string
+          enum: [active, closed]
+          description: |
+            Channel-level state: `active` while the task is open (the
+            agent may still be working / paused at `input_required`),
+            `closed` after terminal reply / cancel / timeout. NOT the
+            derived `TaskStatus` — use `getTask` for that.
+        close_reason:
+          type: string
+          description: |
+            Populated when `state=closed`. Mirrors the underlying
+            channel's `closed_reason` so SDKs can branch without
+            re-pulling the message log. Canonical values include
+            `completed`, `canceled`, `timeout`.
+        metadata:
+          type: object
+          additionalProperties: { type: string }
+        created_at:
+          type: string
+          format: date-time
+        closed_at:
+          type: string
+          format: date-time
+        deadline_at:
+          type: string
+          format: date-time
+
+    ListTasksResponse:
+      allOf:
+        - $ref: '#/components/schemas/SuccessEnvelope'
+        - type: object
+          required: [data]
+          properties:
+            data:
+              type: object
+              required: [tasks]
+              properties:
+                tasks:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/TaskSummary'
+                next_since:
+                  type: string
+                  description: |
+                    Pagination cursor. Empty when the caller has reached
+                    the end of results.
+
+    CancelTaskRequest:
+      type: object
+      properties:
+        reason:
+          type: string
+          description: |
+            Free-form caller label propagated on the `chat_cancel` envelope
+            payload so the agent can audit-log why its turn was aborted.
+            Empty defaults to `canceled`.
+
+    ContinueTaskRequest:
+      type: object
+      properties:
+        input:
+          description: |
+            Opaque JSON payload delivered to the agent as the `user.continue`
+            (or `user.auth_grant` when `auth_grant=true`) envelope. Empty is
+            acceptable — some agents treat any continue as "resume with no
+            additional input".
+        auth_grant:
+          type: boolean
+          description: |
+            Switches the wire envelope from `user.continue` to
+            `user.auth_grant` — used to resume an `auth_required` pause
+            (OAuth-style permission grant).
+
+    # SSE event payload shape. Shared by `/tasks/{taskId}/events` and
+    # `/conversations/{convId}/events` — both surfaces use `event: message`
+    # for body frames and `event: end` for the terminal frame. The
+    # `end.reason` enum differs slightly per surface (task auto-closes
+    # on terminal envelopes; conversation auto-closes only when the
+    # underlying MS channel is closed) — see the enum docs below.
+    TaskEventStream:
+      type: string
+      description: |
+        Server-Sent Events stream.
+
+        Per-event JSON payload format:
+        ```
+        event: message
+        data: {
+          "type": "agent_message_chunk",   // see below
+          "message_id": "msg-uuid",
+          "offset": 5,                     // monotonic per-channel offset
+          "in_reply_to": "msg-source-uuid",
+          "publisher_id": "agent-identity",
+          "payload": { ... },              // opaque, per-type
+          "created_at": "2026-05-14T18:00:00.000Z"
+        }
+        ```
+
+        Terminal events:
+        ```
+        event: end
+        data: { "reason": "task_terminal" }    # task only: auto-close after agent_reply / agent_reply_error / agent.refuse / agent_busy
+        ```
+        ```
+        event: end
+        data: { "reason": "stream_closed" }    # MS closed the upstream stream
+        ```
+        ```
+        event: end
+        data: { "reason": "channel_closed" }   # conversation only: caller (or peer) deleted the conversation
+        ```
+
+        `end.reason` enum:
+
+        | reason           | surface          | when                                |
+        |------------------|------------------|-------------------------------------|
+        | `task_terminal`  | task             | terminal reply auto-closed the SSE  |
+        | `stream_closed`  | task + conversation | MS closed the upstream stream    |
+        | `channel_closed` | conversation     | the underlying channel was deleted  |
+
+        Well-known message `type` values:
+
+        | type                  | meaning                                 |
+        |-----------------------|-----------------------------------------|
+        | `chat_message`        | caller's prompt                         |
+        | `agent_thought_chunk` | agent reasoning (incremental)           |
+        | `agent_message_chunk` | agent reply delta (incremental)         |
+        | `agent_reply_delta`   | terminal-bound streaming delta          |
+        | `agent_reply`         | terminal success reply                  |
+        | `agent_reply_error`   | terminal failure reply                  |
+        | `agent.input_required`| pause awaiting `user.continue`          |
+        | `agent.auth_required` | pause awaiting `user.auth_grant`        |
+        | `user.continue`       | caller resume of `input_required`       |
+        | `user.auth_grant`     | caller resume of `auth_required`        |
+        | `chat_cancel`         | caller-initiated cancel                 |
+
+    # -------- Conversations --------
+    CreateConversationRequest:
+      type: object
+      properties:
+        title:
+          type: string
+          description: Caller-supplied label, stored on `channel.Metadata["title"]`.
+        metadata:
+          type: object
+          additionalProperties: { type: string }
+
+    ConversationResponse:
+      allOf:
+        - $ref: '#/components/schemas/SuccessEnvelope'
+        - type: object
+          required: [data]
+          properties:
+            data:
+              type: object
+              required: [conversation_id, agent_id, state]
+              properties:
+                conversation_id: { type: string }
+                agent_id: { type: string }
+                title: { type: string }
+                state:
+                  type: string
+                  enum: [active, closed]
+                metadata:
+                  type: object
+                  additionalProperties: { type: string }
+                created_at:
+                  type: string
+                  format: date-time
+                closed_at:
+                  type: string
+                  format: date-time
+
+    ListConversationsResponse:
+      allOf:
+        - $ref: '#/components/schemas/SuccessEnvelope'
+        - type: object
+          required: [data]
+          properties:
+            data:
+              type: object
+              required: [conversations]
+              properties:
+                conversations:
+                  type: array
+                  items:
+                    type: object
+                    required: [conversation_id, agent_id, state]
+                    properties:
+                      conversation_id: { type: string }
+                      agent_id: { type: string }
+                      title: { type: string }
+                      state:
+                        type: string
+                        enum: [active, closed]
+                      metadata:
+                        type: object
+                        additionalProperties: { type: string }
+                      created_at:
+                        type: string
+                        format: date-time
+                      closed_at:
+                        type: string
+                        format: date-time
+                next_since:
+                  type: string
+                  description: |
+                    Pagination cursor. Empty when the caller has reached the
+                    end of results.
+
+    SendMessageRequest:
+      type: object
+      required: [message]
+      properties:
+        message:
+          type: string
+        idempotency_key:
+          type: string
+
+    SendMessageResponse:
+      allOf:
+        - $ref: '#/components/schemas/SuccessEnvelope'
+        - type: object
+          required: [data]
+          description: |
+            BREAKING CHANGE in SDK 0.4.0 (T3c): the `offset` field is
+            removed. The v2 wire keeps offsets opaque inside the cursor;
+            callers that need a resume cursor MUST round-trip via
+            `GET /conversations/{convId}/messages?since=<cursor>`.
+          properties:
+            data:
+              type: object
+              required: [message_id]
+              properties:
+                message_id: { type: string }
+                created_at:
+                  type: string
+                  format: date-time
+
+    MessageDTO:
+      type: object
+      required: [message_id, offset, type]
+      properties:
+        message_id: { type: string }
+        offset:
+          type: integer
+          format: int64
+        type: { type: string }
+        publisher_id: { type: string }
+        in_reply_to: { type: string }
+        payload:
+          description: Opaque JSON payload of the message.
+        created_at:
+          type: string
+          format: date-time
+
+    ListMessagesResponse:
+      allOf:
+        - $ref: '#/components/schemas/SuccessEnvelope'
+        - type: object
+          required: [data]
+          properties:
+            data:
+              type: object
+              required: [messages, latest_offset]
+              properties:
+                messages:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/MessageDTO'
+                latest_offset:
+                  type: integer
+                  format: int64
+                  description: Channel's current max offset for "caught up" detection.
+
+    # -------- Webhooks (ADR-0017 D4) --------
+    RegisterTaskWebhookRequest:
+      type: object
+      required: [url]
+      properties:
+        url:
+          type: string
+          format: uri
+          description: |
+            Absolute HTTPS endpoint to POST callbacks to. The receiver
+            gets the protocol-specific payload (OpenAPI: a task event
+            envelope; A2A: JSON-RPC StreamResponse; MCP: notification).
+        token:
+          type: string
+          description: |
+            Optional bearer token sent as `Authorization: Bearer <token>`
+            on each callback so the receiver can verify the call.
+        secret:
+          type: string
+          description: |
+            P2-A — HMAC-SHA256 signing key. When set, the deliverer
+            signs every callback body and emits
+            `X-BeeOS-Signature: t=<unix>,v1=<hex>` where
+            `hex = hmac_sha256(secret, t || "." || body)`. The receiver
+            should re-run the same HMAC to authenticate; mismatched
+            timestamps (±5 min recommended tolerance) should be
+            rejected to defend against replay.
+
+            **Write-only**. Never echoed on Get / List responses; the
+            `has_secret` boolean on `TaskWebhookResponse` is the only
+            observable signal. Rotate by Set-ing a fresh value;
+            passing `""` on update preserves the existing secret (use
+            DELETE + re-register to clear).
+          minLength: 16
+          maxLength: 256
+
+    TaskWebhookResponse:
+      allOf:
+        - $ref: '#/components/schemas/SuccessEnvelope'
+        - type: object
+          required: [data]
+          properties:
+            data:
+              type: object
+              required: [webhook_id, task_id, url, has_secret]
+              properties:
+                webhook_id: { type: string }
+                task_id: { type: string }
+                url:
+                  type: string
+                  format: uri
+                has_secret:
+                  type: boolean
+                  description: |
+                    `true` when an HMAC signing secret is configured
+                    for this webhook (P2-A). The raw secret is never
+                    returned — receivers verify against the secret
+                    they originally registered.
+                created_at:
+                  type: string
+                  format: date-time
+
+    ListTaskWebhooksResponse:
+      allOf:
+        - $ref: '#/components/schemas/SuccessEnvelope'
+        - type: object
+          required: [data]
+          properties:
+            data:
+              type: object
+              required: [webhooks]
+              properties:
+                webhooks:
+                  type: array
+                  items:
+                    type: object
+                    required: [webhook_id, task_id, url, has_secret]
+                    properties:
+                      webhook_id: { type: string }
+                      task_id: { type: string }
+                      url:
+                        type: string
+                        format: uri
+                      has_secret: { type: boolean }
+                      created_at:
+                        type: string
+                        format: date-time
+
+    # -------- Webhook deliveries (P2-A part 3) --------
+    WebhookDeliveryResponse:
+      type: object
+      required:
+        - delivery_id
+        - webhook_id
+        - task_id
+        - renderer
+        - status
+        - attempt_num
+        - last_response_status
+        - next_attempt_at
+        - created_at
+      properties:
+        delivery_id: { type: string }
+        webhook_id: { type: string }
+        task_id: { type: string }
+        renderer:
+          type: string
+          enum: [openapi, a2a, generic, mcp]
+          description: |
+            Payload format used at delivery time. OpenAPI callbacks
+            registered through this gateway use the `openapi`
+            renderer (TaskEvent envelope).
+        status:
+          type: string
+          enum: [pending, succeeded, failed, dead_letter]
+          description: |
+            Lifecycle of this attempt.
+            * `pending` — queued for first attempt or awaiting retry
+            * `succeeded` — receiver returned 2xx (terminal)
+            * `failed` — last attempt errored / non-2xx, will be
+              retried per the backoff schedule (intermediate)
+            * `dead_letter` — exhausted retry schedule (terminal).
+              Recoverable via `POST .../redeliver`.
+        attempt_num:
+          type: integer
+          minimum: 0
+          description: |
+            1-indexed count of attempts already made. New rows
+            surface as 0 until the dispatcher claims them.
+        last_response_status:
+          type: integer
+          minimum: 0
+          description: |
+            HTTP status of the most recent attempt. `0` means
+            "never attempted" (transport or pre-flight error
+            before any HTTP response).
+        last_error:
+          type: string
+          description: |
+            Truncated copy (≤ 2 KiB) of the most recent failure
+            reason — either a transport error
+            (`transport: connection refused`) or
+            `http_status: <code>`. Empty on success / never
+            attempted.
+        next_attempt_at:
+          type: string
+          format: date-time
+          description: |
+            Scheduled time for the next attempt while `status` is
+            `pending`. On terminal rows this carries the last
+            scheduled value (no longer meaningful for retries).
+        last_attempted_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+
+    ListWebhookDeliveriesResponse:
+      allOf:
+        - $ref: '#/components/schemas/SuccessEnvelope'
+        - type: object
+          required: [data]
+          properties:
+            data:
+              type: object
+              required: [deliveries]
+              properties:
+                deliveries:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/WebhookDeliveryResponse'
+
+    # -------- Error envelope --------
+    # P0-D: every 4xx / 5xx response references this schema via the
+    # reusable components.responses block below. The canonical
+    # vocabulary for `code` lives in docs/reference/errors.md and is
+    # stable across the 1.x line.
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        type:
+          type: string
+          description: |
+            RFC 9457 problem-type slug. Most SDK consumers key on
+            `code` rather than `type`; this field is kept for
+            structural parity with the wider apierror catalogue.
+          enum:
+            - api_error
+            - invalid_request_error
+            - authentication_error
+            - permission_error
+            - rate_limit_error
+            - not_found_error
+            - conflict_error
+            - validation_error
+        code:
+          type: string
+          description: |
+            Stable machine-readable error code. See
+            [docs/reference/errors.md](https://github.com/beeos-ai/beeos/blob/main/docs/reference/errors.md)
+            for the complete catalogue.
+          examples:
+            - agent_not_found
+            - agent_service_unavailable
+            - service_timeout
+            - conflict
+            - forbidden
+            - invalid_param
+            - rate_limited
+            - internal_error
+        message:
+          type: string
+          description: Human-readable explanation; presentation-only, never key on this.
+        details:
+          type: object
+          additionalProperties: true
+          description: Optional structured payload for validation errors etc.
+    ErrorResponse:
+      type: object
+      required: [success, error]
+      properties:
+        success:
+          type: boolean
+          const: false
+        error:
+          $ref: '#/components/schemas/Error'
+  responses:
+    # P0-D: reusable response components referenced from every
+    # operation's responses block. Adding a new code only means adding
+    # a constant here; operations stay readable.
+    BadRequest:
+      description: Malformed request body, query parameter, or path parameter (`code` is one of `invalid_json` / `invalid_body` / `invalid_param` / `missing_param`).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Unauthorized:
+      description: Missing or invalid `Authorization` header (`code` is one of `unauthorized` / `invalid_token` / `missing_token`).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Forbidden:
+      description: Caller doesn't own the resource (or scope check failed). `code` is `forbidden`.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFound:
+      description: The agent / task / instance / conversation / webhook referenced doesn't exist or isn't visible to the caller. `code` is typically `agent_not_found`.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Conflict:
+      description: Resource is in a state that doesn't allow this operation — agent busy / refused, task terminal, duplicate idempotency key on a changed payload. `code` is `conflict`.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    PayloadTooLarge:
+      description: Request body exceeds the per-route size limit (catalog/instances 64 KiB; invoke/tasks 1 MiB; attachments must use file presign). `code` is `payload_too_large`.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    RateLimited:
+      description: Per-caller × endpoint quota exceeded. `code` is `rate_limited`. Honour `Retry-After` if present.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    ServerError:
+      description: |
+        Server-side fault. `code` is one of:
+
+        - `internal_error` (500) — unexpected
+        - `agent_offline` / `agent_service_unavailable` (503) — agent or messaging
+          subsystem unreachable
+        - `auth_unavailable` / `auth_transient` (503) — Auth gRPC transient
+        - `service_timeout` (504) — gateway gave up waiting for the agent
+
+        See [docs/reference/errors.md](https://github.com/beeos-ai/beeos/blob/main/docs/reference/errors.md).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'

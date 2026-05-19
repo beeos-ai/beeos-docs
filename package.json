@@ -3,9 +3,10 @@
   "private": true,
   "scripts": {
     "dev": "mintlify dev",
-    "build": "mintlify build"
+    "build": "mintlify build",
+    "sync-spec": "./scripts/sync-spec.sh"
   },
   "devDependencies": {
-    "mintlify": "latest"
+    "mintlify": "^4.2.569"
   }
 }

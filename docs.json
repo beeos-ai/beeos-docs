@@ -33,7 +33,26 @@
             "groups": [
               {
                 "group": "Getting Started",
-                "pages": ["introduction", "quickstart", "authentication"]
+                "pages": [
+                  "introduction",
+                  "quickstart",
+                  "authentication",
+                  "guides/choosing-a-protocol"
+                ]
+              },
+              {
+                "group": "Guides",
+                "pages": [
+                  "guides/calling-agents",
+                  "guides/conversations",
+                  "guides/webhooks",
+                  "guides/streaming",
+                  "guides/agent-author-quickstart"
+                ]
+              },
+              {
+                "group": "Architecture",
+                "pages": ["architecture/public-overview"]
               },
               {
                 "group": "A2A Protocol",
@@ -56,7 +75,16 @@
               },
               {
                 "group": "SDKs",
-                "pages": ["sdks/typescript", "sdks/go"]
+                "pages": [
+                  "sdks/typescript",
+                  "sdks/go",
+                  "sdks/migration",
+                  "sdks/changelog"
+                ]
+              },
+              {
+                "group": "Reference",
+                "pages": ["reference/errors"]
               }
             ]
           },
@@ -74,7 +102,26 @@
             "groups": [
               {
                 "group": "快速开始",
-                "pages": ["zh/introduction", "zh/quickstart", "zh/authentication"]
+                "pages": [
+                  "zh/introduction",
+                  "zh/quickstart",
+                  "zh/authentication",
+                  "zh/guides/choosing-a-protocol"
+                ]
+              },
+              {
+                "group": "指南",
+                "pages": [
+                  "zh/guides/calling-agents",
+                  "zh/guides/conversations",
+                  "zh/guides/webhooks",
+                  "zh/guides/streaming",
+                  "zh/guides/agent-author-quickstart"
+                ]
+              },
+              {
+                "group": "架构",
+                "pages": ["zh/architecture/public-overview"]
               },
               {
                 "group": "A2A 协议",
@@ -97,42 +144,22 @@
               },
               {
                 "group": "SDK",
-                "pages": ["zh/sdks/typescript", "zh/sdks/go"]
+                "pages": [
+                  "zh/sdks/typescript",
+                  "zh/sdks/go",
+                  "zh/sdks/migration",
+                  "zh/sdks/changelog"
+                ]
+              },
+              {
+                "group": "参考",
+                "pages": ["zh/reference/errors"]
               }
             ]
           },
           {
             "tab": "API 参考",
-            "groups": [
-              {
-                "group": "deploy",
-                "pages": [
-                  "openapi/beeos-platform-v1-zh.yaml GET /api/v1/providers",
-                  "openapi/beeos-platform-v1-zh.yaml GET /api/v1/deploy/regions",
-                  "openapi/beeos-platform-v1-zh.yaml GET /api/v1/deploy/models"
-                ]
-              },
-              {
-                "group": "instances",
-                "pages": [
-                  "openapi/beeos-platform-v1-zh.yaml GET /api/v1/instances",
-                  "openapi/beeos-platform-v1-zh.yaml POST /api/v1/instances",
-                  "openapi/beeos-platform-v1-zh.yaml GET /api/v1/instances/{id}",
-                  "openapi/beeos-platform-v1-zh.yaml DELETE /api/v1/instances/{id}",
-                  "openapi/beeos-platform-v1-zh.yaml POST /api/v1/instances/{id}/start",
-                  "openapi/beeos-platform-v1-zh.yaml POST /api/v1/instances/{id}/stop",
-                  "openapi/beeos-platform-v1-zh.yaml POST /api/v1/instances/{id}/restart"
-                ]
-              },
-              {
-                "group": "agents",
-                "pages": [
-                  "openapi/beeos-platform-v1-zh.yaml GET /api/v1/agents",
-                  "openapi/beeos-platform-v1-zh.yaml GET /api/v1/agents/{agentId}",
-                  "openapi/beeos-platform-v1-zh.yaml POST /api/v1/agents/{agentId}/invoke"
-                ]
-              }
-            ]
+            "openapi": "openapi/beeos-platform-v1.yaml"
           }
         ]
       }

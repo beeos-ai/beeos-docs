@@ -1,3 +1,10 @@
+# ============================================================================
+# AUTO-SYNCED FROM backend/openapi/beeos-agent-integration-v1.yaml
+# DO NOT EDIT HERE — edit the source in the openagent repo and run
+#   cd beeos-docs && npm run sync-spec
+# Last synced: 2026-05-19T20:31:12Z
+# Source SHA: acfb72e
+# ============================================================================
 openapi: 3.1.0
 info:
   title: BeeOS Agent integration API
@@ -9,9 +16,10 @@ info:
        Gateway) with an `A2A-Version` header and a JSON-RPC body. This remains
        the full protocol for tasks, cards, and streaming.
     2. **REST invoke (thin)** — `POST /{agentId}/v1/invoke` with a JSON body.
-       Same Message Service / channel-primitives and authentication as
-       [MCP Gateway `tools/call`](../services/mcp-gateway/README.md), implemented
-       via the shared [chatinvoke](https://github.com/beeos-ai/beeos/tree/main/server/pkg/chatinvoke) package.
+       Same Message Service / channel-primitives and authentication as MCP
+       Gateway `tools/call`, implemented via the shared
+       [chatinvoke](https://github.com/beeos-ai/openagent/tree/main/backend/pkg/chatinvoke)
+       package.
     3. **MCP** — public MCP base URL, agent scope `POST {mcpBase}/agents/{agentId}/mcp`
        (see product UI / agent object fields `mcpAgentEndpoint`).
 
@@ -27,9 +35,7 @@ info:
 
 servers:
   - url: https://a2a.beeos.ai
-    description: Production A2A / integration host (example)
-  - url: http://localhost:8092
-    description: Local A2A Gateway (Procfile / staging)
+    description: Production A2A / integration host
 tags:
   - name: a2aRest
     description: Optional REST entry on the A2A host (automation, OpenAPI)
@@ -71,14 +77,14 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/ServerError' }
-      security: [{ AgentApiKey: [] }, { BearerOrUser: [] }]
+      security: [{ agentApiKey: [] }, { bearerOrUser: [] }]
 components:
   securitySchemes:
-    AgentApiKey:
+    agentApiKey:
       type: apiKey
       in: header
       name: X-Agent-API-Key
-    BearerOrUser:
+    bearerOrUser:
       type: http
       scheme: bearer
       description: |
@@ -89,7 +95,7 @@ components:
       description: Missing or invalid credentials
       content:
         application/json:
-          schema: { $ref: '#/components/schemas/StripeError' }
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
     Forbidden:
       description: Caller is not allowed to use this agent
     NotFound:
@@ -99,12 +105,22 @@ components:
     ServerError:
       description: Server error
   schemas:
-    StripeError:
+    ErrorResponse:
       type: object
-      required: [error]
+      required: [success, error]
+      description: |
+        Standard `{ success: false, error: { code, message } }` envelope
+        shared with the platform OpenAPI contract.
       properties:
+        success:
+          type: boolean
+          enum: [false]
         error:
           type: object
+          required: [code, message]
+          properties:
+            code: { type: string, description: Machine-readable error code }
+            message: { type: string, description: Human-readable detail }
     RestInvokeRequest:
       type: object
       required: [message]
