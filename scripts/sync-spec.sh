@@ -36,6 +36,8 @@ DST="$DOCS_ROOT/openapi"
 if [[ ! -d "$SRC" ]]; then
   echo "ERROR: cannot find backend/openapi at $SRC"
   echo "  Set OPENAGENT_ROOT env var to point at the openagent repo root."
+  echo "  Hint: backend/ is a git submodule. If empty, run:"
+  echo "    git submodule update --init --recursive"
   exit 1
 fi
 
@@ -58,7 +60,7 @@ sync_one() {
 # DO NOT EDIT HERE — edit the source in the openagent repo and run
 #   cd beeos-docs && npm run sync-spec
 # Last synced: ${timestamp}
-# Source SHA: $(cd "$OPENAGENT_ROOT" && git rev-parse --short HEAD 2>/dev/null || echo 'unknown')
+# Source SHA: $(cd "$OPENAGENT_ROOT/backend" && git rev-parse --short HEAD 2>/dev/null || echo 'unknown')
 # ============================================================================"
 
   mkdir -p "$DST"
@@ -78,4 +80,4 @@ echo "DONE."
 echo ""
 echo "Reminder: openapi/beeos-platform-v1-zh.yaml is hand-translated and"
 echo "          NOT touched by this script. Update it manually following"
-echo "          docs/zh/_terminology.md after en spec changes."
+echo "          zh/_terminology.md after en spec changes."
