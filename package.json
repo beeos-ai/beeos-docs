@@ -3,7 +3,8 @@
   "private": true,
   "scripts": {
     "dev": "mintlify dev",
-    "build": "mintlify build",
+    "validate": "mintlify validate",
+    "broken-links": "mintlify broken-links",
     "sync-spec": "./scripts/sync-spec.sh"
   },
   "devDependencies": {
