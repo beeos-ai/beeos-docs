@@ -1,14 +1,20 @@
 # Contributing to beeos-docs
 
-This site is published with Mintlify. Source-of-truth content lives in the
-[main `openagent` repository](https://github.com/beeos-ai/openagent) under
-`docs/`; this repo is a curated, MDX-formatted, bilingual (en + zh) public
-copy. PRs that update content here without updating the source-of-truth
-will be rejected — keep the two in sync.
+This repository is the **single source of truth** for the public BeeOS
+documentation site published at <https://docs.beeos.ai> via Mintlify.
+All MDX prose is hand-authored here. The only files that come from
+elsewhere are the OpenAPI specs under `openapi/`, which are synced from
+the `backend/` submodule (see [§5](#5-openapi-sync)).
 
-This guide locks the conventions for: (a) Markdown → MDX conversion, (b)
-Mintlify component usage, (c) routing/linking, and (d) how to sync the
-OpenAPI specs without footguns.
+> **Note for cross-repo navigation:** `beeos-docs/` and the internal
+> `github.com/beeos-ai/docs` repository are **not related**. The
+> internal repo is private dev documentation (runbooks, ADR drafts);
+> this one is the public Mintlify site. Files with the same name in
+> the two repos are independent — **do not sync content between them**.
+
+This guide locks the conventions for: (a) Markdown -> MDX conversion,
+(b) Mintlify component usage, (c) routing/linking, (d) OpenAPI sync,
+and (e) translation rules.
 
 ## 1. File layout
 
@@ -17,20 +23,20 @@ beeos-docs/
 ├── introduction.mdx          # Landing page
 ├── quickstart.mdx
 ├── authentication.mdx
-├── guides/                   # Public concept guides (new in v2)
+├── guides/                   # Public concept guides
 ├── architecture/             # Public-overview / domain map
 ├── reference/                # Error tables, glossary
 ├── a2a/                      # A2A protocol surface docs
 ├── mcp/                      # MCP protocol surface docs
 ├── sdks/                     # SDK reference + changelog + migration
-├── openapi/                  # AUTO-SYNCED — see §5
-├── zh/                       # Chinese mirror of the above
-├── scripts/sync-spec.sh      # Sync helper, do not bypass
-└── docs.json                 # Mintlify nav + theme
+├── openapi/                  # AUTO-SYNCED from backend/openapi/ (§5)
+├── zh/                       # Chinese mirror of the above (§9)
+├── scripts/sync-spec.sh      # Sync helper (do not bypass)
+└── docs.json                 # Mintlify nav + theme (v4 schema)
 ```
 
-zh/ mirrors the en/ tree 1:1. Any new en file MUST be paired with a zh
-translation in the same PR, using the terminology table at
+`zh/` mirrors the en/ tree 1:1. Any new en file MUST be paired with a
+zh translation in the same PR, using the terminology table at
 [`zh/_terminology.md`](zh/_terminology.md).
 
 ## 2. Frontmatter
@@ -46,8 +52,9 @@ description: Send messages to deployed agents and receive replies (REST, A2A, MC
 
 - `title` is required — shows in sidebar and page header.
 - `description` is required — 1-2 sentences, SEO-friendly, no trailing period.
-- If `description` contains a colon (`:`), wrap the whole value in double
-  quotes: `description: "Tasks: long-running invocation primitive"`.
+- Quote `description` only when its value contains YAML-special characters:
+  a colon (`:`), a quote (`"` or `'`), a newline, or starts with `[`/`{`/`-`/`*`.
+  Plain English or Chinese prose does not need quoting.
 - No emojis in titles or descriptions.
 
 ## 3. Mintlify component usage
@@ -58,7 +65,7 @@ rendering — pick one.
 
 ### CodeGroup (TS + Go + curl)
 
-```mdx
+````mdx
 <CodeGroup>
 
 ```typescript TypeScript
@@ -74,10 +81,11 @@ curl -X POST https://openapi.beeos.ai/api/v1/agents/{id}/invoke ...
 ```
 
 </CodeGroup>
-```
+````
 
 The fence language tag (`typescript`, `go`, `bash`) AND the human-readable
-label (`TypeScript`, `Go`, `curl`) are both required.
+label (`TypeScript`, `Go`, `curl`) are both required. Keep the labels in
+English in zh translations too — they are language IDs by convention.
 
 ### Procedural steps
 
@@ -133,13 +141,23 @@ Do **not** use raw markdown blockquotes (`> ...`) for callouts — switch to
 </CardGroup>
 ```
 
-Use `cols={2}` by default. `cols={3}` only for the introduction page.
+Default to `cols={2}`. Use `cols={3}` only when all card titles are
+short (< 12 chars) and you have at least three cards.
 
 ### Mermaid diagrams
 
-Use fenced ```mermaid blocks — Mintlify renders them natively. Follow the
-[`mermaid syntax rules`](../docs/MERMAID_GUIDE.md) (no spaces in node IDs,
-no explicit colors, etc.).
+Use fenced ```mermaid blocks — Mintlify renders them natively. Three
+hard rules to avoid silent render failures:
+
+1. **Node IDs must be ASCII without spaces** (`UserService`, not
+   `User Service`). Display labels in `["..."]` can be any language
+   including Chinese.
+2. **Quote edge labels with special characters** —
+   `A -->|"O(1) lookup"| B`, not `A -->|O(1) lookup| B`. In zh
+   translations, any label with Chinese punctuation or parens needs
+   quoting too.
+3. **Never set explicit colors** (`style`, `fill:`, `classDef`) —
+   they break in dark mode. Let the theme handle it.
 
 ## 4. Routing
 
@@ -152,25 +170,31 @@ no explicit colors, etc.).
 
 **Heading slugs**: Mintlify slugifies headings by lower-casing, replacing
 spaces with `-`, and **keeping leading numbers** like `## 4. Invoke the agent`
-→ `#4-invoke-the-agent`. To avoid number-prefix slugs, drop the `4.` from
-the heading text (renumber via `<Steps>` instead).
+-> `#4-invoke-the-agent`. For zh pages, Chinese heading text produces
+unpredictable slugs — if you need a stable cross-page anchor, add an
+explicit id with raw HTML: `<h2 id="invoke-the-agent">调用智能体</h2>`.
 
 ## 5. OpenAPI sync
 
 `openapi/beeos-platform-v1.yaml` and `openapi/beeos-agent-integration-v1.yaml`
-are **AUTO-SYNCED** from
-`https://github.com/beeos-ai/openagent/tree/main/backend/openapi/`. The top
-of each file has a banner — **do not edit them by hand**.
+are **AUTO-SYNCED** from the [`backend/openapi/`](https://github.com/beeos-ai/openagent/tree/main/backend/openapi)
+directory of the openagent meta repo. The top of each file has a banner
+with the source SHA — **do not edit them by hand**.
 
 Sync workflow:
 
 ```bash
-# In openagent repo
+# 1. Edit the source spec in the openagent meta repo
+cd path/to/openagent
 $EDITOR backend/openapi/beeos-platform-v1.yaml
-cd sdks/openapi-sdk && npm run sync-spec && npm run gen   # update SDKs
+cd backend && git add -A && git commit && cd ..
 
-# In beeos-docs repo (this one)
-npm run sync-spec   # copies backend/openapi/*.yaml → openapi/ with banner
+# 2. Regenerate SDKs from the new source (separate concern)
+cd sdks/openapi-sdk && npm run sync-spec && npm run gen
+
+# 3. In beeos-docs (this repo), pull the new spec in
+cd beeos-docs && npm run sync-spec   # copies + adds banner
+git add openapi/ && git commit
 ```
 
 `openapi/beeos-platform-v1-zh.yaml` is **hand-translated**, not synced.
@@ -191,19 +215,42 @@ after the en spec lands.
 
 Before opening a PR to this repo:
 
-- [ ] `npm run build` passes locally (`mintlify build`)
+- [ ] `npm run validate` passes locally (`mintlify validate`)
+- [ ] `npm run broken-links` resolves cleanly (`mintlify broken-links`)
 - [ ] `npx @redocly/cli@1.12.0 lint openapi/beeos-platform-v1.yaml` passes
-- [ ] No `>`-style markdown blockquotes (search: `rg "^> " *.mdx`)
-- [ ] No relative `.md` links (search: `rg "\]\(\./|\.\./" *.mdx`)
-- [ ] No `backend/` paths leaked into MDX (search: `rg "backend/" *.mdx`)
-- [ ] New en file paired with zh translation
-- [ ] zh translation follows `zh/_terminology.md`
-- [ ] PR is against `docs-roadmap-v2` (or successor feature branch),
-      **not** `main` — main pushes auto-deploy production via
-      `.github/workflows/deploy.yml`.
+- [ ] No `>`-style markdown blockquotes (search: `grep -lE "^> " *.mdx **/*.mdx`)
+- [ ] No relative `.md` links (search: `grep -lE "\]\(\.\./|\]\(\./" *.mdx **/*.mdx`)
+- [ ] No `backend/` paths leaked into MDX (search: `grep -l "backend/" *.mdx **/*.mdx`)
+- [ ] New en file paired with zh translation (or explicitly tracked as TODO)
+- [ ] zh translation follows `zh/_terminology.md`; new terms added there
+      before being used in prose
 
 ## 8. Deployment
 
 `.github/workflows/deploy.yml` triggers `mintlify/github-action@v4` on
-every push to `main` → publishes immediately to <https://docs.beeos.ai>.
+every push to `main` -> publishes immediately to <https://docs.beeos.ai>.
 Always use a feature branch + PR review. Never force-push `main`.
+
+## 9. Translation rules (zh)
+
+The zh tree under `zh/` is hand-maintained alongside the en tree. Rules
+that lock translation quality:
+
+- **Mirror the file tree exactly**: every `foo/bar.mdx` in en has a
+  `zh/foo/bar.mdx` peer with the same MDX structure (frontmatter,
+  components, headings, code blocks).
+- **Use `zh/_terminology.md`**: the locked en/zh term table. Add a row
+  for any new term *before* using it in prose. Words marked "保留" stay
+  in English (`API key`, `JWT`, `JSON-RPC`, `chat_message`, etc.).
+- **Code blocks**: never translate fence content. English comments inside
+  code stay English (preserves runnability + lint clarity).
+- **CodeGroup labels**: keep language IDs and human labels in English
+  (`TypeScript`, `Go`, `curl`) — they are conventional, not prose.
+- **Spacing**: leave a single space between Chinese characters and inline
+  English / code / digits: `用户 API Key`, not `用户API Key`.
+- **Error codes, token prefixes, JSON field names**: keep verbatim
+  (`oag_`, `bak_`, `error.code`, `agent_reply_delta`, `tools/call`).
+- **Anchors**: prefer not to rely on auto-slugified Chinese heading ids
+  for cross-page links. If unavoidable, add explicit `<h2 id="...">`.
+- **Mermaid**: see [§3 mermaid rules](#mermaid-diagrams) — node IDs ASCII,
+  edge labels with Chinese punctuation quoted.
