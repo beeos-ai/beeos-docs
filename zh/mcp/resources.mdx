@@ -1,14 +1,21 @@
 ---
 title: 资源
-description: MCP 智能体暴露的只读数据资源和提示模板。
+description: MCP 智能体暴露的只读数据资源和 prompt 模板。
 ---
 
-除了工具外，MCP 智能体还可以暴露 **资源**（只读数据）和
-**提示模板**（可复用的消息模式）。这些遵循标准 MCP 规范。
+<Info>
+MCP host 的鉴权 + 端点布局见 [MCP 概览](/zh/mcp/overview)。反向 ——
+智能体通过 `attachments[]` 接收文件、以及跨 OpenAPI 和 A2A 的 `file_id`
+模型 —— 见 [工具 § 附件](/zh/mcp/tools#附件) 和
+[调用智能体 § 附件](/zh/guides/calling-agents#附件)。
+</Info>
+
+除工具外，MCP 智能体还能暴露**资源**（只读数据）和 **prompt 模板**
+（可复用的消息模式）。这些遵循标准 MCP 规范。
 
 ## 资源
 
-资源代表 MCP 客户端可以读取但不能修改的数据。
+资源代表 MCP 客户端可读不可改的数据。
 
 ### resources/list
 
@@ -22,7 +29,7 @@ description: MCP 智能体暴露的只读数据资源和提示模板。
 }
 ```
 
-**响应：**
+**响应:**
 
 ```json
 {
@@ -32,14 +39,14 @@ description: MCP 智能体暴露的只读数据资源和提示模板。
     "resources": [
       {
         "uri": "beeos://agent/config",
-        "name": "智能体配置",
-        "description": "当前智能体配置和能力",
+        "name": "Agent Configuration",
+        "description": "Current agent configuration and capabilities",
         "mimeType": "application/json"
       },
       {
         "uri": "beeos://agent/skills",
-        "name": "技能注册表",
-        "description": "所有注册技能及其元数据列表",
+        "name": "Skill Registry",
+        "description": "List of all registered skills with metadata",
         "mimeType": "application/json"
       }
     ]
@@ -47,18 +54,18 @@ description: MCP 智能体暴露的只读数据资源和提示模板。
 }
 ```
 
-### 资源 Schema
+### 资源 schema
 
 | 字段 | 类型 | 说明 |
-|------|------|------|
-| `uri` | string | 资源唯一标识符 |
-| `name` | string | 人类可读的名称 |
-| `description` | string | 资源包含的内容说明 |
-| `mimeType` | string | 资源的内容类型 |
+|---|---|---|
+| `uri` | string | 资源唯一标识 |
+| `name` | string | 人类可读名 |
+| `description` | string | 资源包含啥 |
+| `mimeType` | string | 资源 content type |
 
 ### resources/read
 
-按 URI 读取特定资源：
+按 URI 读特定资源：
 
 ```json
 {
@@ -71,7 +78,7 @@ description: MCP 智能体暴露的只读数据资源和提示模板。
 }
 ```
 
-**响应：**
+**响应:**
 
 ```json
 {
@@ -89,9 +96,9 @@ description: MCP 智能体暴露的只读数据资源和提示模板。
 }
 ```
 
-## 提示模板
+## Prompt 模板
 
-提示模板是 MCP 客户端可以向用户展示的可复用消息模式。
+Prompt 模板是 MCP 客户端可呈现给用户的可复用消息模式。
 
 ### prompts/list
 
@@ -103,7 +110,7 @@ description: MCP 智能体暴露的只读数据资源和提示模板。
 }
 ```
 
-**响应：**
+**响应:**
 
 ```json
 {
@@ -113,16 +120,16 @@ description: MCP 智能体暴露的只读数据资源和提示模板。
     "prompts": [
       {
         "name": "research",
-        "description": "研究一个主题并提供摘要",
+        "description": "Research a topic and provide a summary",
         "arguments": [
           {
             "name": "topic",
-            "description": "要研究的主题",
+            "description": "The topic to research",
             "required": true
           },
           {
             "name": "depth",
-            "description": "研究深度：brief、standard 或 deep",
+            "description": "Research depth: brief, standard, or deep",
             "required": false
           }
         ]
@@ -134,7 +141,7 @@ description: MCP 智能体暴露的只读数据资源和提示模板。
 
 ### prompts/get
 
-使用参数渲染提示模板：
+按参数渲染 prompt 模板：
 
 ```json
 {
@@ -144,14 +151,14 @@ description: MCP 智能体暴露的只读数据资源和提示模板。
   "params": {
     "name": "research",
     "arguments": {
-      "topic": "量子计算",
+      "topic": "quantum computing",
       "depth": "deep"
     }
   }
 }
 ```
 
-**响应：**
+**响应:**
 
 ```json
 {
@@ -163,7 +170,7 @@ description: MCP 智能体暴露的只读数据资源和提示模板。
         "role": "user",
         "content": {
           "type": "text",
-          "text": "深入研究量子计算。提供涵盖近期进展、主要参与者和实际应用的全面摘要。"
+          "text": "Research quantum computing in depth. Provide a comprehensive summary covering recent advances, key players, and practical applications."
         }
       }
     ]
@@ -174,19 +181,19 @@ description: MCP 智能体暴露的只读数据资源和提示模板。
 ## 示例：完整资源流程
 
 ```bash
-# 列出资源
+# 列资源
 curl -s -X POST "https://mcp.beeos.ai/${AGENT_ID}/mcp" \
   -H "X-Agent-API-Key: bak_YOUR_KEY" \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"resources/list"}' | jq '.result.resources'
 
-# 读取资源
+# 读一个资源
 curl -s -X POST "https://mcp.beeos.ai/${AGENT_ID}/mcp" \
   -H "X-Agent-API-Key: bak_YOUR_KEY" \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":2,"method":"resources/read","params":{"uri":"beeos://agent/config"}}' | jq
 
-# 列出提示
+# 列 prompts
 curl -s -X POST "https://mcp.beeos.ai/${AGENT_ID}/mcp" \
   -H "X-Agent-API-Key: bak_YOUR_KEY" \
   -H "Content-Type: application/json" \
@@ -195,8 +202,7 @@ curl -s -X POST "https://mcp.beeos.ai/${AGENT_ID}/mcp" \
 
 ## 可用性
 
-并非所有智能体都暴露资源或提示。如果智能体未注册任何资源或提示，
-响应可能包含空数组：
+不是所有智能体都暴露资源或 prompt。智能体没注册过的话响应可能是空数组：
 
 ```json
 {
@@ -208,4 +214,4 @@ curl -s -X POST "https://mcp.beeos.ai/${AGENT_ID}/mcp" \
 }
 ```
 
-这是正常行为，不是错误。
+这是正常行为、不是错误。

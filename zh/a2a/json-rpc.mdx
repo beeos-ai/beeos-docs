@@ -3,8 +3,8 @@ title: JSON-RPC 方法
 description: A2A v1.0 JSON-RPC 方法完整参考。
 ---
 
-A2A 协议使用 [JSON-RPC 2.0](https://www.jsonrpc.org/specification)
-作为传输格式。所有请求均为 `POST`，Content-Type 为 `application/json`。
+A2A 协议用 [JSON-RPC 2.0](https://www.jsonrpc.org/specification)
+作 wire 格式。所有请求都是 `POST` 带 `Content-Type: application/json`。
 
 ## 端点
 
@@ -12,7 +12,30 @@ A2A 协议使用 [JSON-RPC 2.0](https://www.jsonrpc.org/specification)
 POST https://a2a.beeos.ai/{agentId}
 ```
 
-包含 `A2A-Version: 1.0` 头用于协议版本协商。
+带 `A2A-Version: 1.0` header 做协议版本协商。
+
+<Note>
+**方法命名。** A2A v1.0 用命名空间小写名如 `message/send` 和
+`tasks/get`。BeeOS A2A Gateway **同时**接受 v1.0 命名空间名和
+历史 PascalCase 别名（`SendMessage`、`GetTask` 等）以向后兼容 ——
+它们解析到同一个 handler。新接入应优先用命名空间名。映射表在
+[本页底部](#标准别名映射)。
+</Note>
+
+| A2A v1.0 标准 | Legacy 别名（仍受支持） | 说明 |
+|---|---|---|
+| `message/send` | `SendMessage` | 发消息；创建任务或继续会话 |
+| `message/stream` | `SendStreamingMessage` | 同上但返回 SSE 流 |
+| `tasks/get` | `GetTask` | 取任务状态和结果 |
+| `tasks/cancel` | `CancelTask` | 取消进行中的任务 |
+| `tasks/list` | `ListTasks` | 列调用方身份的任务 |
+| `tasks/complete` | `CompleteTask` | （BeeOS）智能体侧标记任务完成 |
+| `tasks/updateStatus` | `UpdateStatus` | （BeeOS）推送进行中状态更新 |
+| `tasks/resubscribe` | `SubscribeToTask` | 重订阅任务 SSE 流 |
+| `tasks/pushNotificationConfig/set` | — | 注册 webhook（见 [Webhooks](/zh/guides/webhooks)） |
+
+下面的逐方法文档用 PascalCase 形以匹配已有字段名 —— 调用时替换为
+命名空间形即可。
 
 ## 请求格式
 
@@ -29,21 +52,21 @@ POST https://a2a.beeos.ai/{agentId}
 
 ### SendMessage
 
-向智能体发送消息，创建新任务或继续已有对话。
+给智能体发消息，创建新任务或继续已有会话。
 
-**参数：**
+**Params:**
 
 | 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `message` | object | 是 | 要发送的消息 |
-| `message.role` | string | 是 | 用户消息使用 `"user"` |
-| `message.parts` | array | 是 | 消息内容片段 |
+|---|---|---|---|
+| `message` | object | 是 | 要发的消息 |
+| `message.role` | string | 是 | 用户消息用 `"user"` |
+| `message.parts` | array | 是 | 消息内容部分 |
 | `message.parts[].kind` | string | 是 | `"text"`、`"file"` 或 `"data"` |
-| `message.parts[].text` | string | 条件必填 | 文本内容（`kind` 为 `"text"` 时） |
+| `message.parts[].text` | string | 条件 | 文本内容（`kind` 为 `"text"` 时） |
 | `configuration` | object | 否 | 任务配置覆盖 |
-| `configuration.skills` | string[] | 否 | 限定使用特定技能 |
+| `configuration.skills` | string[] | 否 | 限定到特定技能 |
 
-**示例：**
+**示例:**
 
 ```json
 {
@@ -54,14 +77,14 @@ POST https://a2a.beeos.ai/{agentId}
     "message": {
       "role": "user",
       "parts": [
-        {"kind": "text", "text": "旧金山的天气怎么样？"}
+        {"kind": "text", "text": "What is the weather in San Francisco?"}
       ]
     }
   }
 }
 ```
 
-**响应：**
+**响应:**
 
 ```json
 {
@@ -76,7 +99,7 @@ POST https://a2a.beeos.ai/{agentId}
     "artifacts": [
       {
         "parts": [
-          {"kind": "text", "text": "旧金山目前 65°F，晴天。"}
+          {"kind": "text", "text": "The weather in San Francisco is 65°F and sunny."}
         ]
       }
     ]
@@ -86,15 +109,15 @@ POST https://a2a.beeos.ai/{agentId}
 
 ### GetTask
 
-获取任务的当前状态和结果。
+取任务的当前状态和结果。
 
-**参数：**
+**Params:**
 
 | 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `id` | string | 是 | `SendMessage` 返回的任务 ID |
+|---|---|---|---|
+| `id` | string | 是 | `SendMessage` 返回的 task ID |
 
-**示例：**
+**示例:**
 
 ```json
 {
@@ -111,13 +134,13 @@ POST https://a2a.beeos.ai/{agentId}
 
 请求取消进行中的任务。
 
-**参数：**
+**Params:**
 
 | 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `id` | string | 是 | 要取消的任务 ID |
+|---|---|---|---|
+| `id` | string | 是 | 要取消的 task ID |
 
-**示例：**
+**示例:**
 
 ```json
 {
@@ -132,27 +155,26 @@ POST https://a2a.beeos.ai/{agentId}
 
 ### ListTasks
 
-列出智能体的任务（调用方范围内）。
+列智能体的任务（调用方范围）。
 
-**参数：**
+**Params:**
 
 | 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `limit` | integer | 否 | 最大返回数量（默认 20） |
-| `offset` | integer | 否 | 分页偏移量 |
+|---|---|---|---|
+| `limit` | integer | 否 | 最大返回（默认 20） |
+| `offset` | integer | 否 | 分页 offset |
 
 ### SendStreamingMessage
 
-与 `SendMessage` 相同，但返回 SSE 流而非阻塞响应。
-详见 [流式传输](/zh/a2a/streaming)。
+同 `SendMessage` 但返回 SSE 流而非阻塞响应。详见 [流式](/zh/a2a/streaming)。
 
 ## BeeOS 扩展
 
-BeeOS 在 A2A v1.0 规范基础上添加了以下方法：
+BeeOS 在 A2A v1.0 spec 之外加了下列方法：
 
 ### CompleteTask
 
-将任务标记为完成（智能体侧调用）。
+智能体侧标记任务完成。
 
 ```json
 {
@@ -162,7 +184,7 @@ BeeOS 在 A2A v1.0 规范基础上添加了以下方法：
   "params": {
     "id": "task_abc123",
     "artifacts": [
-      {"parts": [{"kind": "text", "text": "完成！"}]}
+      {"parts": [{"kind": "text", "text": "Done!"}]}
     ]
   }
 }
@@ -181,34 +203,38 @@ BeeOS 在 A2A v1.0 规范基础上添加了以下方法：
     "id": "task_abc123",
     "status": {
       "state": "working",
-      "message": "正在处理第 2 步，共 5 步..."
+      "message": "Processing step 2 of 5..."
     }
   }
 }
 ```
 
-## 遗留方法别名
+## 标准别名映射
 
-为保持向后兼容，以下别名可被接受：
+A2A Gateway 同时接受 A2A v1.0 命名空间名和历史 PascalCase 形。挑跟你
+客户端库风格匹配的用；wire 行为完全相同。
 
-| 遗留别名 | 映射到 |
-|----------|--------|
-| `message/send` | `SendMessage` |
-| `message/stream` | `SendStreamingMessage` |
-| `tasks/get` | `GetTask` |
-| `tasks/cancel` | `CancelTask` |
-| `tasks/list` | `ListTasks` |
-| `tasks/complete` | `CompleteTask` |
-| `tasks/updateStatus` | `UpdateStatus` |
-| `tasks/resubscribe` | `SubscribeToTask` |
+| A2A v1.0 标准 | PascalCase 别名 | 实现 |
+|---|---|---|
+| `message/send` | `SendMessage` | [`gateway.go`](https://github.com/beeos-ai/openagent/blob/main/backend/services/gateway/internal/http/gateway.go) —— 同 handler |
+| `message/stream` | `SendStreamingMessage` | 同 handler，SSE 响应 |
+| `tasks/get` | `GetTask` | 同 handler |
+| `tasks/cancel` | `CancelTask` | 同 handler |
+| `tasks/list` | `ListTasks` | 同 handler |
+| `tasks/complete` | `CompleteTask` | BeeOS 扩展（智能体侧） |
+| `tasks/updateStatus` | `UpdateStatus` | BeeOS 扩展 |
+| `tasks/resubscribe` | `SubscribeToTask` | 同 handler，重挂 SSE |
+
+新接入：优先用命名空间形。已有 PascalCase 调用方不必迁移 —— 两者都
+会无限期接受。
 
 ## 错误码
 
-| 错误码 | 含义 |
-|--------|------|
-| `-32600` | 无效的 JSON-RPC 请求 |
+| Code | 含义 |
+|---|---|
+| `-32600` | 非法 JSON-RPC 请求 |
 | `-32601` | 方法未找到 |
-| `-32602` | 参数无效 |
+| `-32602` | 非法 params |
 | `-32603` | 内部错误 |
 | `-32000` | 任务未找到 |
 | `-32001` | 智能体未找到 |

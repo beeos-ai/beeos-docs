@@ -3,18 +3,23 @@ title: Agent Cards
 description: 通过 A2A Agent Card 规范发现智能体能力。
 ---
 
-**Agent Card** 是一个 JSON 文档，描述智能体的身份、技能、支持的协议和
-集成端点。它遵循
+<Info>
+更广义的 A2A 面（鉴权、端点布局、JSON-RPC vs 可选 REST）从
+[A2A 概览](/zh/a2a/overview) 开始读。本页是 card 文档本身的逐字段参考。
+</Info>
+
+**Agent Card** 是描述智能体身份、技能、支持协议、集成端点的 JSON 文档。
+遵循
 [A2A v1.0 Agent Card 规范](https://github.com/a2aproject/a2a-spec)。
 
-## 获取 Agent Card
+## 获取一个 agent card
 
 ```bash
 curl -s "https://a2a.beeos.ai/${AGENT_ID}/.well-known/agent-card.json" | jq
 ```
 
 <Note>
-  获取 Agent Card 无需认证。Card 默认公开，以支持智能体发现。
+取 agent card 不要鉴权。卡按设计就是公开的，方便智能体发现。
 </Note>
 
 ## Agent Card 结构
@@ -22,7 +27,7 @@ curl -s "https://a2a.beeos.ai/${AGENT_ID}/.well-known/agent-card.json" | jq
 ```json
 {
   "name": "Research Assistant",
-  "description": "搜索网络并总结发现的智能体。",
+  "description": "An agent that searches the web and summarizes findings.",
   "url": "https://a2a.beeos.ai/agent_abc123",
   "version": "1.0.0",
   "capabilities": {
@@ -33,13 +38,13 @@ curl -s "https://a2a.beeos.ai/${AGENT_ID}/.well-known/agent-card.json" | jq
     {
       "id": "web-search",
       "name": "Web Search",
-      "description": "搜索任何主题的网络信息。",
+      "description": "Search the web for information on any topic.",
       "tags": ["search", "research"]
     },
     {
       "id": "summarize",
       "name": "Summarize",
-      "description": "总结长文档或网页。",
+      "description": "Summarize long documents or web pages.",
       "tags": ["nlp", "summarization"]
     }
   ],
@@ -55,40 +60,42 @@ curl -s "https://a2a.beeos.ai/${AGENT_ID}/.well-known/agent-card.json" | jq
 ## 字段参考
 
 | 字段 | 类型 | 说明 |
-|------|------|------|
-| `name` | string | 人类可读的智能体名称 |
-| `description` | string | 智能体的功能描述 |
-| `url` | string | 标准 A2A 端点 URL |
-| `version` | string | Agent Card 架构版本 |
-| `capabilities.streaming` | boolean | 是否支持流式响应 |
-| `capabilities.pushNotifications` | boolean | 是否支持推送通知投递 |
+|---|---|---|
+| `name` | string | 人类可读的智能体名 |
+| `description` | string | 智能体做什么 |
+| `url` | string | 规范 A2A 端点 URL |
+| `version` | string | Agent card schema 版本 |
+| `capabilities.streaming` | boolean | 智能体是否支持流式响应 |
+| `capabilities.pushNotifications` | boolean | 智能体是否支持推送通知投递 |
 | `skills` | array | 智能体提供的技能列表 |
-| `skills[].id` | string | 技能唯一标识符 |
-| `skills[].name` | string | 人类可读的技能名称 |
-| `skills[].description` | string | 技能功能描述 |
-| `skills[].tags` | string[] | 可搜索的标签 |
+| `skills[].id` | string | 技能唯一标识 |
+| `skills[].name` | string | 人类可读的技能名 |
+| `skills[].description` | string | 技能做什么 |
+| `skills[].tags` | string[] | 可搜索的 tag |
 | `defaultInputModes` | string[] | 接受的输入类型（`text`、`image`、`file`） |
-| `defaultOutputModes` | string[] | 智能体产生的输出类型 |
+| `defaultOutputModes` | string[] | 智能体产出的输出类型 |
 | `supportedInterfaces` | object | 协议端点 URL（A2A、MCP、REST） |
 
 ## 支持的接口
 
-`supportedInterfaces` 对象声明此智能体可用的协议入口：
+`supportedInterfaces` 对象广播本智能体可用的协议入口：
 
-| 键 | 说明 | 示例 |
-|----|------|------|
+| Key | 说明 | 示例 |
+|---|---|---|
 | `a2a` | A2A JSON-RPC 端点 | `https://a2a.beeos.ai/{agentId}` |
 | `mcp` | MCP Streamable HTTP 端点 | `https://mcp.beeos.ai/{agentId}/mcp` |
-| `rest` | REST 调用端点 | `https://a2a.beeos.ai/{agentId}/v1/invoke` |
+| `rest` | REST invoke 端点 | `https://a2a.beeos.ai/{agentId}/v1/invoke` |
 
-## 注册 Agent Card
+## 注册一个 agent card
 
-在 BeeOS 上部署智能体时，Agent Card 会根据智能体配置和注册的技能自动生成。
+Agent card 由 **Agent Identity Service** 管理。在 BeeOS 上部署智能体时，
+卡自动从智能体配置和已注册技能生成并注册。
 
-要更新智能体的 Card（技能、描述、能力），可通过 BeeOS Dashboard 或
-API 修改智能体配置。
+要更新智能体的卡（技能、描述、能力），通过 BeeOS Dashboard 或 Agent
+Identity gRPC API 改智能体配置。
 
 ## 发现
 
-BeeOS 智能体可通过 `beeos_discover_agents` 工具（内置于 beeos-claw 框架）
-以编程方式发现其他智能体。外部系统可通过 A2A Gateway 的标准端点查询可用智能体。
+BeeOS 智能体可用 `beeos_discover_agents` 工具（内建于 beeos-claw 框架）
+程序化地发现其他智能体。外部系统可通过 A2A Gateway 查 Agent Identity
+Service 枚举智能体。

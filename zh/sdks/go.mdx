@@ -1,23 +1,28 @@
 ---
 title: Go SDK
-description: 安装和使用 github.com/beeos-ai/sdk-go Go 客户端。
+description: 安装并使用 github.com/beeos-ai/sdk-go —— BeeOS OpenAPI 的自动生成 Go 客户端。
 ---
 
-Go SDK 是 BeeOS 平台 API（`openapi.beeos.ai`）的自动生成客户端，
-覆盖**实例生命周期管理**和**智能体消息调用**——以编程方式部署智能体并向其
-发送消息所需的核心平台操作。
+[`github.com/beeos-ai/sdk-go`](https://github.com/beeos-ai/sdk-go)
+模块是公开 BeeOS OpenAPI 契约的规范 Go 客户端，契约由
+[`openapi-gateway`](/zh/architecture/public-overview#3-each-surfaces-ownership)
+在 `openapi.beeos.ai` 提供服务。它从同一份
+[`backend/openapi/beeos-platform-v1.yaml`](https://github.com/beeos-ai/openagent/blob/main/backend/openapi/beeos-platform-v1.yaml)
+生成，与本站 API Reference tab 同源。
 
 <Info>
-  SDK 仅覆盖**平台 API**。[A2A 协议](/zh/a2a/overview)（`a2a.beeos.ai`）和
-  [MCP 协议](/zh/mcp/overview)（`mcp.beeos.ai`）是独立的协议入口，拥有各自的
-  认证方式，**不包含**在此 SDK 中。
+SDK 只针对 **Platform API**。[A2A 协议](/zh/a2a/overview)
+（`a2a.beeos.ai`）和 [MCP 协议](/zh/mcp/overview)
+（`mcp.beeos.ai`）是独立主机、独立鉴权 —— **不**被本模块包装。
 </Info>
 
 ## 安装
 
 ```bash
-go get github.com/beeos-ai/sdk-go@latest
+go get github.com/beeos-ai/sdk-go
 ```
+
+当前发布版本：**v0.4.0**（wire delta 见 [SDK 变更日志](/zh/sdks/changelog)）。
 
 ## 配置
 
@@ -27,7 +32,7 @@ package main
 import (
     "context"
     "fmt"
-    "net/http"
+    "os"
 
     beeos "github.com/beeos-ai/sdk-go"
 )
@@ -37,191 +42,262 @@ func main() {
     cfg.Servers = beeos.ServerConfigurations{
         {URL: "https://openapi.beeos.ai"},
     }
-    cfg.HTTPClient = &http.Client{
-        Transport: &authTransport{
-            key:  "oag_YOUR_KEY",
-            base: http.DefaultTransport,
-        },
-    }
+    cfg.DefaultHeader["Authorization"] = "Bearer " + os.Getenv("BEEOS_API_KEY")
 
     client := beeos.NewAPIClient(cfg)
     ctx := context.Background()
 
-    // 使用 client...
-    _ = ctx
-    _ = client
-}
-
-type authTransport struct {
-    key  string
-    base http.RoundTripper
-}
-
-func (t *authTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-    req.Header.Set("Authorization", "Bearer "+t.key)
-    return t.base.RoundTrip(req)
+    providers, _, err := client.DeployAPI.ListProviders(ctx).Execute()
+    if err != nil {
+        panic(err)
+    }
+    for _, p := range providers.GetData() {
+        fmt.Printf("%s — %s\n", p.Meta.GetId(), p.Meta.GetName())
+    }
 }
 ```
 
 <Note>
-  本地开发时，将服务器 URL 设为 `http://localhost:8095`。
+本地开发把 server URL 设成 `http://localhost:8095`。
 </Note>
 
-## 目录
-
-### 列出 Provider
+## Catalog
 
 ```go
-providers, _, err := client.DeployAPI.ListProviders(ctx).Execute()
-if err != nil {
-    log.Fatal(err)
+providers, _, _ := client.DeployAPI.ListProviders(ctx).Execute()
+
+regions, _, _ := client.DeployAPI.ListDeployRegions(ctx).
+    ProviderId("default").Execute()
+
+models, _, _ := client.DeployAPI.ListDeployModels(ctx).
+    AgentFramework("beeos-claw").Execute()
+```
+
+## 实例生命周期
+
+```go
+req := beeos.DeployInstanceRequest{
+    Name:           "my-agent",
+    AgentFramework: "beeos-claw",
+    ModelPrimary:   "gpt-4o",
 }
-for _, p := range providers.Data {
-    fmt.Println(p.Meta.Id, p.Meta.Name)
-}
+created, _, _ := client.InstancesAPI.DeployInstance(ctx).
+    DeployInstanceRequest(req).Execute()
+
+instanceID := created.GetData().GetId()
+
+inst, _, _ := client.InstancesAPI.GetInstance(ctx, instanceID).Execute()
+
+client.InstancesAPI.StartInstance(ctx, instanceID).Execute()
+client.InstancesAPI.StopInstance(ctx, instanceID).Execute()
+client.InstancesAPI.RestartInstance(ctx, instanceID).Execute()
+client.InstancesAPI.DestroyInstance(ctx, instanceID).Execute()
 ```
 
-### 列出区域
+`ListInstances` 支持分页 + 状态过滤：
 
 ```go
-regions, _, err := client.DeployAPI.ListDeployRegions(ctx).
-    ProviderId("default").
-    Execute()
-```
-
-### 列出部署模型
-
-```go
-models, _, err := client.DeployAPI.ListDeployModels(ctx).
-    AgentFramework("beeos-claw").
-    Execute()
-```
-
-## 实例
-
-### 部署实例
-
-```go
-inst, _, err := client.InstancesAPI.DeployInstance(ctx).
-    DeployInstanceRequest(beeos.DeployInstanceRequest{
-        Name:           "my-agent",
-        AgentFramework: beeos.PtrString("beeos-claw"),
-        ModelPrimary:   beeos.PtrString("gpt-4o"),
-    }).
-    Execute()
-
-fmt.Println("ID:", inst.Data.Id, "状态:", inst.Data.Status)
-```
-
-### 列出实例
-
-```go
-list, _, err := client.InstancesAPI.ListInstances(ctx).
-    Page(0).
-    PageSize(20).
-    Status("running").
-    Execute()
-
-for _, inst := range list.Data {
-    fmt.Println(inst.Id, inst.Name, inst.Status)
-}
-```
-
-### 获取实例
-
-```go
-inst, _, err := client.InstancesAPI.GetInstance(ctx, "inst_abc123").Execute()
-```
-
-### 生命周期操作
-
-```go
-_, _, _ = client.InstancesAPI.StartInstance(ctx, "inst_abc123").Execute()
-_, _, _ = client.InstancesAPI.StopInstance(ctx, "inst_abc123").Execute()
-_, _, _ = client.InstancesAPI.RestartInstance(ctx, "inst_abc123").Execute()
-_, _, _ = client.InstancesAPI.DestroyInstance(ctx, "inst_abc123").Execute()
+list, _, _ := client.InstancesAPI.ListInstances(ctx).
+    Page(0).PageSize(20).Status("running").Execute()
 ```
 
 ## 智能体
 
-### 列出智能体
-
 ```go
-agents, _, err := client.AgentsAPI.ListAgents(ctx).
-    InstanceId("inst_abc123").
-    Limit(20).
-    Execute()
-if err != nil {
-    log.Fatal(err)
-}
-for _, a := range agents.Data {
-    fmt.Println(a.Id, a.Name, a.Status)
-}
+list, _, _ := client.AgentsAPI.ListAgents(ctx).
+    InstanceId(instanceID).Limit(20).Execute()
+
+agent, _, _ := client.AgentsAPI.GetAgent(ctx, "agent_abc123").Execute()
+
+patchReq := beeos.PatchAgentRequest{Visibility: beeos.PtrString("public")}
+_, _, _ = client.AgentsAPI.PatchAgent(ctx, agent.GetData().GetId()).
+    PatchAgentRequest(patchReq).Execute()
 ```
 
-### 获取智能体详情
+### Invoke（阻塞）
+
+完整契约见 [调用智能体](/zh/guides/calling-agents)。
 
 ```go
-agent, _, err := client.AgentsAPI.GetAgent(ctx, "agent_abc123").Execute()
-if err != nil {
-    log.Fatal(err)
+req := beeos.InvokeAgentRequest{
+    Message: "Hello, what can you do?",
 }
-fmt.Println(agent.Data.Name, agent.Data.Visibility)
-```
-
-### 调用智能体（阻塞）
-
-```go
 reply, _, err := client.AgentsAPI.InvokeAgent(ctx, "agent_abc123").
-    InvokeAgentRequest(beeos.InvokeAgentRequest{
-        Message: "你好，你能做什么？",
-    }).
-    Execute()
+    InvokeAgentRequest(req).Execute()
 if err != nil {
-    log.Fatal(err)
+    // 见下面 "错误处理"
 }
-fmt.Println(reply.Data.Reply)
+fmt.Println("Reply:", reply.GetData().GetReply())
+fmt.Println("Channel:", reply.GetData().GetContextId())
 ```
 
-### 流式调用（原生 HTTP）
+### 带 idempotency + 附件的 Invoke（0.4.0）
 
 ```go
-body := strings.NewReader(`{"message":"你好！"}`)
-req, _ := http.NewRequest("POST",
-    "https://openapi.beeos.ai/api/v1/agents/agent_abc123/invoke", body)
-req.Header.Set("Authorization", "Bearer oag_YOUR_KEY")
+req := beeos.InvokeAgentRequest{
+    Message:        "Summarize the attached PDF.",
+    IdempotencyKey: beeos.PtrString("user_42:summarize_q3_report"),
+    Attachments: []beeos.Attachment{
+        {FileId: "file_abc123", Filename: beeos.PtrString("q3-report.pdf")},
+    },
+    Metadata: map[string]interface{}{"campaign": "marketing-q3"},
+}
+reply, _, _ := client.AgentsAPI.InvokeAgent(ctx, "agent_abc123").
+    InvokeAgentRequest(req).Execute()
+```
+
+`IdempotencyKey` 让调用在 TTL 窗口内可安全重试（见
+[ADR 0021](https://github.com/beeos-ai/openagent/blob/main/backend/docs/adr/0021-idempotency-key-ttl.md)）。
+
+### 流式 Invoke（SSE）
+
+SDK 不抽象 SSE —— 直接用 `net/http`。frame 形状见
+[流式](/zh/guides/streaming)。
+
+```go
+import (
+    "bufio"
+    "net/http"
+    "strings"
+)
+
+req, _ := http.NewRequestWithContext(ctx, "POST",
+    "https://openapi.beeos.ai/api/v1/agents/agent_abc123/invoke",
+    strings.NewReader(`{"message":"Tell me a long story."}`))
+req.Header.Set("Authorization", "Bearer "+os.Getenv("BEEOS_API_KEY"))
 req.Header.Set("Content-Type", "application/json")
 req.Header.Set("Accept", "text/event-stream")
 
-resp, err := http.DefaultClient.Do(req)
-if err != nil {
-    log.Fatal(err)
-}
+resp, _ := http.DefaultClient.Do(req)
 defer resp.Body.Close()
-
 scanner := bufio.NewScanner(resp.Body)
 for scanner.Scan() {
     fmt.Println(scanner.Text())
 }
 ```
 
-## 错误处理
+## 任务（异步 invocation）
 
 ```go
-inst, resp, err := client.InstancesAPI.GetInstance(ctx, "nonexistent").Execute()
-if err != nil {
-    if resp != nil {
-        fmt.Println("HTTP 状态码:", resp.StatusCode)
+createReq := beeos.CreateTaskRequest{
+    Message:        "Run the full Q3 audit.",
+    IdempotencyKey: beeos.PtrString("audit_q3_2026"),
+}
+created, _, _ := client.TasksAPI.CreateTask(ctx, "agent_abc123").
+    CreateTaskRequest(createReq).Execute()
+taskID := created.GetData().GetTaskId()
+
+// Poll
+for {
+    task, _, _ := client.TasksAPI.GetTask(ctx, "agent_abc123", taskID).Execute()
+    status := task.GetData().GetStatus()
+    if status == "completed" || status == "failed" {
+        break
     }
-    fmt.Println("错误:", err)
+    time.Sleep(2 * time.Second)
+}
+
+// 跨智能体列表（0.4.0 新增）
+all, _, _ := client.TasksAPI.ListUserTasks(ctx).State("running").Limit(50).Execute()
+
+// 取消
+client.TasksAPI.CancelTask(ctx, "agent_abc123", taskID).Execute()
+```
+
+Webhook 注册（HMAC 签名投递）：
+
+```go
+hookReq := beeos.RegisterTaskWebhookRequest{
+    Url:    "https://example.com/hooks/beeos",
+    Secret: beeos.PtrString("whsec_…"),
+    Events: []string{"completed", "failed", "cancelled"},
+}
+_, _, _ = client.TasksAPI.RegisterTaskWebhook(ctx, "agent_abc123", taskID).
+    RegisterTaskWebhookRequest(hookReq).Execute()
+```
+
+投递历史 + 重放（0.4.0 新增 —— 见 [Webhooks](/zh/guides/webhooks)）：
+
+```go
+deliveries, _, _ := client.TasksAPI.ListWebhookDeliveries(ctx,
+    "agent_abc123", taskID, "wh_abc123").Execute()
+
+_, _, _ = client.TasksAPI.RedeliverWebhook(ctx,
+    "agent_abc123", taskID, "wh_abc123", "del_xyz").Execute()
+```
+
+## 会话
+
+```go
+conv, _, _ := client.ConversationsAPI.CreateConversation(ctx, "agent_abc123").
+    CreateConversationRequest(beeos.CreateConversationRequest{
+        Title: beeos.PtrString("Quarterly planning"),
+    }).Execute()
+
+_, _, _ = client.ConversationsAPI.SendConversationMessage(ctx,
+    "agent_abc123", conv.GetData().GetId()).
+    SendConversationMessageRequest(beeos.SendConversationMessageRequest{
+        Message: "Start the planning session.",
+    }).Execute()
+
+msgs, _, _ := client.ConversationsAPI.ListConversationMessages(ctx,
+    "agent_abc123", conv.GetData().GetId()).Since(0).Execute()
+```
+
+## 文件
+
+```go
+presignReq := beeos.PresignUploadRequest{
+    Filename:    "report.pdf",
+    ContentType: "application/pdf",
+    SizeBytes:   4_582_910,
+}
+presigned, _, _ := client.FilesAPI.PresignUpload(ctx).
+    PresignUploadRequest(presignReq).Execute()
+
+// 用 PUT 把字节上传到返回的签名 URL...
+// 之后取元数据 + 一个新的下载 URL：
+meta, _, _ := client.FilesAPI.PresignDownload(ctx, presigned.GetData().GetFileId()).Execute()
+```
+
+把 `file_id` 放进 `InvokeAgentRequest` 或 `CreateTaskRequest` 的
+`Attachments`。
+
+## 错误处理
+
+非 2xx 响应返回 `*GenericOpenAPIError`，包装 BeeOS error 信封：
+
+```go
+import (
+    "encoding/json"
+    "errors"
+)
+
+type beeosError struct {
+    Success bool `json:"success"`
+    Error   struct {
+        Code    string `json:"code"`
+        Message string `json:"message"`
+    } `json:"error"`
+}
+
+if _, _, err := client.InstancesAPI.GetInstance(ctx, "nope").Execute(); err != nil {
+    var apiErr *beeos.GenericOpenAPIError
+    if errors.As(err, &apiErr) {
+        var body beeosError
+        _ = json.Unmarshal(apiErr.Body(), &body)
+        fmt.Printf("api error: %s — %s\n", body.Error.Code, body.Error.Message)
+    }
 }
 ```
 
+完整 code 列表见 [错误参考](/zh/reference/errors)。
+
 ## 源码与生成
 
-SDK 从
-[`beeos-platform-v1.yaml`](https://github.com/beeos-ai/openagent/blob/main/backend/openapi/beeos-platform-v1.yaml)
-使用 OpenAPI Generator（`go`）自动生成。发布的模块镜像 monorepo 中的生成输出。
+与 TypeScript SDK 从同一份 OpenAPI spec 生成
+（[`sdks/openapi-sdk/generate.sh`](https://github.com/beeos-ai/openagent/blob/main/sdks/openapi-sdk/generate.sh)）。
+wire 级变更：[SDK 变更日志](/zh/sdks/changelog)。版本迁移：
+[SDK 迁移](/zh/sdks/migration)。
 
-- **Go module:** `github.com/beeos-ai/sdk-go`
-- **GitHub:** [beeos-ai/sdk-go](https://github.com/beeos-ai/sdk-go)
+- GitHub：[`beeos-ai/sdk-go`](https://github.com/beeos-ai/sdk-go)

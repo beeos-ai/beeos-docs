@@ -1,0 +1,335 @@
+---
+title: SDK 迁移
+description: "@beeos-ai/sdk 版本间升级路径（0.3.x → 0.4.x 及以上），以及手写 HTTP 迁移配方。"
+---
+
+<Note>
+受众：在主版本或次版本之间升级 `@beeos-ai/sdk`（TypeScript）或
+`github.com/beeos-ai/sdk-go`（Go）的开发者。本指南**只讲 wire** ——
+codegen 工具链（`openapi-generator-cli` +
+[`sdks/openapi-sdk/`](https://github.com/beeos-ai/openagent/blob/main/sdks/openapi-sdk/)
+的配置）不在此文档化，只讲消费方看到的变化。
+</Note>
+
+每段覆盖一个升级路径。一段内配方顺序稳定：先 TS、再 Go、然后
+"如果你写了自定义 HTTP 代码、那就这么改"。完整机器可读变更列表交叉链到
+[`docs/CHANGELOG.md`](/zh/sdks/changelog)；本文件是人类走查版。
+
+两个 SDK 共享**一条版本线**。升 TS package 时**必须**把 Go 模块升到
+同一个 tag、同一次发布。别混着用 —— 不然你会在一个 SDK 上调到另一个
+SDK 没有的路由。
+
+---
+
+## 快速选路
+
+| 你在 | 读这段 |
+|---|---|
+| `0.3.x` 及更早（webhook 签名前） | [§ 1 —— 0.3 → 0.4](#1-03--04) 和 [§ 2 —— 0.4 → unreleased](#2-04--unreleased) |
+| `0.4.x`（今天发布的） | [§ 2 —— 0.4 → unreleased](#2-04--unreleased) |
+| 手写 `fetch`/`net/http` 直怼 `openapi.beeos.ai` | [§ 3 —— 手写 HTTP → SDK](#3-手写-http--sdk) |
+| 从 `0.2.x` 迁出（BFF 解耦前） | [§ 4 —— 0.2.x → 0.4.x](#4-02x--04x) |
+
+---
+
+## 1. `0.3.x` → `0.4.x`
+
+`0.4` 是 SDK 首次从解耦后的 openapi-gateway BFF（ADR-001）盖戳。wire
+基本是 `0.3` 的超集，**只有一处 breaking**：
+
+### 1.1 BREAKING —— `SendMessageResponse.offset` 移除
+
+该字段是误导性占位。真正的 offset 不透明地在同响应返回的 `since`
+cursor 里。
+
+**TS —— before**：
+
+```ts
+const res = await api.sendMessage({ /* … */ });
+const nextOffset = res.offset + 1;          // ❌ removed
+```
+
+**TS —— after**：
+
+```ts
+const res = await api.sendMessage({ /* … */ });
+// Use res.cursor as opaque; pass back as `since` on the next read:
+const events = await api.streamConversationEvents({
+  conversationId: convoId,
+  since: res.cursor,
+});
+```
+
+**Go —— before**：
+
+```go
+resp, _, _ := api.SendMessage(ctx, /* … */).Execute()
+nextOffset := resp.Offset + 1   // ❌ field removed
+```
+
+**Go —— after**：
+
+```go
+resp, _, _ := api.SendMessage(ctx, /* … */).Execute()
+events, _, _ := api.StreamConversationEvents(ctx, convoID).
+    Since(resp.GetCursor()).
+    Execute()
+```
+
+### 1.2 新增 —— `invoke` 上的 `idempotency_key`
+
+可选。老调用方仍工作；**新**调用方应在任何会因临时失败重试的操作上
+设它：
+
+```ts
+await api.invokeAgent({
+  agentId: "agent_abc",
+  invokeAgentRequest: {
+    message: "Run nightly report",
+    idempotencyKey: crypto.randomUUID(),   // 同 key 重提是安全的
+  },
+});
+```
+
+同一 key 在去重窗口内到达两次时，第二次返回第一次的回复。见
+[调用智能体 § 幂等性](/zh/guides/calling-agents#5-幂等性)。
+
+### 1.3 新增 —— `TaskResponse.truncated`
+
+可选布尔。任务事件日志超过 1000 条扫描上限时此字段为 `true`、返回的
+事件列表可能不全。老代码可忽略；新代码应展示 "向前继续翻" 的 UI 提示：
+
+```ts
+const task = await api.getTask({ agentId, taskId });
+if (task.truncated) {
+  console.warn("Task event log truncated — fetch with since=<cursor> for more");
+}
+```
+
+### 1.4 新增 —— `PushNotificationConfig.protocol_filter`
+
+你通过 OpenAPI 面注册 webhook 时，gateway 自动盖
+`protocol_filter="openapi"`。通过 A2A 的 `pushNotificationConfig/set`
+注册时盖 `protocol_filter="a2a"`。让**一个**接收 URL 后面挂**多个**
+按面过滤的订阅（例如只要 OpenAPI 事件、不要 A2A 联邦事件）。
+
+不是 breaking —— 老客户端忽略此字段；新客户端可用它做过滤。
+
+---
+
+## 2. `0.4.x` → Unreleased（当前 main）
+
+下面的 Unreleased 条目下一个 minor 版本一起发。都不是 breaking。
+
+### 2.1 Webhook HMAC 签名 —— 可选但推荐
+
+注册 webhook 时设 `secret`，每次投递就携带 `X-BeeOS-Signature`
+header。wire 响应只回 `has_secret: true`；原 secret 从不回显。
+
+**TS —— 带签名注册**：
+
+```ts
+const wh = await api.registerTaskWebhook({
+  agentId,
+  taskId,
+  registerTaskWebhookRequest: {
+    url: "https://my-app.example.com/beeos-webhook",
+    token: "my-bearer-token",          // 可选，仍支持
+    secret: "wh_sec_" + crypto.randomUUID(),  // 新 —— 可选 HMAC
+  },
+});
+// wh.hasSecret === true; wh.secret 不返回
+```
+
+接收时验证（Node）：
+
+```ts
+import { createHmac, timingSafeEqual } from "node:crypto";
+
+const expected = createHmac("sha256", secret)
+  .update(rawBody)
+  .digest("hex");
+const got = (req.headers["x-beeos-signature"] as string)
+  .replace(/^sha256=/, "");
+if (!timingSafeEqual(Buffer.from(expected), Buffer.from(got))) {
+  res.status(401).end();
+  return;
+}
+```
+
+Python 版本及完整投递契约见
+[Webhooks § 6 HMAC 签名](/zh/guides/webhooks#6-hmac-签名)。
+
+### 2.2 Webhook 投递审计日志 + 手动重放
+
+两个新端点：
+
+- `GET .../webhooks/{webhookId}/deliveries?limit=50` —— 最近 N 次
+  per-attempt 行。
+- `POST .../webhooks/{webhookId}/deliveries/{deliveryId}/redeliver`
+  —— 立即重新入队 `failed` / `dead_letter` 行。
+
+```ts
+const deliveries = await api.listWebhookDeliveries({
+  agentId, taskId, webhookId,
+});
+const failed = deliveries.deliveries.filter(d => d.status === "failed");
+for (const d of failed) {
+  await api.redeliverWebhook({
+    agentId, taskId, webhookId, deliveryId: d.deliveryId,
+  });
+}
+```
+
+### 2.3 `GET /api/v1/tasks` —— 跨智能体收件箱
+
+以前你得逐智能体调 `GET /agents/{id}/tasks` 才能拼出多智能体收件箱。
+现在：
+
+```ts
+const inbox = await api.listUserTasks({
+  limit: 50,
+  // 可选过滤：agentId: "agent_abc",
+});
+```
+
+按 `since`（offset cursor）分页。
+
+### 2.4 invoke / tasks / conversations 上的 `attachments[].file_id`
+
+把老的 "把二进制塞 `message` 里" 工作流替换成：
+
+```ts
+const presign = await api.presignUpload({
+  presignUploadRequest: {
+    contentType: "image/png",
+    contentLengthBytes: file.size,
+  },
+});
+await fetch(presign.uploadUrl, { method: "PUT", body: file });
+
+await api.invokeAgent({
+  agentId,
+  invokeAgentRequest: {
+    message: "Caption this image",
+    attachments: [{ fileId: presign.fileId }],
+  },
+});
+```
+
+老 "无附件" 调用方仍工作 —— 字段是可选的。
+
+### 2.5 `PATCH /api/v1/agents/{agentId}`
+
+仅 owner 更新 `visibility` 和 `mcp_enabled`（白名单）。其他字段（`name`、
+`description` 等）仍由智能体进程通过 `POST /api/v1/agents/sync` 同步
+—— 在这里 patch 会被静默覆盖，所以 SDK 不让你这么干。
+
+```ts
+await api.updateAgent({
+  agentId,
+  updateAgentRequest: {
+    visibility: "PUBLIC",
+    mcpEnabled: true,
+  },
+});
+```
+
+### 2.6 wire 错误信封收紧
+
+所有 4xx / 5xx 现在遵循规范信封（`type`、`code`、`message`、`param?`、
+`request_id`）。只检查 HTTP 状态的老代码仍工作；新代码应按 `error.code`
+分支。见 [错误参考](/zh/reference/errors)。
+
+### 2.7 新错误码 —— `insufficient_scope`
+
+如果你签发了只读 scope 的 `oag_` User API Key 并尝试写操作，现在
+返回 `403 insufficient_scope`（以前如果底层用户是 owner 就静默成功）。
+这是 "你代码靠侥幸工作" 和 "你代码因鉴权模型说允许而工作" 之间的
+**wire** 变化。
+
+修复：用对的 scope 重新签 key（见
+[鉴权与 API Key § scope 表](/zh/authentication#作用域scope)）。
+
+### 2.8 invoke 上的 `timeout_ms` 钳制
+
+阻塞 invoke 超时服务端钳在 `[100, 115_000]` ms。传 `timeoutMs: 200_000`
+不再让连接挂过 gateway 上限 —— 在钳值处钳住返回 `service_timeout`。
+新代码应选一个合理值；老代码本来*想*挂的现在会及时报错。
+
+---
+
+## 3. 手写 HTTP → SDK
+
+如果你一直用 `fetch` / `axios` / `net/http` 直接调
+`https://openapi.beeos.ai/api/v1/...`，迁移基本是机械的：
+
+1. `npm install @beeos-ai/sdk@latest`（或 `go get github.com/beeos-ai/sdk-go@latest`）。
+2. 构造一个 `Configuration` 含 base URL 和
+   `Authorization: Bearer <oag_… | jwt>`：
+   ```ts
+   import { Configuration, AgentsApi, TasksApi } from "@beeos-ai/sdk";
+
+   const cfg = new Configuration({
+     basePath: "https://openapi.beeos.ai",
+     accessToken: process.env.BEEOS_API_KEY,
+   });
+   ```
+3. 把每条路由替换成对应的 `<Tag>Api` 方法。映射跟
+   `backend/openapi/beeos-platform-v1.yaml` 里的 `operationId` 字段
+   一一对应。
+4. **错误处理。** SDK 在非 2xx 时抛异常。捕获并检查
+   `err.response?.error?.code`：
+   ```ts
+   try {
+     await api.invokeAgent({ /* … */ });
+   } catch (e: any) {
+     const code = e?.response?.error?.code;
+     if (code === "agent_offline") { /* retry */ }
+     else if (code === "rate_limited") { /* back off */ }
+     else throw e;
+   }
+   ```
+5. **SSE。** TS SDK 今天**不**抽象 SSE。流式端点保留手写
+   `EventSource` 指向 SDK 的 "build URL" helper 返回的 URL，或在底层
+   `fetch` 直接用 `Accept: text/event-stream`。见
+   [流式](/zh/guides/streaming)。
+6. **幂等。** SDK **不**自动设 `idempotency_key`；任何重试路径上显式
+   传。
+
+---
+
+## 4. `0.2.x` → `0.4.x`
+
+`0.2` 在 OpenAPI Gateway BFF 解耦（ADR-001）之前。SDK 是从 **main**
+Gateway 的 swagger 生成、路由集更宽（也不一致 —— 一半是用户专属、
+一半是公开的）。
+
+**推荐路径**：直接升 `0.4.x`。活下来的路由名不变；被移除的路由本来就
+不该在公开 SDK 里（admin 端点、内部 control-plane 调用）。
+
+如果你有调用方卡在 `0.2.x`：
+
+1. **先**审计你实际用了哪些路由。大多数消费方只调了 50+ surface 里的
+   3-5 个端点。
+2. **然后**对照
+   [`backend/openapi/beeos-platform-v1.yaml`](https://github.com/beeos-ai/openagent/blob/main/backend/openapi/beeos-platform-v1.yaml)
+   逐条检查。在里就是仍支持；不在就说明你之前用的是非契约路由 —— 提
+   issue，我们要么加上要么指给你对的面。
+3. **最后**，照上面 § 1 + § 2 的 wire delta 做。
+
+没有自动迁移工具 —— 变更小到 find/replace + 单测过一遍就够了。
+
+---
+
+## 另请参阅
+
+- [`docs/CHANGELOG.md`](/zh/sdks/changelog) —— 每版本变更的规范列表。
+- [`sdks/openapi-sdk/generate.sh`](https://github.com/beeos-ai/openagent/blob/main/sdks/openapi-sdk/generate.sh)
+  —— 版本戳位置。
+- [`backend/docs/adr/001-openapi-gateway-bff.md`](https://github.com/beeos-ai/openagent/blob/main/backend/docs/adr/001-openapi-gateway-bff.md)
+  —— `0.4.x` "重新开局" 的 rationale。
+- [`docs/reference/errors.md`](/zh/reference/errors) —— 类型化错误处理
+  的完整 `code` 表。
+- [`docs/guides/auth-api-keys.md`](/zh/authentication) —— 与
+  `insufficient_scope` 变更相关的凭证矩阵。

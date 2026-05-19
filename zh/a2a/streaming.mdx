@@ -1,41 +1,51 @@
 ---
-title: 流式传输
-description: 通过 Server-Sent Events (SSE) 实时获取任务更新。
+title: 流式
+description: 通过 Server-Sent Events（SSE）实时获取 A2A 任务更新。
 ---
 
-BeeOS 支持通过 **Server-Sent Events (SSE)** 流式传输 A2A 任务响应。
-调用方可以在智能体处理过程中实时接收部分结果，而无需等待完整响应。
+<Info>
+本页讲 **A2A 专属** 流式（`a2a.beeos.ai` 上的 `message/stream` 和
+`tasks/resubscribe`）。OpenAPI 面的 SSE（`POST /agents/{id}/invoke`
+带 `Accept: text/event-stream`、加任务事件流）见通用
+[流式指南](/zh/guides/streaming)。
+</Info>
 
-## 流式传输原理
+BeeOS 通过 **Server-Sent Events（SSE）** 支持流式 A2A 任务响应。
+让调用方在智能体工作时收到部分结果，而不是等完整响应。
+
+## 流式怎么工作
 
 ```mermaid
 sequenceDiagram
-    participant Client as 客户端
+    participant Client
     participant A2AGW as A2A Gateway
-    participant BeeOS as BeeOS 平台
-    participant Agent as 智能体
+    participant A2ASvc as A2A Service
+    participant MS as Message Service
+    participant Agent as Agent Pod
 
     Client->>A2AGW: POST /{agentId} (SendStreamingMessage)
-    A2AGW->>BeeOS: 创建任务 + 发送消息
-    BeeOS-->>A2AGW: task_id
-    A2AGW-->>Client: SSE 流打开
+    A2AGW->>A2ASvc: gRPC SendTask
+    A2ASvc->>MS: allocate channel + send message
+    A2ASvc-->>A2AGW: task_id, channel_id
+    A2AGW->>MS: GET /channels/{id}/stream (SSE)
+    A2AGW-->>Client: SSE stream opens
 
-    Agent->>BeeOS: 增量: "正在处理..."
-    BeeOS-->>A2AGW: SSE 事件
+    Agent->>MS: delta: "Processing..."
+    MS-->>A2AGW: SSE event
     A2AGW-->>Client: SSE: agent_reply_delta
 
-    Agent->>BeeOS: 增量: "以下是结果..."
-    BeeOS-->>A2AGW: SSE 事件
+    Agent->>MS: delta: "Here are the results..."
+    MS-->>A2AGW: SSE event
     A2AGW-->>Client: SSE: agent_reply_delta
 
-    Agent->>BeeOS: 最终回复
-    MS-->>A2AGW: SSE 事件
-    A2AGW-->>Client: SSE: agent_reply (流关闭)
+    Agent->>MS: final reply (in_reply_to)
+    MS-->>A2AGW: SSE event
+    A2AGW-->>Client: SSE: agent_reply (stream closes)
 ```
 
 ## 请求流式响应
 
-使用 `SendStreamingMessage` 方法（或遗留别名 `message/stream`）：
+用 `SendStreamingMessage` 方法（或 legacy `message/stream` 别名）：
 
 ```bash
 curl -N -X POST "https://a2a.beeos.ai/${AGENT_ID}" \
@@ -49,7 +59,7 @@ curl -N -X POST "https://a2a.beeos.ai/${AGENT_ID}" \
     "params": {
       "message": {
         "role": "user",
-        "parts": [{"kind": "text", "text": "写一篇详细分析"}]
+        "parts": [{"kind": "text", "text": "Write a detailed analysis"}]
       }
     }
   }'
@@ -60,13 +70,13 @@ curl -N -X POST "https://a2a.beeos.ai/${AGENT_ID}" \
 每个事件是 `data:` 行上的 JSON 对象：
 
 ```
-data: {"type":"status","task_id":"task_abc","status":{"state":"working","message":"正在研究..."}}
+data: {"type":"status","task_id":"task_abc","status":{"state":"working","message":"Researching..."}}
 
-data: {"type":"artifact_delta","task_id":"task_abc","delta":{"parts":[{"kind":"text","text":"首先，"}]}}
+data: {"type":"artifact_delta","task_id":"task_abc","delta":{"parts":[{"kind":"text","text":"First, "}]}}
 
-data: {"type":"artifact_delta","task_id":"task_abc","delta":{"parts":[{"kind":"text","text":"让我分析 "}]}}
+data: {"type":"artifact_delta","task_id":"task_abc","delta":{"parts":[{"kind":"text","text":"let me analyze "}]}}
 
-data: {"type":"artifact","task_id":"task_abc","artifact":{"parts":[{"kind":"text","text":"首先，让我分析数据..."}]}}
+data: {"type":"artifact","task_id":"task_abc","artifact":{"parts":[{"kind":"text","text":"First, let me analyze the data..."}]}}
 
 data: {"type":"status","task_id":"task_abc","status":{"state":"completed"}}
 ```
@@ -74,15 +84,16 @@ data: {"type":"status","task_id":"task_abc","status":{"state":"completed"}}
 ## 事件类型
 
 | 类型 | 说明 |
-|------|------|
+|---|---|
 | `status` | 任务状态变更（`working`、`completed`、`failed`、`canceled`） |
 | `artifact_delta` | 部分内容块（流式文本） |
-| `artifact` | 完整产物（最终结果） |
-| `error` | 处理过程中发生错误 |
+| `artifact` | 完整工件（最终结果） |
+| `error` | 处理中出错 |
 
 ## 重连
 
-如果 SSE 连接中断，可以从指定偏移量重连恢复：
+SSE 连接掉线时可重连并从指定 offset 恢复。A2A Gateway 代理 Message
+Service 内建的 backfill：
 
 ```bash
 curl -N "https://a2a.beeos.ai/${AGENT_ID}/stream?task_id=${TASK_ID}&since=${LAST_OFFSET}" \
@@ -90,10 +101,10 @@ curl -N "https://a2a.beeos.ai/${AGENT_ID}/stream?task_id=${TASK_ID}&since=${LAST
   -H "Accept: text/event-stream"
 ```
 
-`since` 参数确保从断连点接收所有事件，不会产生重复。
+`since` 参数确保你从断点收到所有事件、不重复。
 
 ## 超时行为
 
-- 默认流超时：从最后一个事件起 **5 分钟**
-- 如果智能体在超时窗口内未产生任何输出，流将以超时错误事件关闭
-- 长时间运行的任务应定期发送状态更新以保持流活跃
+- 默认流超时：从最后一次事件起 **5 分钟**
+- 如果智能体在超时窗内没产出输出，流以一个 timeout error 事件关闭
+- 长任务应定期发状态更新保活流

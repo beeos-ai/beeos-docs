@@ -1,32 +1,43 @@
 ---
 title: OAuth 2.1 流程
-description: MCP 客户端的 OAuth 2.1 + PKCE 认证。
+description: MCP 客户端的 OAuth 2.1 + PKCE 鉴权。
 ---
 
-MCP Gateway 为符合规范的 MCP 客户端实现了 **OAuth 2.1 + PKCE** 认证。
-这是 Claude Desktop 和 MCP Inspector 等交互式桌面应用的推荐认证方式。
+MCP Gateway 为符合 spec 的 MCP 客户端实现 **OAuth 2.1 + PKCE**。
+这是 Claude Desktop、MCP Inspector 这类交互式桌面应用的推荐鉴权方式。
 
 <Note>
-  对于服务器到服务器的集成，请使用 [智能体 API Key](/zh/authentication)（`bak_`）
-  或 [用户 API Key](/zh/authentication)（`oag_`）—— 它们完全跳过浏览器重定向流程。
+OAuth 2.1 不是唯一路径。MCP Gateway 同样接受 BeeOS 其他部分用的 bearer token：
+
+- **`Authorization: Bearer bak_…`** —— 绑定到目标智能体的
+  [Agent API Key](/zh/authentication)。最适合 server-to-server 集成
+  和无头 worker；不用浏览器跳转。
+- **`Authorization: Bearer oag_…`** —— 用户拥有的智能体可用
+  [User API Key](/zh/authentication)。智能体创建者跑的脚本很合适。
+
+调用方是交互式终端用户驱动的 MCP 客户端（Claude Desktop、ChatGPT 桌面、
+MCP Inspector）就用 OAuth；其他场合用 API key。
 </Note>
 
 ## 流程概览
 
 ```mermaid
 sequenceDiagram
-    participant Client as MCP 客户端
+    participant Client as MCP Client
     participant GW as MCP Gateway
-    participant Web as BeeOS Web 应用
+    participant Web as BeeOS Web App
+    participant Auth as Auth Service
+
     Client->>GW: POST /oauth/register
     GW-->>Client: client_id
 
     Client->>GW: GET /oauth/authorize
     Note over Client,GW: code_challenge, redirect_uri, state
-    GW->>Web: 302 重定向到 /mcp-login
-    Web->>Web: 用户认证
-    Web->>GW: 携带 login ticket 回调
-    GW-->>Client: 302 重定向并附带 ?code=...&state=...
+    GW->>Web: 302 redirect to /mcp-login
+    Web->>Auth: user authenticates
+    Auth-->>Web: login_ticket
+    Web->>GW: redirect with _bt=ticket
+    GW-->>Client: 302 redirect with ?code=...&state=...
 
     Client->>GW: POST /oauth/token
     Note over Client,GW: code, code_verifier
@@ -36,9 +47,9 @@ sequenceDiagram
     Note over Client,GW: Authorization: Bearer token
 ```
 
-## 第一步：动态客户端注册
+## Step 1：动态客户端注册
 
-注册新的 OAuth 客户端。按照 MCP Authorization 规范，仅支持公开客户端
+注册新 OAuth 客户端。按 MCP Authorization spec，只支持 public client
 （无 `client_secret`）。
 
 ```bash
@@ -60,9 +71,9 @@ curl -s -X POST "https://mcp.beeos.ai/oauth/register" \
 }
 ```
 
-## 第二步：授权请求
+## Step 2：授权请求
 
-生成 PKCE code verifier 和 challenge，然后重定向用户：
+生成 PKCE code verifier 和 challenge，然后跳转用户：
 
 ```
 GET https://mcp.beeos.ai/oauth/authorize
@@ -74,16 +85,16 @@ GET https://mcp.beeos.ai/oauth/authorize
   &state=random_state_value
 ```
 
-Gateway 将浏览器重定向到 BeeOS Web 应用登录页。用户认证后，浏览器会
-重定向回你的 `redirect_uri` 并附带授权码：
+Gateway 把浏览器重定向到 BeeOS web app 登录页。用户认证后浏览器被
+重定向回你的 `redirect_uri`，带授权码：
 
 ```
 http://localhost:5173/callback?code=auth_code_xyz&state=random_state_value
 ```
 
-## 第三步：令牌交换
+## Step 3：换 token
 
-将授权码兑换为访问令牌：
+用授权码换 access token：
 
 ```bash
 curl -s -X POST "https://mcp.beeos.ai/oauth/token" \
@@ -105,9 +116,9 @@ curl -s -X POST "https://mcp.beeos.ai/oauth/token" \
 }
 ```
 
-## 第四步：使用令牌
+## Step 4：用 token
 
-在 MCP 请求中携带访问令牌：
+MCP 请求带上 access token：
 
 ```bash
 curl -s -X POST "https://mcp.beeos.ai/${AGENT_ID}/mcp" \
@@ -118,38 +129,38 @@ curl -s -X POST "https://mcp.beeos.ai/${AGENT_ID}/mcp" \
 
 ## 发现端点
 
-MCP 客户端使用以下众所周知的端点来发现 OAuth 服务器：
+MCP 客户端用这些 well-known 端点发现 OAuth 服务器：
 
 | 端点 | 用途 |
-|------|------|
-| `GET /.well-known/oauth-authorization-server` | OAuth 2.1 授权服务器元数据 (RFC 8414) |
-| `GET /.well-known/oauth-protected-resource` | MCP 受保护资源元数据（指向 AS） |
+|---|---|
+| `GET /.well-known/oauth-authorization-server` | OAuth 2.1 授权服务器元数据（RFC 8414） |
+| `GET /.well-known/oauth-protected-resource` | MCP Protected Resource Metadata（指向 AS） |
 
 ```bash
 curl -s "https://mcp.beeos.ai/.well-known/oauth-authorization-server" | jq
 ```
 
-## 令牌详情
+## Token 细节
 
 | 属性 | 值 |
-|------|------|
+|---|---|
 | 算法 | HS256 |
 | 默认 TTL | 60 分钟 |
 | 授权码 TTL | 120 秒 |
-| 客户端类型 | 仅公开（无 client_secret） |
+| 客户端类型 | 仅 public（无 client_secret） |
 
 <Warning>
-  授权码在 120 秒后过期。请在重定向回调后立即兑换。
+授权码 120 秒过期。重定向回调后尽快换。
 </Warning>
 
 ## 401 响应行为
 
-当请求认证失败时，Gateway 返回：
+请求鉴权失败时，gateway 返回：
 
 ```
 HTTP/1.1 401 Unauthorized
 WWW-Authenticate: Bearer realm="MCP", resource_metadata="/.well-known/oauth-protected-resource"
 ```
 
-符合规范的 MCP 客户端使用 `resource_metadata` URL 来发现授权服务器
-并自动启动 OAuth 流程。
+符合 spec 的 MCP 客户端用 `resource_metadata` URL 发现授权服务器并
+自动启动 OAuth 流程。
