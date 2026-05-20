@@ -167,7 +167,7 @@
           },
           {
             "tab": "API 参考",
-            "openapi": "openapi/beeos-platform-v1.yaml"
+            "openapi": "openapi/beeos-platform-v1-zh.yaml"
           }
         ]
       }

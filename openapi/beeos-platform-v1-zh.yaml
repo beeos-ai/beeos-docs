@@ -1,29 +1,68 @@
+# ============================================================================
+# 此文件是 beeos-platform-v1.yaml 的人工翻译镜像。
+# 与 sync-spec.sh 脚本无关 —— **不要**自动覆盖。
+# 翻译规则参见 zh/_terminology.md。
+# 英文 yaml 升级时按照同一个 path / operationId / schema 名手翻 summary
+# 与 description；保留所有 wire 字段名、enum 值、format。
+# ============================================================================
 openapi: 3.1.0
 info:
-  title: BeeOS 平台 API
+  title: BeeOS OpenAPI（用户契约）
   version: 1.0.0
   description: |
-    **BeeOS 平台 API**，用于管理智能体实例和调用智能体。
-    SDK 支持 [TypeScript](https://www.npmjs.com/package/@beeos-ai/sdk)
-    和 [Go](https://github.com/beeos-ai/sdk-go)。
+    **BeeOS OpenAPI** 用户契约。唯一实现者是
+    **[`services/openapi-gateway`](../services/openapi-gateway)**（`openapi-gw`，
+    本地 `:8095`）。SDK（Go / TypeScript）发布在
+    [`sdks/beeos-ai-sdk-go`](../../sdks/beeos-ai-sdk-go) 和
+    [`sdks/beeos-ai-sdk`](../../sdks/beeos-ai-sdk)，直接从本文档生成。
 
-    **认证：**所有操作均需携带用户 **JWT** 或 **`oag_`** 用户 API Key，
-    通过 `Authorization: Bearer` 传递。
+    主用户 Gateway（`services/gateway`，`:9080`）服务 web / mobile / 桌面
+    客户端，**不**由本文档描述。它有独立于 SDK 契约的路由集。
+
+    **认证：**所有 operation 均需要用户 **JWT** 或 **`oag_`** User API
+    Key，均通过 `Authorization: Bearer` 传递。智能体级协议端点（带 `bak_`
+    的 A2A JSON-RPC、MCP）在
+    [beeos-agent-integration-v1.yaml](beeos-agent-integration-v1.yaml)
+    里，由 A2A Gateway / MCP Gateway 托管 —— 不在 `openapi-gateway`。
 servers:
   - url: https://openapi.beeos.ai
     description: 生产环境
+  - url: https://openapi-staging.beeos.ai
+    description: Staging
+  - url: http://localhost:8095
+    description: 本地开发（goreman）
 tags:
   - name: deploy
-    description: Provider / 区域 / 模型目录。
+    description: Provider / region / 模型目录。
   - name: instances
     description: 智能体实例生命周期（部署、启动、停止、重启、销毁）。
   - name: agents
-    description: 智能体列表、详情和调用。
+    description: 智能体列表、详情、同步调用。
+  - name: tasks
+    description: |
+      异步智能体任务（规范 task core —— 见 ADR-0017
+      `0017-unified-task-core`）。`tasks` 与 `agents/invoke` 的三大差异：
+      它立即返回 202 带 `task_id`（不阻塞等回复）、暴露轮询端点加 SSE
+      事件流、支持 cancel/continue 生命周期控制。
+  - name: conversations
+    description: |
+      长生命周期多轮对话。与 tasks 不同（task 一次性、有限、有终止
+      状态），conversation 在调用方关闭前一直开着 —— 消息独立持久化，
+      按 offset 可寻址。需要在长 session 中穿插调用方和智能体回合时
+      用 conversation；单 prompt 有界回复带可选 pause-and-resume 时
+      用 `tasks`。
+  - name: files
+    description: |
+      调用方上传用的 presigned URL（`POST /files/presign-upload`）
+      和结果下载用的 URL（`GET /files/presign-download`）——
+      `agents/{id}/invoke` 和 `agents/{id}/tasks` 共享的规范附件机制。
+      调用方拿短时效签名 URL、直接把字节 PUT 到对象存储（S3 / MinIO），
+      然后在后续 invoke / task 请求里通过 `attachments` 传 `file_id`。
 security:
   - bearerAuth: []
 paths:
   # ---------------------------------------------------------------------
-  # 目录
+  # Catalog
   # ---------------------------------------------------------------------
   /api/v1/providers:
     get:
@@ -37,11 +76,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ProvidersListResponse'
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
   /api/v1/deploy/regions:
     get:
       operationId: listDeployRegions
       tags: [deploy]
-      summary: 列出部署区域
+      summary: 列出部署 region
       parameters:
         - name: providerId
           in: query
@@ -50,11 +92,15 @@ paths:
           description: 按 Provider ID 过滤。
       responses:
         "200":
-          description: 标准信封；`data` 为部署区域列表。
+          description: 标准信封；`data` 为部署 region 列表。
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/DeployRegionsListResponse'
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
   /api/v1/deploy/models:
     get:
       operationId: listDeployModels
@@ -73,51 +119,48 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/DeployModelsListResponse'
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
 
   # ---------------------------------------------------------------------
-  # 实例
+  # Instances
   # ---------------------------------------------------------------------
   /api/v1/instances:
     get:
       operationId: listInstances
       tags: [instances]
-      summary: 列出调用者的实例
+      summary: 列出调用方的实例
       parameters:
         - name: page
           in: query
           required: false
           schema: { type: integer, format: int32, minimum: 0 }
-          description: 页码（从 0 开始）。
         - name: pageSize
           in: query
           required: false
           schema: { type: integer, format: int32, minimum: 0, maximum: 200 }
-          description: 每页数量。
         - name: status
           in: query
           required: false
           schema: { type: string }
-          description: 按状态过滤。
         - name: providerId
           in: query
           required: false
           schema: { type: string }
-          description: 按 Provider ID 过滤。
         - name: agentFramework
           in: query
           required: false
           schema: { type: string }
-          description: 按智能体框架过滤。
         - name: clusterId
           in: query
           required: false
           schema: { type: string }
-          description: 按集群 ID 过滤。
         - name: search
           in: query
           required: false
           schema: { type: string }
-          description: 搜索关键词。
       responses:
         "200":
           description: 分页实例列表（`{ success, data, total }`）。
@@ -125,10 +168,33 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/InstancePageResponse'
+              examples:
+                empty:
+                  summary: 暂无实例
+                  value:
+                    success: true
+                    data: []
+                    total: 0
+                single:
+                  summary: 一个运行中实例
+                  value:
+                    success: true
+                    data:
+                      - id: "instance_abc123"
+                        name: "my-agent-1"
+                        providerId: "openclaw-k8s"
+                        status: "running"
+                        regionId: "us-east-1"
+                        createdAt: "2026-05-14T18:00:00Z"
+                    total: 1
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
     post:
       operationId: deployInstance
       tags: [instances]
-      summary: 部署新实例（通过 `variantId` 目录驱动或显式指定）。
+      summary: 部署新实例（目录驱动通过 `variantId` 或显式指定）。
       requestBody:
         required: true
         content:
@@ -142,6 +208,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/InstanceResponse'
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "409": { $ref: '#/components/responses/Conflict' }
+        "413": { $ref: '#/components/responses/PayloadTooLarge' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
 
   /api/v1/instances/{id}:
     parameters:
@@ -152,7 +225,7 @@ paths:
     get:
       operationId: getInstance
       tags: [instances]
-      summary: 根据 ID 获取实例
+      summary: 按 id 获取实例
       responses:
         "200":
           description: 标准信封；`data` 为实例详情。
@@ -160,17 +233,28 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/InstanceResponse'
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
     delete:
       operationId: destroyInstance
       tags: [instances]
       summary: 销毁（终止）实例
       responses:
         "200":
-          description: 标准信封；`data` 为字符串 `"destroyed"`。
+          description: 标准信封；`data` 为字符串字面量 `"destroyed"`。
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/StringResponse'
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "409": { $ref: '#/components/responses/Conflict' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
 
   /api/v1/instances/{id}/start:
     parameters:
@@ -189,6 +273,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/InstanceResponse'
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "409": { $ref: '#/components/responses/Conflict' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
   /api/v1/instances/{id}/stop:
     parameters:
       - name: id
@@ -206,6 +296,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/InstanceResponse'
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "409": { $ref: '#/components/responses/Conflict' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
   /api/v1/instances/{id}/restart:
     parameters:
       - name: id
@@ -223,15 +319,95 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/InstanceResponse'
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "409": { $ref: '#/components/responses/Conflict' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
 
   # ---------------------------------------------------------------------
-  # 智能体
+  # Files（P1-A —— presign 上传 + 通过 Runtime FileService 解析）
+  # ---------------------------------------------------------------------
+  /api/v1/files/presign-upload:
+    post:
+      operationId: presignFileUpload
+      tags: [files]
+      summary: 申请 presigned 上传 URL。
+      description: |
+        返回单次使用的 presigned PUT URL，客户端用它直接上传到 BeeOS
+        管理的对象存储（生产是 S3 / MinIO、开发是本地磁盘）。返回的
+        `file_id` 是稳定的、可通过 `attachments[].file_id` 字段附到
+        后续 `POST /agents/{agentId}/invoke` / `POST /agents/{agentId}/tasks`
+        body —— 端到端示例见
+        [docs/guides/calling-agents.md](../../docs/guides/calling-agents.md)。
+
+        文件范围限定到认证用户；没有 list 端点 —— 调用方必须自己记住
+        `file_id`（推荐工作流是上传后立刻 inline 到需要它的 invoke /
+        task body）。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PresignUploadRequest'
+      responses:
+        "200":
+          description: 已签发 presigned URL。
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/PresignUploadResponse' }
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "413": { $ref: '#/components/responses/PayloadTooLarge' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+
+  /api/v1/files/{id}:
+    get:
+      operationId: getFile
+      tags: [files]
+      summary: 把 file_id 解析为元数据 + presigned 下载 URL。
+      description: |
+        返回此前上传文件的 filename / content-type / size 加 presigned
+        GET URL（TTL 由存储后端决定、S3 上通常 24h）。文件附到 invoke /
+        task 信封时智能体也收到同一 URL；此端点存在是为了让调用方
+        不绕智能体就能拿回自己的上传。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, maxLength: 128 }
+      responses:
+        "200":
+          description: 文件元数据。
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/FileMetaResponse' }
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+
+  # ---------------------------------------------------------------------
+  # Agents
   # ---------------------------------------------------------------------
   /api/v1/agents:
     get:
       operationId: listAgents
       tags: [agents]
-      summary: 列出调用者拥有的智能体。
+      summary: 列出调用方拥有的智能体。
       parameters:
         - name: instance_id
           in: query
@@ -242,12 +418,10 @@ paths:
           in: query
           required: false
           schema: { type: integer, format: int32, default: 20 }
-          description: 最大返回数量。
         - name: offset
           in: query
           required: false
           schema: { type: integer, format: int32, default: 0 }
-          description: 分页偏移量。
       responses:
         "200":
           description: 分页智能体列表。
@@ -255,6 +429,32 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AgentListResponse'
+              examples:
+                empty:
+                  summary: 暂无智能体
+                  value:
+                    success: true
+                    data:
+                      agents: []
+                      total: 0
+                single:
+                  summary: 一个智能体
+                  value:
+                    success: true
+                    data:
+                      agents:
+                        - id: "agent_abc123"
+                          name: "summariser"
+                          instance_id: "instance_xyz"
+                          visibility: "private"
+                          status: "active"
+                          delivery_mode: "push"
+                          created_at: "2026-05-14T18:00:00Z"
+                      total: 1
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
 
   /api/v1/agents/{agentId}:
     parameters:
@@ -265,7 +465,7 @@ paths:
     get:
       operationId: getAgent
       tags: [agents]
-      summary: 根据 ID 获取智能体详情。
+      summary: 按 ID 获取智能体详情。
       responses:
         "200":
           description: 智能体详情。
@@ -273,6 +473,44 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AgentResponse'
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+    patch:
+      operationId: updateAgent
+      tags: [agents]
+      summary: 更新可变的智能体字段（visibility / mcp_enabled）。
+      description: |
+        Patch 一组很窄的调用方管理的智能体属性。白名单刻意最小化 ——
+        `description` / `name` / `version` / `avatar_url` /
+        `capabilities` / `skills` 由 pod 侧 `POST /api/v1/agents/sync`
+        统辖、在这里 patch 会在下次 sync 被静默还原。
+
+        鉴权：调用方**必须**拥有该智能体 —— public 智能体任何人都能
+        读，但只有 owner 能翻转 visibility 或切换 MCP。无识别字段的
+        patch 返回 `invalid_param`。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateAgentRequest'
+      responses:
+        "200":
+          description: 更新后的智能体详情。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentResponse'
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "413": { $ref: '#/components/responses/PayloadTooLarge' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
 
   /api/v1/agents/{agentId}/invoke:
     parameters:
@@ -283,12 +521,14 @@ paths:
     post:
       operationId: invokeAgent
       tags: [agents]
-      summary: 向智能体发送消息并接收回复。
+      summary: 给智能体发消息、收回复（sync / SSE）。
       description: |
-        向指定智能体发送消息，阻塞等待智能体回复（或超时）。
+        通过 Message Service channel-primitives 给指定智能体发
+        `chat_message`，阻塞直到智能体回复（或超时）。
 
-        获取流式响应请设置 `Accept: text/event-stream` — 响应体将是
-        Server-Sent Events，包含 `delta` 和 `done` 事件类型。
+        流式响应设 `Accept: text/event-stream` —— 响应 body 是
+        Server-Sent Events、含 `delta` 和 `done` 事件类型。需要异步
+        fire-and-forget invocation 时改用 `tasks` API。
       requestBody:
         required: true
         content:
@@ -298,16 +538,885 @@ paths:
       responses:
         "200":
           description: |
-            阻塞模式：JSON 信封包含智能体回复。
-            流式模式（`Accept: text/event-stream`）：SSE 流。
+            阻塞：含智能体回复的 JSON 信封。
+            流式（`Accept: text/event-stream`）：SSE 流 —— 每 frame schema
+            见 `InvokeEventStream`（`delta` / `error` / `done` 类型）。
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/InvokeAgentResponse'
+              examples:
+                shortReply:
+                  summary: 同步回复
+                  value:
+                    success: true
+                    data:
+                      text: "BeeOS ships unified task core in 1.0.x. The release adds A2A v1.0 compatibility, slim A2A task schema, and chatinvoke as the canonical primitive."
+                      context_id: "ch-uuid"
+                      is_error: false
+                agentReplyError:
+                  summary: 智能体带内错误（传输成功）
+                  value:
+                    success: true
+                    data:
+                      text: "I can't access that file — please grant read scope."
+                      context_id: "ch-uuid"
+                      is_error: true
             text/event-stream:
               schema:
-                type: string
-                description: 包含 `delta` 和 `done` 事件的 SSE 流。
+                $ref: '#/components/schemas/InvokeEventStream'
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "409": { $ref: '#/components/responses/Conflict' }
+        "413": { $ref: '#/components/responses/PayloadTooLarge' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+
+  # ---------------------------------------------------------------------
+  # Tasks（异步、ADR-0017 规范 task core）
+  # ---------------------------------------------------------------------
+  /api/v1/agents/{agentId}/tasks:
+    parameters:
+      - name: agentId
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+    post:
+      operationId: createTask
+      tags: [tasks]
+      summary: 给智能体提交异步任务。
+      description: |
+        创建 single-shot 任务通道、发布初始 `chat_message` 信封、然后
+        返回 202 带 task_id。智能体回复异步落地 —— 调用方要么轮询
+        `GET /tasks/{taskId}`、要么订阅 `GET /tasks/{taskId}/events`
+        的 SSE 事件流。
+
+        通道继承调用方提供的 `deadline_ms`（服务端钳制在 7 天）。
+        deadline 到达前智能体没产出终止消息时，任务转 `timeout`。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTaskRequest'
+      responses:
+        "202":
+          description: 任务已接受。回复异步落地。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskCreatedResponse'
+              examples:
+                accepted:
+                  summary: 任务已接受
+                  value:
+                    success: true
+                    data:
+                      task_id: "ch-task-uuid"
+                      context_id: "ch-task-uuid"
+                      created_at: "2026-05-14T18:00:00Z"
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "409": { $ref: '#/components/responses/Conflict' }
+        "413": { $ref: '#/components/responses/PayloadTooLarge' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+    get:
+      operationId: listAgentTasks
+      tags: [tasks]
+      summary: 列出调用方在此智能体上的任务。
+      description: |
+        返回调用方对此智能体的任务，服务端按参与者（调用方的
+        `user:<id>`）过滤、客户端再按 `target_agent_id == {agentId}`
+        AND `protocol == "openapi"` 过滤，让此端点只 scope 到 OpenAPI
+        创建的任务（排除 conversation 和其他协议通道）。
+
+        性能提示：wire DTO **故意**轻量 —— 它**不**携带派生的 `status` /
+        `result` / `error`，因为算这些要 per-task 扫消息日志（`GetTask`
+        里每个最多 1000 条消息）。需要精确状态的调用方按行跟进
+        `GET /tasks/{taskId}`，或订阅 SSE `GET /tasks/{taskId}/events`。
+      parameters:
+        - name: state
+          in: query
+          required: false
+          description: |
+            按通道状态过滤。`active` 是 v2 `open` 的向后兼容 wire 别名；
+            `all` 返回两者。默认：`active`。
+          schema:
+            type: string
+            enum: [active, open, closed, all]
+            default: active
+        - name: since
+          in: query
+          required: false
+          description: 上次调用返回的分页 cursor（`next_since`）。
+          schema: { type: string }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, format: int32, minimum: 1, maximum: 100 }
+      responses:
+        "200":
+          description: 分页任务列表。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListTasksResponse'
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+
+  /api/v1/tasks:
+    get:
+      operationId: listUserTasks
+      tags: [tasks]
+      summary: 列出调用方在所有智能体上的全部任务。
+      description: |
+        跨智能体任务列表（P2-B）。返回调用方拥有的每一条任务通道、
+        最新优先 —— 给需要渲染多智能体收件箱但不想 per-agent fan-out
+        的 SDK 用的统一 "我的任务" 视图。
+
+        wire 形状和 `next_since` 分页与 per-agent 变体
+        `GET /api/v1/agents/{agentId}/tasks` 一致。在已有的 per-agent
+        调用上加 `agent_id` 过滤等价于把它显式传到这个端点。
+
+        鉴权：调用方的 `owner_id` 是唯一 ACL 闸门。任务 fan out 到
+        调用方调用过的智能体，无论今天还有没有那些智能体的可见性 ——
+        任务行本身的拥有权就证明了提交时刻的访问。
+
+        只有 `protocol=openapi` 通道出现在这里。长生命周期 conversation
+        在 `GET /api/v1/conversations`、不混合进来，保持状态语义稳定
+        （task 有 deadline；conversation 没有）。
+      parameters:
+        - name: agent_id
+          in: query
+          required: false
+          description: |
+            把结果缩小到单个智能体。等价于直接调
+            `GET /agents/{agentId}/tasks`；放在此端点是为了让调用方
+            把分页逻辑在 "所有智能体" 和 "单智能体" 路径间塌缩。
+          schema: { type: string, maxLength: 128 }
+        - name: state
+          in: query
+          required: false
+          description: |
+            按通道状态过滤。`active` 是 v2 `open` 的 legacy wire
+            别名；`all` 返回两者。默认：`active`。
+          schema:
+            type: string
+            enum: [active, open, closed, all]
+            default: active
+        - name: since
+          in: query
+          required: false
+          description: 上一页 `next_since` 给的不透明分页 cursor。
+          schema: { type: string }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, format: int32, minimum: 1, maximum: 100, default: 50 }
+      responses:
+        "200":
+          description: 跨所有智能体的分页任务列表。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListTasksResponse'
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+
+  /api/v1/agents/{agentId}/tasks/{taskId}:
+    parameters:
+      - name: agentId
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+      - name: taskId
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+    get:
+      operationId: getTask
+      tags: [tasks]
+      summary: 取任务当前状态快照。
+      description: |
+        返回 `msgderive` 从任务通道消息日志派生的快照 —— 任何频率调用
+        安全；resolver 是纯函数、终止态会让轮询循环短路。
+      responses:
+        "200":
+          description: 当前任务快照。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskResponse'
+              examples:
+                running:
+                  summary: 任务仍在跑
+                  value:
+                    success: true
+                    data:
+                      task_id: "ch-task-uuid"
+                      context_id: "ch-task-uuid"
+                      agent_id: "agent_abc123"
+                      status: "running"
+                      created_at: "2026-05-14T18:00:00Z"
+                      updated_at: "2026-05-14T18:00:42Z"
+                succeeded:
+                  summary: 任务终止 —— 成功
+                  value:
+                    success: true
+                    data:
+                      task_id: "ch-task-uuid"
+                      context_id: "ch-task-uuid"
+                      agent_id: "agent_abc123"
+                      status: "succeeded"
+                      result: "Indexed 312 pages."
+                      created_at: "2026-05-14T18:00:00Z"
+                      updated_at: "2026-05-14T18:05:00Z"
+                failed:
+                  summary: 任务终止 —— 失败
+                  value:
+                    success: true
+                    data:
+                      task_id: "ch-task-uuid"
+                      context_id: "ch-task-uuid"
+                      agent_id: "agent_abc123"
+                      status: "failed"
+                      error: "missing credentials for upstream Drive API"
+                      created_at: "2026-05-14T18:00:00Z"
+                      updated_at: "2026-05-14T18:00:09Z"
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+
+  /api/v1/agents/{agentId}/tasks/{taskId}/messages:
+    parameters:
+      - name: agentId
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+      - name: taskId
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+    get:
+      operationId: listTaskMessages
+      tags: [tasks]
+      summary: 列出任务的持久化消息日志（按 offset 分页）。
+      description: |
+        返回任务的通道消息日志 —— `chat_message`、`agent_reply_delta`、
+        `agent_reply`、`chat_cancel`、`user.continue` 等。与
+        `GET /conversations/{convId}/messages` wire 形状一致，因为任务
+        的 `task_id` **就是**底层 conversation_id（任务只是带 deadline
+        的 single-shot 通道）。
+
+        鉴权路径**故意**比 `getTask` 便宜（一次 MS `GetConversation` +
+        元数据检查、无完整消息日志扫描），让分页读保持 O(1)-per-page
+        的鉴权成本。
+      parameters:
+        - name: since
+          in: query
+          required: false
+          description: |
+            返回 `offset` > `since` 的消息。配 `limit` 做分页读。默认
+            是 0（任务日志起点）。
+          schema: { type: integer, format: int64, minimum: 0 }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, format: int32, minimum: 1, maximum: 500 }
+      responses:
+        "200":
+          description: 消息分页。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListMessagesResponse'
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+
+  /api/v1/agents/{agentId}/tasks/{taskId}/events:
+    parameters:
+      - name: agentId
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+      - name: taskId
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+      - name: since
+        in: query
+        required: false
+        description: |
+          重放 cursor。匹配上次收到事件的 `offset` 字段 —— 客户端持久化
+          此值、重连时传回来从此 resume，不会有缺口或重复
+          （Last-Event-ID 语义；wire 拼写保留 `since` 与 v2 前的 SSE
+          客户端向后兼容）。
+
+          特殊值：
+          * 省略 / `0`  —— 完整历史重放（按 MS `Subscribe` 契约）。给
+            想拿完整任务记录的晚到 SSE 客户端用。
+          * `<offset>`  —— 严格在给定 offset 之后 resume。客户端收到的
+            第一个事件 `offset` > since。
+
+          wire 契约保证发出的事件 `offset` 字段按通道单调递增，所以
+          只要通道消息日志保留覆盖了缺口（MS 保证 last-touch 后 24h）、
+          复用最近一次 offset 作 `since` 就不可能产生缺口。
+        schema: { type: integer, format: int64, minimum: 0 }
+    get:
+      operationId: streamTaskEvents
+      tags: [tasks]
+      summary: 订阅任务事件流（SSE）。
+      description: |
+        到底层 MS conversation 的 SSE 代理。每个事件都是 `message`
+        （JSON payload 镜像通道上信封：`type`、`message_id`、`offset`、
+        `in_reply_to`、`publisher_id`、`payload`、`created_at`）。
+
+        通道到达终止信封（`agent_reply` / `agent_reply_error`）时流自
+        关 —— 客户端应在合成的 `end` 事件上释放连接。
+      responses:
+        "200":
+          description: 通道消息信封的 SSE 流。
+          content:
+            text/event-stream:
+              schema:
+                $ref: '#/components/schemas/TaskEventStream'
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+
+  /api/v1/agents/{agentId}/tasks/{taskId}/cancel:
+    parameters:
+      - name: agentId
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+      - name: taskId
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+    post:
+      operationId: cancelTask
+      tags: [tasks]
+      summary: 取消进行中的任务。
+      description: |
+        发 `chat_cancel` 信封让智能体干净 abort in-flight 回合，然后用
+        `reason=canceled` 关通道。幂等 —— 对已取消任务再发 cancel 是
+        no-op、仍返回快照。
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CancelTaskRequest'
+      responses:
+        "200":
+          description: cancel 后的任务快照。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskResponse'
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "409": { $ref: '#/components/responses/Conflict' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+
+  /api/v1/agents/{agentId}/tasks/{taskId}/continue:
+    parameters:
+      - name: agentId
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+      - name: taskId
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+    post:
+      operationId: continueTask
+      tags: [tasks]
+      summary: 从 input_required / auth_required 恢复任务。
+      description: |
+        发 `user.continue`（或 `auth_grant=true` 时 `user.auth_grant`）
+        信封让智能体从暂停的 `input_required` / `auth_required` 状态
+        恢复。返回信封发布**后**的快照 —— 通常 `running`、智能体还没
+        处理 resume 时仍是 `input_required`。
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ContinueTaskRequest'
+      responses:
+        "200":
+          description: continue 后的任务快照。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskResponse'
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "409": { $ref: '#/components/responses/Conflict' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+
+  # ---------------------------------------------------------------------
+  # Conversations（长生命周期多轮对话）
+  # ---------------------------------------------------------------------
+  /api/v1/agents/{agentId}/conversations:
+    parameters:
+      - name: agentId
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+    post:
+      operationId: createConversation
+      tags: [conversations]
+      summary: 开启新对话。
+      description: |
+        创建长生命周期对话通道。**不**携带初始消息 —— conversation
+        存在后调用方通过 `POST /conversations/{convId}/messages` 发
+        第一条 `chat_message`。
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateConversationRequest'
+      responses:
+        "201":
+          description: 对话已创建。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationResponse'
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "413": { $ref: '#/components/responses/PayloadTooLarge' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+    get:
+      operationId: listConversations
+      tags: [conversations]
+      summary: 列出调用方在此智能体上的对话。
+      parameters:
+        - name: state
+          in: query
+          required: false
+          description: |
+            按对话状态过滤。`active` 是 v2 `open` 的向后兼容 wire 别名
+            —— 两者都返回非关闭的对话。`all` 返回 open 和 closed 两者。
+            默认：`active`。
+          schema:
+            type: string
+            enum: [active, open, closed, all]
+            default: active
+        - name: since
+          in: query
+          required: false
+          description: 上次调用返回的分页 cursor（`next_since`）。
+          schema: { type: string }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, format: int32, minimum: 1, maximum: 100 }
+      responses:
+        "200":
+          description: 分页对话列表。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListConversationsResponse'
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+
+  /api/v1/agents/{agentId}/conversations/{convId}:
+    parameters:
+      - name: agentId
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+      - name: convId
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+    get:
+      operationId: getConversation
+      tags: [conversations]
+      summary: 取单个对话的元数据。
+      responses:
+        "200":
+          description: 对话快照。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationResponse'
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+    delete:
+      operationId: deleteConversation
+      tags: [conversations]
+      summary: 关闭对话。
+      description: |
+        关闭底层 MS 通道。关闭后不能再发消息，但历史消息仍可通过
+        `GET /messages` 读取。
+      responses:
+        "204":
+          description: 对话已关闭。
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "409": { $ref: '#/components/responses/Conflict' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+
+  /api/v1/agents/{agentId}/conversations/{convId}/messages:
+    parameters:
+      - name: agentId
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+      - name: convId
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+    post:
+      operationId: sendConversationMessage
+      tags: [conversations]
+      summary: 在对话里发新的调用方消息。
+      description: |
+        非阻塞 —— 返回 202 带持久化的 `message_id`。智能体回复稍后通过
+        SSE `/events` 流或后续 `GET /messages?since=<offset>` 落地。
+        对话无 per-turn 超时；需要有界回复窗口时用 `tasks`。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SendMessageRequest'
+      responses:
+        "202":
+          description: 消息已持久化；智能体回复将异步到达。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SendMessageResponse'
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "409": { $ref: '#/components/responses/Conflict' }
+        "413": { $ref: '#/components/responses/PayloadTooLarge' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+    get:
+      operationId: listConversationMessages
+      tags: [conversations]
+      summary: 列出对话里的消息（按 offset 分页）。
+      parameters:
+        - name: since
+          in: query
+          required: false
+          description: |
+            返回 offset > `since` 的消息。配 `limit` 做分页读。默认是 0
+            （对话起点）。
+          schema: { type: integer, format: int64, minimum: 0 }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, format: int32, minimum: 1, maximum: 200 }
+      responses:
+        "200":
+          description: 消息分页。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListMessagesResponse'
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+
+  # ---------------------------------------------------------------------
+  # Webhooks（任务推送通知 —— ADR-0017 D4）
+  # ---------------------------------------------------------------------
+  /api/v1/agents/{agentId}/tasks/{taskId}/webhooks:
+    parameters:
+      - name: agentId
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+      - name: taskId
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+    post:
+      operationId: registerTaskWebhook
+      tags: [tasks]
+      summary: 注册任务终止事件的 webhook 回调。
+      description: |
+        订阅调用方提供的 HTTPS 端点接收任务到达终止态（`succeeded` /
+        `failed` / `canceled` / `timeout` / `rejected`）时的 POST 回调。
+        按 `(task_id, url)` 幂等 —— 同 URL 重注册更新 token。
+
+        实现说明：openapi-gateway 零 DB；底层订阅由 A2A Service 存在
+        它的 `webhooks` 表。webhook 触发不管任务由哪个协议创建（OpenAPI
+        / A2A / MCP）—— 同一行、不同的 `protocol_filter`。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterTaskWebhookRequest'
+      responses:
+        "201":
+          description: Webhook 已注册。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskWebhookResponse'
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+    get:
+      operationId: listTaskWebhooks
+      tags: [tasks]
+      summary: 列出任务已注册的 webhook。
+      responses:
+        "200":
+          description: Webhook 列表。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListTaskWebhooksResponse'
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+
+  /api/v1/agents/{agentId}/tasks/{taskId}/webhooks/{webhookId}:
+    parameters:
+      - name: agentId
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+      - name: taskId
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+      - name: webhookId
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+    delete:
+      operationId: deleteTaskWebhook
+      tags: [tasks]
+      summary: 取消订阅一个 webhook。
+      responses:
+        "204":
+          description: Webhook 已移除。
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+
+  /api/v1/agents/{agentId}/tasks/{taskId}/webhooks/{webhookId}/deliveries:
+    parameters:
+      - name: agentId
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+      - name: taskId
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+      - name: webhookId
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+    get:
+      operationId: listWebhookDeliveries
+      tags: [tasks]
+      summary: 列出 webhook 投递尝试（审计日志）。
+      description: |
+        返回此 webhook 订阅最近的 per-attempt 行、最新优先。P2-A ——
+        持久化投递审计日志 + 重试队列。
+
+        每行携带生命周期状态（`pending` / `succeeded` / `failed` /
+        `dead_letter`）、最近 HTTP 状态码、截断的最后错误、行还在
+        in-flight 时下次尝试的预计时间。敏感字段 —— 渲染的 payload
+        字节、可选 bearer `token`、HMAC `secret` —— **从不**返回。
+
+        什么时候用此端点：
+          * 回调没到、需要确认 BeeOS 是否尝试过（`status=failed` /
+            `dead_letter` 带 `last_error` 字段填充）；
+          * 把丢失的 webhook 对账到 `GET /tasks/{id}`、想要确定性
+            审计轨迹；
+          * 打算手动通过 `POST .../redeliver` 重放一行 dead-letter。
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: |
+            最大返回投递行数。钳制在 [1, 200]；默认 50。
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        "200":
+          description: 最近投递尝试列表。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListWebhookDeliveriesResponse'
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+
+  /api/v1/agents/{agentId}/tasks/{taskId}/webhooks/{webhookId}/deliveries/{deliveryId}/redeliver:
+    parameters:
+      - name: agentId
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+      - name: taskId
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+      - name: webhookId
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+      - name: deliveryId
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+    post:
+      operationId: redeliverWebhook
+      tags: [tasks]
+      summary: 手动重放一次 webhook 投递。
+      description: |
+        把一行 terminal-failure 或 dead-lettered 投递克隆成一行新
+        `pending`，后台 dispatcher 下次轮询会捡起。原行留作审计。
+        返回的 `WebhookDeliveryResponse` 是新 pending 行 —— 轮询投递
+        列表或看回调 URL 本身观察结果。
+
+        源行**必须**是 `failed` 或 `dead_letter`；重放 `pending` 或
+        `succeeded` 行返回 `409 conflict` 加 code
+        `conflict.invalid_state`。克隆重放第一次该看见的**完全相同**
+        payload 字节 —— HMAC 签名、headers、body —— 所以接收方可以
+        把 redeliver 尝试与原尝试视作完全相同。
+
+        注意：每次 redeliver 调用入队一行**新**的 pending，所以连点
+        会产生重复投递。此端点用于手动救援、**不是**调用方侧的
+        网络错重试。
+      responses:
+        "202":
+          description: 重放已入队。返回新的 pending 行。
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, enum: [true] }
+                  data:
+                    $ref: '#/components/schemas/WebhookDeliveryResponse'
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "409": { $ref: '#/components/responses/Conflict' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+
+  /api/v1/agents/{agentId}/conversations/{convId}/events:
+    parameters:
+      - name: agentId
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+      - name: convId
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+      - name: since
+        in: query
+        required: false
+        description: |
+          重放 cursor。匹配上次收到事件的 `offset` 字段 —— 客户端持久
+          化此值、重连时传回来从此 resume，不会有缺口或重复
+          （Last-Event-ID 语义；wire 拼写保留 `since` 与 v2 前的 SSE
+          客户端向后兼容）。
+
+          特殊值：
+          * 省略 / `0`  —— 完整历史重放。
+          * `<offset>`  —— 严格在给定 offset 之后 resume。
+
+          与 task 变体不同，此流**永不**在终止信封上自关 —— 对话跨多
+          回合保持开放、继续发 `agent_reply` 事件。跨重连范围持久化
+          `since` 避免网络抖动里丢回合。
+        schema: { type: integer, format: int64, minimum: 0 }
+    get:
+      operationId: streamConversationEvents
+      tags: [conversations]
+      summary: 对话上新消息的 SSE 流。
+      description: |
+        与 `tasks/{taskId}/events` wire 格式一致。与 task 变体不同，
+        对话事件流**不**在智能体回复时自关 —— 它保持开放直到调用方
+        断开或对话通过 `DELETE /conversations/{convId}` 关闭。
+      responses:
+        "200":
+          description: 通道消息信封的 SSE 流。
+          content:
+            text/event-stream:
+              schema:
+                $ref: '#/components/schemas/TaskEventStream'
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
 
 components:
   securitySchemes:
@@ -316,8 +1425,29 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: |
-        通过 `Authorization: Bearer <token>` 头传递用户 **JWT** 或 **`oag_`**
-        用户 API Key。
+        通过 `Authorization: Bearer <token>` header 传用户 **JWT** 或
+        **`oag_`** User API Key。两者都由 `openapi-gateway` 对 Auth
+        service 验证。
+
+        ## Scope（仅 `oag_` User API Key）
+
+        JWT 认证的调用方绕过 scope 检查（用户在 dashboard 能做的事
+        在这里都能做）。API key 调用方每条路由**至少**要带列出的
+        scope 之一：
+
+        | Scope                | 路由 |
+        |----------------------|------|
+        | `agents:read`        | `GET /agents`、`GET /agents/{agentId}` |
+        | `agents:write`       | `PATCH /agents/{agentId}` |
+        | `tasks:read`         | `GET /agents/{agentId}/tasks*`、`GET /agents/{agentId}/conversations*` |
+        | `tasks:write`        | `POST /agents/{agentId}/invoke`、全部 `POST /agents/{agentId}/tasks*` 和 `POST /agents/{agentId}/conversations*`、`DELETE` conversations、webhook CRUD |
+        | `files:read`         | `GET /files/{id}` |
+        | `files:write`        | `POST /files/presign-upload` |
+        | `instances:read`     | `GET /providers`、`GET /deploy/*`、`GET /instances*` |
+        | `instances:write`    | 全部 `POST`/`DELETE` `/instances*` |
+
+        scope 缺失或不足返回 `403 insufficient_scope`，可接受 scope
+        集合以逗号分隔回显在 `error.metadata.required_scope`（任一即可）。
   schemas:
     # -------- 信封辅助 --------
     SuccessEnvelope:
@@ -465,10 +1595,20 @@ components:
         connectivity:
           type: string
           description: 取值为 `unknown` | `online` | `offline` 之一。
+        connectivityReason:
+          type: string
+          description: |
+            注解非 online `connectivity` 值的开放字符串原因（与
+            `haltReason` 独立）。规范值：`device_disconnected` |
+            `device_unauthorized` | `instance_disconnected`（legacy
+            别名 `agent_disconnected` 在 Phase 1 上线期间仍接受）。
+            connectivity 是 online 时为空。生命周期与 connectivity
+            绑定：任何进入 `online` 的转移严格清空此字段。
+          example: device_disconnected
         haltReason: { type: string }
         providerConfig:
           description: |
-            经过脱敏的 Provider 配置（apiKeys 已移除）。原始 JSON 对象。
+            脱敏后的 Provider 配置（apiKeys 已移除）。原始 JSON 对象。
           type: object
           additionalProperties: true
         publicIp: { type: string }
@@ -516,101 +1656,149 @@ components:
       type: object
       required: [name]
       description: |
-        可以提供 **目录** `variantId`（权威来源 — 从 variant 获取
-        `agentFramework` / `providerId` / 区域 / 调度策略），**或者**
-        显式指定 `agentFramework`（+ 可选的 `providerId`）。
+        可以提供 **目录** `variantId`（权威来源 —— 从 variant 抬出
+        `agentFramework` / `providerId` / region / scheduling hint），
+        **或者**显式给 `agentFramework`（+ 可选 `providerId`）。
         客户端提供的调度字段（ownershipPreference / maxPricePerHour /
         resourceTypeHint）**不在此处**接受；目录 variant 是唯一来源。
       properties:
         variantId:
           type: string
           maxLength: 128
-          description: 目录 variant ID。
         agentFramework:
           type: string
           maxLength: 64
-          description: 智能体框架。
         providerId:
           type: string
           maxLength: 64
-          description: Provider ID。
         providerConfig:
           description: |
-            自由格式的 Provider 特定配置，与目录配置合并
-            （冲突时目录优先）。
+            自由格式的 Provider 特定配置，与目录配置合并（key 冲突时
+            目录优先）。
           type: object
           additionalProperties: true
         name:
           type: string
           maxLength: 128
-          description: 实例名称。
         modelPrimary:
           type: string
           maxLength: 128
-          description: 主模型 ID。
         models:
           type: array
           items: { type: string, maxLength: 128 }
-          description: 可选的附加模型列表。
         systemPrompt:
           type: string
           maxLength: 8192
-          description: 系统提示词。
         mcpServers:
           type: object
           additionalProperties: true
-          description: MCP 服务器配置。
         bridgeId:
           type: string
           maxLength: 128
-          description: 指定的 Bridge ID。
         config:
           description: |
-            `providerConfig` 的替代名称；语义相同。
+            `providerConfig` 的替代名；语义相同。variant 驱动路径用
+            它把用户额外项（apiKeys / apiBaseUrls）叠在目录配置上。
           type: object
           additionalProperties: true
         clusterId:
           type: string
           maxLength: 128
-          description: 指定的集群 ID。
         preferredRegion:
           type: string
           maxLength: 64
-          description: 首选区域。
+
+    # -------- Files（P1-A） --------
+    PresignUploadRequest:
+      type: object
+      required: [filename, content_type]
+      properties:
+        filename:
+          type: string
+          maxLength: 512
+          description: 原始 filename 提示；存在文件记录上。
+        content_type:
+          type: string
+          maxLength: 255
+          description: |
+            上传字节的 MIME 类型（例如 `image/png`）。`Content-Type`
+            不同的上传可能被存储后端拒绝。
+
+    PresignUploadResponse:
+      type: object
+      required: [file_id, upload_url]
+      properties:
+        file_id:
+          type: string
+          description: 稳定标识 —— 通过 `attachments[].file_id` 附挂。
+        upload_url:
+          type: string
+          format: uri
+          description: |
+            Presigned PUT URL。客户端用请求里给的同一 `Content-Type`
+            直接上传字节。单次使用；按存储后端策略过期。
+        download_url:
+          type: string
+          format: uri
+          description: |
+            同一文件的 presigned GET URL，当存储后端支持时（S3 / MinIO）。
+            不 presign 下载的后端为空 —— 那种情况退回到
+            `GET /api/v1/files/{id}`。
+        download_expires_in:
+          type: integer
+          format: int64
+          description: |
+            `download_url` 的 TTL（秒）。
+
+    FileMetaResponse:
+      type: object
+      required: [file_id]
+      properties:
+        file_id: { type: string }
+        filename: { type: string }
+        content_type: { type: string }
+        size: { type: integer, format: int64 }
+        download_url:
+          type: string
+          format: uri
+          description: |
+            Presigned GET URL（S3 上默认 TTL 24h）。文件附到 invoke /
+            task 信封时智能体也收到同一 URL。
+
+    AttachmentRef:
+      type: object
+      required: [file_id]
+      properties:
+        file_id:
+          type: string
+          maxLength: 128
+          description: |
+            来自
+            [`POST /api/v1/files/presign-upload`](#operation/presignFileUpload)
+            的文件标识。
+        filename:
+          type: string
+          description: 文件记录 filename 的可选覆盖。
+        content_type:
+          type: string
+          description: 文件记录 MIME 类型的可选覆盖。
 
     # -------- 智能体 --------
     AgentDTO:
       type: object
       required: [id, instanceId, name, status, visibility, mcpEnabled]
       properties:
-        id:
-          type: string
-          description: 智能体 ID。
-        instanceId:
-          type: string
-          description: 所属实例 ID。
-        name:
-          type: string
-          description: 智能体名称。
-        description:
-          type: string
-          description: 智能体描述。
-        displayName:
-          type: string
-          description: 显示名称。
-        status:
-          type: string
-          description: 智能体状态。
-        slug:
-          type: string
-          description: URL 友好标识符。
-        mcpEnabled:
-          type: boolean
-          description: 是否启用 MCP。
+        id: { type: string }
+        instanceId: { type: string }
+        name: { type: string }
+        description: { type: string }
+        displayName: { type: string }
+        status: { type: string }
+        slug: { type: string }
+        mcpEnabled: { type: boolean }
         visibility:
           type: string
           enum: [private, public, marketplace, unlisted]
-          description: 可见性。
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
     AgentListResponse:
@@ -631,20 +1819,75 @@ components:
           properties:
             data:
               $ref: '#/components/schemas/AgentDTO'
+    UpdateAgentRequest:
+      type: object
+      description: |
+        `PATCH /api/v1/agents/{agentId}`（P1-B）的 body。白名单刻意
+        很窄 —— `description` / `name` / `version` / `avatar_url` /
+        `capabilities` / `skills` 由 pod 侧 `POST /api/v1/agents/sync`
+        统辖、在这里 patch 会被静默还原。空对象被拒、返回 `invalid_param`。
+      properties:
+        visibility:
+          type: string
+          enum: [private, unlisted, public]
+          description: |
+            智能体 ACL 桶。`private` 仅 owner；`public` 让任何认证调用
+            方调用；`unlisted` 可调用但不出现在公开列表里。`org` 桶为
+            P1-C 落地 org-scope ACL 时预留。
+        mcp_enabled:
+          type: boolean
+          description: |
+            智能体是否出现在 MCP Gateway 的 `tools/list`。与 `visibility`
+            独立 —— `unlisted` 智能体仍可暴露给 MCP；不开 MCP 的 `public`
+            智能体只能 invoke。
     InvokeAgentRequest:
       type: object
       required: [message]
       properties:
         message:
           type: string
-          description: 发送给智能体的消息。
+          description: 发给智能体的消息。
         context_id:
           type: string
-          description: 可选的会话上下文 ID，用于多轮对话。
+          description: 多轮会话用的可选对话上下文 ID。
         timeout_ms:
           type: integer
           format: int64
-          description: 超时时间（毫秒），默认 120000。
+          minimum: 0
+          maximum: 115000
+          description: |
+            每请求超时（毫秒）。默认 120000（2 分钟）。服务端硬钳在
+            115000 让响应总有时间在 HTTP `WriteTimeout`（120s）触发
+            前 flush。超过 115000 的值静默钳；agent 在生效窗内没回
+            服务端返回 `service_timeout`（HTTP 504）—— 见
+            [docs/reference/errors.md](../../docs/reference/errors.md)。
+        idempotency_key:
+          type: string
+          description: |
+            可选调用方生成的幂等 key，作为 chat_message 的
+            `idempotency_key` 转发给 Message Service。同 key 的重试
+            在 MS 去重（`channel_messages` UNIQUE 索引）。省略时
+            gateway 生成新的 UUID。同 key 也兼作智能体回复时必须
+            echo 回的 `in_reply_to` 上的 `message_id`。
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+          description: |
+            不透明的调用方控制 key/value 对，合并进通道元数据
+            （例如 `trace_id`、`user_id`、业务标签）。预留路由 key
+            （`protocol`、`caller_owner_id`、`target_agent_id`、
+            `delivery_principal`）服务端静默剥离、调用方不能覆盖。
+        attachments:
+          type: array
+          maxItems: 16
+          items: { $ref: '#/components/schemas/AttachmentRef' }
+          description: |
+            可选的、此前通过
+            [`POST /api/v1/files/presign-upload`](#operation/presignFileUpload)
+            上传的文件列表。每个 `file_id` 服务端解析成 presigned
+            下载 URL、嵌进 chat_message 信封，接收智能体不用再 BeeOS
+            认证就能拿字节。
     InvokeAgentResponse:
       allOf:
         - $ref: '#/components/schemas/SuccessEnvelope'
@@ -660,7 +1903,854 @@ components:
                   description: 智能体回复文本。
                 context_id:
                   type: string
-                  description: 会话上下文 ID，用于多轮对话。
+                  description: 对话上下文 ID（通道 ID）。
                 is_error:
                   type: boolean
-                  description: 智能体回复是否为错误。
+                  description: 智能体回复是否指示了错误。
+
+    # `POST /agents/{agentId}/invoke` 设 `Accept: text/event-stream` 时
+    # 的 SSE 事件 payload 形状。SSE 响应在 HTTP 层框成 `string`；每条
+    # `data:` 行带按 `type` 字段类型化的 JSON payload（`delta` / `error` /
+    # `done`）。与 TaskEventStream 不同，invoke SSE 不命名事件（无
+    # `event:` 行）—— 客户端通过 JSON 里 `type` 区分 frame 形状。L0
+    # chatinvoke invoker 在终止 `done` 之前最多发一个 `error`；客户端
+    # 可以在 `done` 上短路（不管 `is_error`）。
+    InvokeEventStream:
+      type: string
+      description: |
+        流式 `invoke` 路径的 Server-Sent Events 流。
+
+        Frame 格式：
+        ```
+        data: {"type":"delta","text":"Hello "}
+        data: {"type":"delta","text":"world"}
+        data: {"type":"done","text":"Hello world","context_id":"ch-1","is_error":false}
+        ```
+
+        智能体错误时（audit-v4 P1-1 统一 error frame）：
+        ```
+        data: {"type":"error","code":"agent_unavailable","status_code":503,"message":"agent is offline"}
+        data: {"type":"done","is_error":true,"code":"agent_unavailable"}
+        ```
+
+        Frame schema：
+        - `delta` —— 见 [`InvokeAgentSSEDelta`](#/components/schemas/InvokeAgentSSEDelta)
+        - `error` —— 见 [`InvokeAgentSSEError`](#/components/schemas/InvokeAgentSSEError)
+        - `done`  —— 见 [`InvokeAgentSSEDone`](#/components/schemas/InvokeAgentSSEDone)
+
+    InvokeAgentSSEDelta:
+      type: object
+      required: [type, text]
+      properties:
+        type:
+          type: string
+          enum: [delta]
+        text:
+          type: string
+          description: 流式块文本。按顺序拼接得完整回复。
+
+    InvokeAgentSSEError:
+      type: object
+      required: [type, message]
+      description: |
+        可恢复 error frame。流在此之后仍发最终 `done` 带 `is_error: true`
+        （audit-v4 P1-1），SDK 可在任一信号上分支。
+      properties:
+        type:
+          type: string
+          enum: [error]
+        code:
+          type: string
+          description: |
+            稳定的哨兵字符串 code。规范值含 `agent_not_found`、
+            `agent_unavailable`、`agent_timeout`、`forbidden`、
+            `invalid_param`、`internal`。
+        status_code:
+          type: integer
+          format: int32
+          description: HTTP 等价状态码（SDK 可在任一字段上分支）。
+        message:
+          type: string
+          description: 人类可读错误细节。
+
+    InvokeAgentSSEDone:
+      type: object
+      required: [type]
+      description: |
+        终止 frame。客户端应在此 frame 上释放 SSE 连接。`is_error: true`
+        可能配以填充的 `error` / `code` 携带前置 `InvokeAgentSSEError`
+        frame 同样的 payload，让单 frame 消费方不用缓存历史就能处理
+        错误。
+      properties:
+        type:
+          type: string
+          enum: [done]
+        text:
+          type: string
+          description: 拼接的完整回复文本（echo delta）。
+        context_id:
+          type: string
+          description: 对话上下文 ID（通道 ID）。
+        is_error:
+          type: boolean
+          description: 回复是否以错误终止。
+        error:
+          type: string
+          description: 人类可读失败原因（仅当 `is_error=true`）。
+        code:
+          type: string
+          description: |
+            稳定哨兵 code（仅当 `is_error=true`）。匹配前置
+            `InvokeAgentSSEError` frame 上的 `code`。
+
+    # task + conversation SSE 流的 body schema（wire 级框格式见
+    # TaskEventStream）。抽出来作独立 schema 让 SDK 生成器为消息信封
+    # 和 end-frame 产出 Go / TypeScript 类型，不用把整段 SSE 散文拖
+    # 进客户端代码。
+    TaskSSEMessage:
+      type: object
+      required: [type]
+      description: |
+        `/tasks/{taskId}/events` 和 `/conversations/{convId}/events`
+        上 `event: message` frame 的 body。镜像 MS 的 per-event 信封
+        加合成的 `offset` cursor。
+      properties:
+        type:
+          type: string
+          description: 消息类型 —— 见 TaskEventStream 类型表。
+        message_id:
+          type: string
+        offset:
+          type: integer
+          format: int64
+          description: SSE resume cursor 用的单调 per-channel offset。
+        in_reply_to:
+          type: string
+        publisher_id:
+          type: string
+        payload:
+          description: per-type 消息的不透明 JSON body。
+        created_at:
+          type: string
+          format: date-time
+
+    TaskSSEEnd:
+      type: object
+      required: [reason]
+      description: |
+        终止 `event: end` frame 的 body。SDK 把任何值都当干净关停信号；
+        `reason` 字段消歧智能体终止（`task_terminal`）、MS 关闭上游
+        流（`stream_closed`）、还是对话通道被删（`channel_closed`）。
+      properties:
+        reason:
+          type: string
+          enum: [task_terminal, stream_closed, channel_closed]
+
+    # -------- Tasks（ADR-0017 规范 task 生命周期） --------
+    TaskStatus:
+      type: string
+      description: |
+        规范 task 生命周期状态。按 ADR-0017 D2 对齐 Google A2A v1.0 +
+        BeeOS 扩展。内部 `msgderive.TaskStatus` 名 1:1 映射到这些
+        wire 值。
+
+        非终止：`queued`、`running`、`input_required`、`auth_required`。
+        终止：`succeeded`、`failed`、`canceled`、`timeout`、`rejected`。
+
+        状态转移：
+        ```
+        queued → running → succeeded
+                       ├→ failed
+                       ├→ input_required ─→ running (on user.continue)
+                       └→ auth_required  ─→ running (on user.auth_grant)
+            (any non-terminal) → canceled (explicit close)
+                                → timeout  (reaper)
+                                → rejected (agent_busy / explicit refuse)
+        ```
+      enum:
+        - queued
+        - running
+        - input_required
+        - auth_required
+        - succeeded
+        - failed
+        - canceled
+        - timeout
+        - rejected
+
+    CreateTaskRequest:
+      type: object
+      required: [message]
+      properties:
+        message:
+          type: string
+          description: 初始用户 prompt。包进 `chat_message` 信封。
+        context_id:
+          type: string
+          description: |
+            可选已有的 conversation / 通道 ID 复用，而不是新建一条
+            任务通道。少见；多数调用方省略。
+        deadline_ms:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 604800000
+          description: |
+            任务 deadline（毫秒）。> 0 时，窗内无终止回复则通道自关
+            `status=timeout`。最大 7 天（服务端钳制）。
+        idempotency_key:
+          type: string
+          description: |
+            转发给 MS 的 `channel_messages` UNIQUE 索引。同 key 重提
+            返回原 task_id 而非孕育重复。建议重试敏感的调用方用。
+        metadata:
+          type: object
+          additionalProperties: { type: string }
+          description: |
+            调用方提供的关联标签（trace_id、业务 label）。预留
+            chatinvoke 路由 key（`protocol`、`caller_owner_id`、
+            `target_agent_id`、`delivery_principal`）被 gateway 覆盖、
+            从响应剥离。
+        attachments:
+          type: array
+          maxItems: 16
+          items: { $ref: '#/components/schemas/AttachmentRef' }
+          description: |
+            可选的、此前通过
+            [`POST /api/v1/files/presign-upload`](#operation/presignFileUpload)
+            上传的文件列表。服务端解析、嵌入初始 chat_message 信封。
+
+    TaskCreatedResponse:
+      allOf:
+        - $ref: '#/components/schemas/SuccessEnvelope'
+        - type: object
+          required: [data]
+          properties:
+            data:
+              type: object
+              required: [task_id, agent_id, status]
+              properties:
+                task_id:
+                  type: string
+                  description: 稳定任务标识（== 底层 channel_id）。
+                agent_id:
+                  type: string
+                status:
+                  $ref: '#/components/schemas/TaskStatus'
+                created_at:
+                  type: string
+                  format: date-time
+
+    TaskResponse:
+      allOf:
+        - $ref: '#/components/schemas/SuccessEnvelope'
+        - type: object
+          required: [data]
+          properties:
+            data:
+              type: object
+              required: [task_id, agent_id, status]
+              properties:
+                task_id: { type: string }
+                agent_id: { type: string }
+                caller_id: { type: string }
+                status:
+                  $ref: '#/components/schemas/TaskStatus'
+                result:
+                  description: |
+                    终止智能体回复 payload，仅当 `status=succeeded` 时
+                    存在。不透明 JSON —— 智能体可返回文本（quoted
+                    string）或结构化数据。
+                error:
+                  type: string
+                  description: 人类可读失败原因，`status=failed` 时存在。
+                metadata:
+                  type: object
+                  additionalProperties: { type: string }
+                created_at:
+                  type: string
+                  format: date-time
+                started_at:
+                  type: string
+                  format: date-time
+                  description: 智能体首次发任何流式输出的时间。
+                completed_at:
+                  type: string
+                  format: date-time
+                  description: 任务到达终止态的时间戳。
+                deadline_at:
+                  type: string
+                  format: date-time
+                truncated:
+                  type: boolean
+                  description: |
+                    服务端消息扫描在到达通道日志末尾前撞到内部上限
+                    （1000 条消息）时为 true。报告的 `status` / `result` /
+                    `error` 只反映扫描到的前缀；看到此 flag 的客户端
+                    应跟进 `GET /tasks/{id}/events`（SSE）拿权威尾部。
+                    典型任务上缺失（false）。
+
+    # 轻量 task list 行 —— 严格从 MS 通道字段派生，让 list 端点保持
+    # O(1)-per-row。需要完整 `TaskStatus` 的调用方按行跟进 `getTask`。
+    TaskSummary:
+      type: object
+      required: [task_id, agent_id, state]
+      properties:
+        task_id:
+          type: string
+          description: 稳定任务标识（== 底层 channel_id）。
+        agent_id:
+          type: string
+        caller_id:
+          type: string
+          description: |
+            此任务的 owner user id。对调用方自己提交的任务总是等于
+            调用方；从通道元数据 populate，跨 session 留存。
+        state:
+          type: string
+          enum: [active, closed]
+          description: |
+            通道级状态：任务开着时 `active`（智能体可能还在工作 /
+            在 `input_required` 暂停）、终止回复 / cancel / timeout
+            后 `closed`。**不是**派生的 `TaskStatus` —— 那个用 `getTask`。
+        close_reason:
+          type: string
+          description: |
+            `state=closed` 时填充。镜像底层通道的 `closed_reason`，
+            让 SDK 不用再拉消息日志就能分支。规范值含 `completed`、
+            `canceled`、`timeout`。
+        metadata:
+          type: object
+          additionalProperties: { type: string }
+        created_at:
+          type: string
+          format: date-time
+        closed_at:
+          type: string
+          format: date-time
+        deadline_at:
+          type: string
+          format: date-time
+
+    ListTasksResponse:
+      allOf:
+        - $ref: '#/components/schemas/SuccessEnvelope'
+        - type: object
+          required: [data]
+          properties:
+            data:
+              type: object
+              required: [tasks]
+              properties:
+                tasks:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/TaskSummary'
+                next_since:
+                  type: string
+                  description: |
+                    分页 cursor。调用方到结果末尾时为空。
+
+    CancelTaskRequest:
+      type: object
+      properties:
+        reason:
+          type: string
+          description: |
+            自由格式调用方 label，传播到 `chat_cancel` 信封 payload 让
+            智能体审计日志记录回合 abort 的原因。空时默认 `canceled`。
+
+    ContinueTaskRequest:
+      type: object
+      properties:
+        input:
+          description: |
+            不透明 JSON payload，作为 `user.continue`（或
+            `auth_grant=true` 时 `user.auth_grant`）信封投递给智能体。
+            空也可以 —— 有的智能体把任何 continue 视为 "无额外输入
+            的 resume"。
+        auth_grant:
+          type: boolean
+          description: |
+            把 wire 信封从 `user.continue` 切到 `user.auth_grant` ——
+            用于 resume `auth_required` 暂停（OAuth 风格授权）。
+
+    # SSE 事件 payload 形状。被 `/tasks/{taskId}/events` 和
+    # `/conversations/{convId}/events` 共享 —— 两个接入面都用
+    # `event: message` 做 body frame、`event: end` 做终止 frame。
+    # `end.reason` 枚举在每个面略有差异（task 在终止信封上自关；
+    # conversation 仅在底层 MS 通道关闭时自关）—— 见下面枚举文档。
+    TaskEventStream:
+      type: string
+      description: |
+        Server-Sent Events 流。
+
+        per-event JSON payload 格式：
+        ```
+        event: message
+        data: {
+          "type": "agent_message_chunk",   // 见下
+          "message_id": "msg-uuid",
+          "offset": 5,                     // 单调 per-channel offset
+          "in_reply_to": "msg-source-uuid",
+          "publisher_id": "agent-identity",
+          "payload": { ... },              // 不透明 per-type
+          "created_at": "2026-05-14T18:00:00.000Z"
+        }
+        ```
+
+        终止事件：
+        ```
+        event: end
+        data: { "reason": "task_terminal" }    # 仅 task：agent_reply / agent_reply_error / agent.refuse / agent_busy 后自关
+        ```
+        ```
+        event: end
+        data: { "reason": "stream_closed" }    # MS 关闭上游流
+        ```
+        ```
+        event: end
+        data: { "reason": "channel_closed" }   # 仅 conversation：调用方（或对方）删除对话
+        ```
+
+        `end.reason` 枚举：
+
+        | reason           | 接入面          | 何时                                |
+        |------------------|-----------------|-------------------------------------|
+        | `task_terminal`  | task            | 终止回复自关 SSE                    |
+        | `stream_closed`  | task + conversation | MS 关上游流                     |
+        | `channel_closed` | conversation    | 底层通道被删                        |
+
+        常见消息 `type` 值：
+
+        | type                  | 含义                                    |
+        |-----------------------|-----------------------------------------|
+        | `chat_message`        | 调用方 prompt                           |
+        | `agent_thought_chunk` | 智能体推理（增量）                      |
+        | `agent_message_chunk` | 智能体回复 delta（增量）                |
+        | `agent_reply_delta`   | terminal-bound 流式 delta               |
+        | `agent_reply`         | 终止成功回复                            |
+        | `agent_reply_error`   | 终止失败回复                            |
+        | `agent.input_required`| 暂停等 `user.continue`                  |
+        | `agent.auth_required` | 暂停等 `user.auth_grant`                |
+        | `user.continue`       | 调用方 resume `input_required`          |
+        | `user.auth_grant`     | 调用方 resume `auth_required`           |
+        | `chat_cancel`         | 调用方发起的 cancel                     |
+
+    # -------- Conversations --------
+    CreateConversationRequest:
+      type: object
+      properties:
+        title:
+          type: string
+          description: 调用方提供的 label，存在 `channel.Metadata["title"]`。
+        metadata:
+          type: object
+          additionalProperties: { type: string }
+
+    ConversationResponse:
+      allOf:
+        - $ref: '#/components/schemas/SuccessEnvelope'
+        - type: object
+          required: [data]
+          properties:
+            data:
+              type: object
+              required: [conversation_id, agent_id, state]
+              properties:
+                conversation_id: { type: string }
+                agent_id: { type: string }
+                title: { type: string }
+                state:
+                  type: string
+                  enum: [active, closed]
+                metadata:
+                  type: object
+                  additionalProperties: { type: string }
+                created_at:
+                  type: string
+                  format: date-time
+                closed_at:
+                  type: string
+                  format: date-time
+
+    ListConversationsResponse:
+      allOf:
+        - $ref: '#/components/schemas/SuccessEnvelope'
+        - type: object
+          required: [data]
+          properties:
+            data:
+              type: object
+              required: [conversations]
+              properties:
+                conversations:
+                  type: array
+                  items:
+                    type: object
+                    required: [conversation_id, agent_id, state]
+                    properties:
+                      conversation_id: { type: string }
+                      agent_id: { type: string }
+                      title: { type: string }
+                      state:
+                        type: string
+                        enum: [active, closed]
+                      metadata:
+                        type: object
+                        additionalProperties: { type: string }
+                      created_at:
+                        type: string
+                        format: date-time
+                      closed_at:
+                        type: string
+                        format: date-time
+                next_since:
+                  type: string
+                  description: |
+                    分页 cursor。调用方到结果末尾时为空。
+
+    SendMessageRequest:
+      type: object
+      required: [message]
+      properties:
+        message:
+          type: string
+        idempotency_key:
+          type: string
+
+    SendMessageResponse:
+      allOf:
+        - $ref: '#/components/schemas/SuccessEnvelope'
+        - type: object
+          required: [data]
+          description: |
+            SDK 0.4.0 BREAKING CHANGE（T3c）：`offset` 字段移除。v2 wire
+            把 offset 不透明放在 cursor 里；需要 resume cursor 的调用方
+            **必须**走 `GET /conversations/{convId}/messages?since=<cursor>`。
+          properties:
+            data:
+              type: object
+              required: [message_id]
+              properties:
+                message_id: { type: string }
+                created_at:
+                  type: string
+                  format: date-time
+
+    MessageDTO:
+      type: object
+      required: [message_id, offset, type]
+      properties:
+        message_id: { type: string }
+        offset:
+          type: integer
+          format: int64
+        type: { type: string }
+        publisher_id: { type: string }
+        in_reply_to: { type: string }
+        payload:
+          description: 消息的不透明 JSON payload。
+        created_at:
+          type: string
+          format: date-time
+
+    ListMessagesResponse:
+      allOf:
+        - $ref: '#/components/schemas/SuccessEnvelope'
+        - type: object
+          required: [data]
+          properties:
+            data:
+              type: object
+              required: [messages, latest_offset]
+              properties:
+                messages:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/MessageDTO'
+                latest_offset:
+                  type: integer
+                  format: int64
+                  description: 通道当前最大 offset，用于 "追上" 检测。
+
+    # -------- Webhooks（ADR-0017 D4） --------
+    RegisterTaskWebhookRequest:
+      type: object
+      required: [url]
+      properties:
+        url:
+          type: string
+          format: uri
+          description: |
+            POST 回调到的绝对 HTTPS 端点。接收方拿到协议特定 payload
+            （OpenAPI：task event 信封；A2A：JSON-RPC StreamResponse；
+            MCP：notification）。
+        token:
+          type: string
+          description: |
+            可选 bearer token，每次回调上作为 `Authorization: Bearer <token>`
+            发，接收方据此验证调用。
+        secret:
+          type: string
+          description: |
+            P2-A —— HMAC-SHA256 签名 key。设了时投递器签名每次回调
+            body、发 `X-BeeOS-Signature: t=<unix>,v1=<hex>`，其中
+            `hex = hmac_sha256(secret, t || "." || body)`。接收方
+            应重跑同样 HMAC 鉴证；时间戳不匹配（推荐 ±5 分钟容忍）
+            应拒绝以防回放。
+
+            **只写**。Get / List 响应从不 echo；`TaskWebhookResponse`
+            上的 `has_secret` 布尔是唯一可观察信号。轮转方式：Set
+            新值；update 时传 `""` 保留已有 secret（清除请 DELETE +
+            重注册）。
+          minLength: 16
+          maxLength: 256
+
+    TaskWebhookResponse:
+      allOf:
+        - $ref: '#/components/schemas/SuccessEnvelope'
+        - type: object
+          required: [data]
+          properties:
+            data:
+              type: object
+              required: [webhook_id, task_id, url, has_secret]
+              properties:
+                webhook_id: { type: string }
+                task_id: { type: string }
+                url:
+                  type: string
+                  format: uri
+                has_secret:
+                  type: boolean
+                  description: |
+                    此 webhook 配了 HMAC 签名 secret 时为 `true`
+                    （P2-A）。原 secret 从不返回 —— 接收方按原注册
+                    时的 secret 验证。
+                created_at:
+                  type: string
+                  format: date-time
+
+    ListTaskWebhooksResponse:
+      allOf:
+        - $ref: '#/components/schemas/SuccessEnvelope'
+        - type: object
+          required: [data]
+          properties:
+            data:
+              type: object
+              required: [webhooks]
+              properties:
+                webhooks:
+                  type: array
+                  items:
+                    type: object
+                    required: [webhook_id, task_id, url, has_secret]
+                    properties:
+                      webhook_id: { type: string }
+                      task_id: { type: string }
+                      url:
+                        type: string
+                        format: uri
+                      has_secret: { type: boolean }
+                      created_at:
+                        type: string
+                        format: date-time
+
+    # -------- Webhook deliveries（P2-A 第 3 部分） --------
+    WebhookDeliveryResponse:
+      type: object
+      required:
+        - delivery_id
+        - webhook_id
+        - task_id
+        - renderer
+        - status
+        - attempt_num
+        - last_response_status
+        - next_attempt_at
+        - created_at
+      properties:
+        delivery_id: { type: string }
+        webhook_id: { type: string }
+        task_id: { type: string }
+        renderer:
+          type: string
+          enum: [openapi, a2a, generic, mcp]
+          description: |
+            投递时用的 payload 格式。通过此 gateway 注册的 OpenAPI
+            回调用 `openapi` renderer（TaskEvent 信封）。
+        status:
+          type: string
+          enum: [pending, succeeded, failed, dead_letter]
+          description: |
+            此尝试的生命周期。
+            * `pending` —— 排队等首次尝试或等重试
+            * `succeeded` —— 接收方返回 2xx（终止）
+            * `failed` —— 上次尝试出错 / 非 2xx，按退避计划重试
+              （中间态）
+            * `dead_letter` —— 耗尽重试计划（终止）。可通过
+              `POST .../redeliver` 救回。
+        attempt_num:
+          type: integer
+          minimum: 0
+          description: |
+            已做尝试的 1 索引计数。新行在 dispatcher 认领前为 0。
+        last_response_status:
+          type: integer
+          minimum: 0
+          description: |
+            最近一次尝试的 HTTP 状态。`0` 表示 "从未尝试"（任何 HTTP
+            响应前的 transport 或 pre-flight 错误）。
+        last_error:
+          type: string
+          description: |
+            最近失败原因的截断副本（≤ 2 KiB）—— 要么是 transport
+            错误（`transport: connection refused`）要么是
+            `http_status: <code>`。成功 / 从未尝试时为空。
+        next_attempt_at:
+          type: string
+          format: date-time
+          description: |
+            `status` 为 `pending` 时的下次尝试预计时间。终止行上携带
+            最后一次预计值（对重试不再有意义）。
+        last_attempted_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+
+    ListWebhookDeliveriesResponse:
+      allOf:
+        - $ref: '#/components/schemas/SuccessEnvelope'
+        - type: object
+          required: [data]
+          properties:
+            data:
+              type: object
+              required: [deliveries]
+              properties:
+                deliveries:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/WebhookDeliveryResponse'
+
+    # -------- 错误信封 --------
+    # P0-D：每个 4xx / 5xx 响应通过下面可复用的 components.responses
+    # 块引用此 schema。`code` 的规范词汇在 docs/reference/errors.md、
+    # 在 1.x 主线内稳定。
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        type:
+          type: string
+          description: |
+            RFC 9457 problem-type slug。多数 SDK 消费方按 `code` 而
+            非 `type` 分派；此字段保留是为了与更广的 apierror 目录
+            结构对齐。
+          enum:
+            - api_error
+            - invalid_request_error
+            - authentication_error
+            - permission_error
+            - rate_limit_error
+            - not_found_error
+            - conflict_error
+            - validation_error
+        code:
+          type: string
+          description: |
+            稳定的机器可读错误码。完整目录见
+            [docs/reference/errors.md](https://github.com/beeos-ai/beeos/blob/main/docs/reference/errors.md)。
+          examples:
+            - agent_not_found
+            - agent_service_unavailable
+            - service_timeout
+            - conflict
+            - forbidden
+            - invalid_param
+            - rate_limited
+            - internal_error
+        message:
+          type: string
+          description: 人类可读解释；只用于展示、永远不要在此上分派。
+        details:
+          type: object
+          additionalProperties: true
+          description: 校验错误等可选结构化 payload。
+    ErrorResponse:
+      type: object
+      required: [success, error]
+      properties:
+        success:
+          type: boolean
+          const: false
+        error:
+          $ref: '#/components/schemas/Error'
+  responses:
+    # P0-D：可复用响应组件，每个 operation 的 responses 块引用。新加 code
+    # 只需在这里加常量；operation 保持可读。
+    BadRequest:
+      description: 请求 body、query 或 path 参数畸形（`code` 为 `invalid_json` / `invalid_body` / `invalid_param` / `missing_param` 之一）。
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Unauthorized:
+      description: |
+        `Authorization` header 缺失或非法（`code` 为 `unauthorized` / `invalid_token` / `missing_token` 之一）。
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Forbidden:
+      description: 调用方不拥有该资源（或 scope 检查失败）。`code` 是 `forbidden`。
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFound:
+      description: 引用的智能体 / task / 实例 / conversation / webhook 不存在或对调用方不可见。`code` 通常是 `agent_not_found`。
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Conflict:
+      description: 资源处在不允许此操作的状态 —— 智能体忙 / 拒接、task 终止、改了 payload 后的重复幂等 key。`code` 是 `conflict`。
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    PayloadTooLarge:
+      description: 请求 body 超过 per-route 大小上限（catalog/instances 64 KiB；invoke/tasks 1 MiB；附件必须用 file presign）。`code` 是 `payload_too_large`。
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    RateLimited:
+      description: per-caller × per-endpoint 配额耗尽。`code` 是 `rate_limited`。`Retry-After` 存在时尊重它。
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    ServerError:
+      description: |
+        服务端故障。`code` 为：
+
+        - `internal_error`（500）—— 意外
+        - `agent_offline` / `agent_service_unavailable`（503）—— 智能体或
+          messaging 子系统不可达
+        - `auth_unavailable` / `auth_transient`（503）—— Auth gRPC 临时
+        - `service_timeout`（504）—— gateway 等智能体超时
+
+        见 [docs/reference/errors.md](https://github.com/beeos-ai/beeos/blob/main/docs/reference/errors.md)。
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'

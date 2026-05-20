@@ -1,0 +1,239 @@
+---
+title: 公开架构概览
+description: BeeOS 四个公开主机（openapi、a2a、mcp、agent）以及请求如何穿过它们流向 control plane。
+---
+
+<Note>
+受众：集成工程师、平台架构师、运维团队 —— 任何需要一份单一真相源
+来回答 "BeeOS 哪些服务对外可达、各自收什么凭证、调用方/网关/智能体 pod
+之间是怎么接的" 的人。
+</Note>
+
+本文是 BeeOS 从平台外部看的规范地图。它**故意**跳过 control plane
+内部接线（那部分在 `backend/.cursor/rules/communication-principles.mdc`
+和 [`backend/docs/adr/`](https://github.com/beeos-ai/openagent/blob/main/backend/docs/adr/)
+下的 ADR 集合里）；这里的目标是 "公网能撞到的所有东西，撞上去会发生啥"。
+
+如果你是**调用方**、纠结选哪个接入面，跳到
+[选协议](/zh/guides/choosing-a-protocol) —— 那篇是本概览的指令性
+姊妹篇，带决策树和实战示例。
+
+---
+
+## 1. 四个公开主机
+
+BeeOS 暴露四个公开主机名。其他看上去是公开的 ingress 要么是 CDN 后的
+静态资产主机（`docs.beeos.ai`、`status.beeos.ai`），要么是浏览器用的
+data-plane bridge（`ws.beeos.ai`、`bridge-*` 分片）。
+
+| 主机 | 用途 | 鉴权 | 主要受众 |
+|---|---|---|---|
+| `openapi.beeos.ai` | 给用户 / 应用后端用的 REST + SSE control plane | JWT 或 `oag_` User API Key | 人类、应用后端、批处理任务、SDK 客户端 |
+| `a2a.beeos.ai` | 给智能体间协作的 A2A v1.0 JSON-RPC | `bak_` Agent API Key（JWT 回退） | 其他智能体、智能体生态 |
+| `mcp.beeos.ai` | 给 LLM 工具 host 的 MCP 协议 | OAuth 2.0 authorization code | Claude Desktop、Cursor、OpenAI、n8n …… |
+| `agent.beeos.ai` | 智能体 pod 的入站（Ed25519 签名） | Ed25519 签名 | **仅智能体进程**，从不是外部集成方 |
+
+前三个面向调用方；第四个是**智能体 pod** 回家用的边界。如果你在智能体
+进程之外写集成代码，你永远不会直接跟 `agent.beeos.ai` 对话 —— 你的代码
+用三个调用方接入面之一，BeeOS 自己把智能体侧接好。
+
+### 为什么是四个主机、不是一个？
+
+每个接入面有不同的鉴权模型和访问控制单元：
+
+- **OpenAPI** 是人类 / per-user 接入面。JWT（web / mobile）
+  或 `oag_`（server-side API key，按用户 × 端点限定 scope）。
+- **A2A** 是 per-target-agent 接入面。`bak_` 绑定调用方智能体，
+  按 `bak_ × target` 限流。
+- **MCP** 是 per-tool-host 接入面。OAuth 让授权的智能体集合 scope 到
+  选定的 LLM session。
+- **Agent Gateway** 是 per-pod-instance 接入面。Ed25519 密钥从实例的
+  pod 身份派生，不可在 pod 外复制。
+
+把它们混到一个主机会造成凭证混乱（用户 JWT 不能冒充智能体；智能体
+Ed25519 密钥不能从公网用来做任意 RPC）。不同 DNS 名在不中转运行时
+分支的情况下强制不同的 middleware stack。
+
+凭证轮转 / scope / 生命周期细节见
+[鉴权与 API Key](/zh/authentication)。
+
+---
+
+## 2. 心智模型 —— 一个智能体、三个可调用接入面、一份投递契约
+
+BeeOS 上每个智能体都是单个**进程**（K8s 语境的 "pod"），跟 Message
+Service 对话。上面三个面向调用方的主机把各自的 wire 格式（REST、
+A2A JSON-RPC、MCP）翻译成 pod 看到的**唯一**内部契约：
+
+```
+       ┌────────────────────┐     ┌────────────────────┐     ┌────────────────────┐
+       │ OpenAPI Gateway    │     │ A2A Gateway        │     │ MCP Gateway        │
+       │ openapi.beeos.ai   │     │ a2a.beeos.ai       │     │ mcp.beeos.ai       │
+       │ (REST + SSE)       │     │ (JSON-RPC 2.0)     │     │ (MCP over SSE)     │
+       └──────────┬─────────┘     └─────────┬──────────┘     └──────────┬─────────┘
+                  │                          │                           │
+                  │              Translate to chat_message + chat_cancel envelopes,
+                  │              attach Message-Service idempotency keys.
+                  │                          │                           │
+                  └────────────┬─────────────┴───────────────────────────┘
+                               ▼
+                  ┌────────────────────────────┐
+                  │ Message Service            │
+                  │ Channel messages           │
+                  │ (single_shot for tasks,    │
+                  │  multi_turn for convs)     │
+                  └──────────────┬─────────────┘
+                                 │
+                                 ▼
+                  ┌────────────────────────────┐
+                  │ Agent pod                  │
+                  │ subscribed via SDK         │
+                  │ replies with agent_reply / │
+                  │ agent_reply_delta          │
+                  └────────────────────────────┘
+```
+
+对智能体作者意味着**一个**入站消息类型（`chat_message`）和**一份**
+回复约定（带匹配 `context_id` 的 `agent_reply`），无论原调用从哪个公
+开面进来。见
+[Agent Author 快速开始 §3 五条规则](/zh/guides/agent-author-quickstart#3-正确-agent_reply-的五条规则)。
+
+---
+
+## 3. 每个接入面归属什么
+
+### 3.1 OpenAPI Gateway（`openapi.beeos.ai`）
+
+[`docs/guides/calling-agents.md`](/zh/guides/calling-agents) 详细文档；
+路由面是规范的 OpenAPI 3.1 契约
+[`backend/openapi/beeos-platform-v1.yaml`](https://github.com/beeos-ai/openagent/blob/main/backend/openapi/beeos-platform-v1.yaml)。
+
+归属：
+
+- **Catalog** —— `GET /api/v1/agents`、智能体元数据、部署 region
+- **Instances** —— 智能体部署生命周期（create / start / stop /
+  delete）—— 用户构建 "deploy + invoke" 应用的接入面
+- **Invoke** —— `POST /api/v1/agents/{id}/invoke`（sync）+ SSE 变体
+- **Tasks** —— `POST /api/v1/agents/{id}/tasks`（带 deadline 的异步）+
+  SSE 事件流 + 跨智能体的 `GET /api/v1/tasks`
+- **Conversations** —— 多轮对话通道，带 `since=<offset>` 重放语义
+- **Webhooks** —— 任务推送通知，含 HMAC 签名 + 重试 + 审计日志
+  （P2-A 已落）
+- **Files** —— `POST /api/v1/files/presign-upload` 然后按 `file_id`
+  附到 invoke / task / conversation 请求
+
+OpenAPI Gateway 是**无状态**的（无 DB）—— 它是一个 BFF，把 REST 翻译
+成对内部服务的 gRPC 调用。解耦 rationale 见
+[ADR 0001](https://github.com/beeos-ai/openagent/blob/main/backend/docs/adr/001-openapi-gateway-bff.md)。
+
+### 3.2 A2A Gateway（`a2a.beeos.ai`）
+
+实现 Google 的 [A2A v1.0 spec](https://github.com/google/a2a-protocol)。
+`/{agentId}` 路径提供智能体的 **Agent Card**；JSON-RPC 方法
+（`message/send`、`message/stream`、`tasks/get` 等）POST 到同一根。
+文档见 [A2A 外部集成指南](/zh/a2a/overview)。
+
+归属：
+
+- **Agent Card 解析** —— `GET /{agentId}` 返回 v1.0 卡，含
+  `supportedInterfaces`（每个协议接入面的公开 URL），让调用方可以
+  在调用中途切换传输。
+- **JSON-RPC 方法分派** —— 把 A2A 消息翻译成与 OpenAPI 面产出相同的
+  chat_message 信封。
+- **Push notification config** —— `tasks/pushNotificationConfig/*`
+  路由到拥有 webhook 投递的同一 A2A Service。
+
+A2A Gateway 是外部智能体生态（其他 A2A 兼容运行时）跟 BeeOS 对话的
+**唯一**方式 —— 从另一个智能体调 OpenAPI 也能工作但跳过 A2A spec
+路由保证（request_id ↔ task_id 映射、原生 message_id 幂等、agent-card
+驱动的端点发现）。
+
+### 3.3 MCP Gateway（`mcp.beeos.ai`）
+
+在 SSE 上讲 [Model Context Protocol](https://modelcontextprotocol.io)。
+每个智能体作为一个 MCP 工具暴露。文档见
+[MCP Gateway 指南](/zh/mcp/overview)。
+
+归属：
+
+- **OAuth 2.0 authorization code 流** —— LLM host 打开同意页，用户
+  批准对其智能体子集的访问，LLM host 拿到 session-scoped token。
+- **`tools/list`** —— 枚举授权 token 可达的智能体。
+- **`tools/call`** —— 通过与 OpenAPI invoke 相同的内部 L0 dispatch
+  路径调用智能体（同步或流式）。
+
+MCP 故意是 **per-call 无状态** —— 协议的 session 模型不带持久异步语义。
+长任务里 MCP 客户端应并行调 OpenAPI tasks；底层智能体是同一个。
+
+### 3.4 Agent Gateway（`agent.beeos.ai`）
+
+**仅智能体 pod** 的入站接入面。pod 身份的 Ed25519 签名请求证明调用
+来自真实的 BeeOS 管理的实例、不是外部冒充者。
+
+归属：
+
+- Message Service token 签发（pod 不直接看到 `MESSAGE_API_KEY` ——
+  Agent Gateway 是代它签 MS token 的代理）
+- 智能体产出的工件用的文件 presign / upload
+- `beeos_call_agent` 一类的 A2A REST 端点（beeos-claw 插件用这些
+  从工具内部做智能体到智能体调用）
+
+如果你**不是**在写智能体进程、此主机与你无关。智能体侧接线细节见
+[Agent Author 快速开始 §4 连到 Message Service](/zh/guides/agent-author-quickstart#4-连到-message-service)。
+
+---
+
+## 4. 哪些是**不**公网可达的
+
+内部 control plane（Runtime、ClusterService、Auth、Agent Identity、
+Billing、Usage、A2A Service、Message Service ……）坐在上面四个主机的
+背后，从公网**永远**不可路由。外部代码调四个主机之一；网关翻译成内部
+gRPC。
+
+此边界由 Communication Principle P5 强制、每个 PR 都 review。如果你
+要提的变更想把内部服务暴露给公网、这通常是个信号 —— 该变更应该落在
+某个网关上。
+
+---
+
+## 5. 跨协议一致性保证
+
+同一个智能体在三个调用方接入面上都可达，下列不变式跨面成立：
+
+| 不变式 | 细节 |
+|---|---|
+| **消息日志的单一真相源** | Message Service `channel_messages` 是持久日志；任何面的 SSE 都从同一张表读。OpenAPI `/events` 看到的回复跟同一任务的 A2A `message/stream` 看到的一致。 |
+| **端到端幂等** | OpenAPI `idempotency_key` → A2A `message_id` → MS `idempotency_key` 是同一去重 key 的别名。跨面重试安全。 |
+| **附件协议无关** | `POST /files/presign-upload` 返回的 `file_id` 在 OpenAPI 请求、A2A `FilePart` 和 MCP 工具参数里都有效。接收方在入站 `chat_message` 里看到的总是同一个 `file_id`。 |
+| **状态术语** | OpenAPI 状态字符串（`succeeded` / `failed` / `canceled` / `timeout`）从 A2A `TaskState` 枚举用的同一个 `msgderive` resolver 派生。 |
+| **限流按凭证** | OpenAPI 上的爆发不会耗 A2A 预算，反之亦然。 |
+
+刻意的**非不变式**（接入面刻意有差的地方）：
+
+- **发现词汇** —— OpenAPI 返回
+  `{success: true, data: {agents: […]}}`；A2A 每个智能体返回一个
+  `AgentCard`；MCP 枚举工具。
+- **鉴权凭证** —— OpenAPI 是 per-user、A2A 是 per-target、MCP 是
+  per-session。见 [鉴权与 API Key](/zh/authentication)。
+
+---
+
+## 6. 另请参阅
+
+- [选协议](/zh/guides/choosing-a-protocol) —— 本文的指令性姊妹篇，
+  带决策树 + 实战示例。
+- [调用智能体](/zh/guides/calling-agents) —— 完整 OpenAPI
+  invoke / task / conversation 接入面走查。
+- [MCP Gateway](/zh/mcp/overview) —— MCP host 从外部看是什么
+  样（OAuth 流、工具列表、流式）。
+- [A2A 外部集成](/zh/a2a/overview) —— 另一个 A2A 兼容运行时看到的
+  （agent card、JSON-RPC）。
+- [Agent Author 快速开始](/zh/guides/agent-author-quickstart) ——
+  pod 内部的故事。
+- `backend/.cursor/rules/communication-principles.mdc`
+  —— 治理内部 vs 公开边界的 9 条铁律。
+- [`backend/docs/adr/001-openapi-gateway-bff.md`](https://github.com/beeos-ai/openagent/blob/main/backend/docs/adr/001-openapi-gateway-bff.md)
+  —— OpenAPI Gateway 为何是独立进程、不是 main Gateway。
+- [`backend/docs/adr/0017-openapi-gateway-routes.md`](https://github.com/beeos-ai/openagent/blob/main/backend/docs/adr/)
+  —— 钉死 OpenAPI 路由形状的 spec（状态字符串、SSE frame、webhook
+  renderer）。
