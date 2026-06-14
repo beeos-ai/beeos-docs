@@ -258,17 +258,28 @@ All 4xx / 5xx now follow the canonical envelope (`type`,
 inspected the HTTP status keeps working; new code should branch
 on `error.code`. See [Error Reference](/reference/errors).
 
-### 2.7 New error code — `insufficient_scope`
+### 2.7 Scope vocabulary removed (v1.1.0)
 
-If you mint an `oag_` User API Key with read-only scopes and
-try a write operation, you now get `403 insufficient_scope`
-(previously the call silently succeeded if the underlying user
-was the owner). This is a **wire** change at the boundary
-between "your code worked by accident" and "your code worked
-because the auth model said so".
+The `oag_` User API Key per-route scope gate
+(`agents:read`, `agents:write`, `tasks:read`, `tasks:write`,
+`files:read`, `files:write`, `instances:read`, `instances:write`,
+plus the `admin:*` wildcard) has been **removed entirely**. Existing
+keys automatically gain full owner-level access and do **not** need
+to be re-issued; cross-tenant access is denied by owner-ACL inside
+the handlers, not by per-route scopes.
 
-To fix: re-mint the key with the right scopes (see
-[Auth & API Keys](/authentication#scopes)).
+What this means for SDK migrations:
+
+- **Drop `scopes` from `createAPIKey` / `POST /api-keys` calls.** The
+  field is silently ignored on the wire during the rolling deploy
+  window; remove it at your earliest convenience so callers don't
+  carry stale assumptions.
+- **Fold `insufficient_scope` (403) into your generic 403 / `forbidden`
+  handler.** The code is no longer emitted, but existing branches
+  matching on it will simply become dead — safe to delete in the
+  same change.
+- **Remove scope badges / pickers from your UI.** Server-side responses
+  no longer carry a `scopes` field on `APIKey` or `APIKeyCreateResult`.
 
 ### 2.8 `timeout_ms` clamp on `invoke`
 
@@ -362,4 +373,4 @@ small enough that find/replace + a unit-test pass covers it.
 - [`docs/reference/errors.md`](/reference/errors) — the
   full `code` table for typed error handling.
 - [`docs/guides/auth-api-keys.md`](/authentication) — credential
-  matrix for the `insufficient_scope` change.
+  matrix; covers the v1.1.0 scope removal in detail.

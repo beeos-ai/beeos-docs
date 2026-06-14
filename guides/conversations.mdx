@@ -96,10 +96,11 @@ close signal and stops streaming.
 
 ## 3. The five conversation endpoints
 
-All five require `Authorization: Bearer <JWT or oag_...>`. API-key
-callers need scope `tasks:write` for create / send / delete and
-`tasks:read` for list / get / messages / events (see
-[Authentication & API Keys](/authentication#scopes)).
+All five require `Authorization: Bearer <JWT or oag_...>`. `oag_`
+keys are user-scoped: any key whose owner owns the underlying
+conversation can call every endpoint here (see
+[Authentication & API Keys](/authentication#authorization) for the
+authorization model — per-route scope gating was removed in v1.1.0).
 
 | Method | Path | Purpose | Body | Returns |
 |---|---|---|---|---|
@@ -333,7 +334,6 @@ ones you're most likely to hit on this API:
 | `400` | `invalid_param` | `convId` empty or `conv_id` belongs to a different agent than the URL path |
 | `400` | `invalid_param` | `conv_id refers to a non-conversation channel` — you tried to use a task ID on a conversation endpoint |
 | `403` | `forbidden` | The conversation isn't yours |
-| `403` | `insufficient_scope` | API key missing `tasks:read` / `tasks:write` |
 | `404` | `agent_not_found` | Conversation doesn't exist or fell off the MS TTL |
 | `409` | `conflict` | Channel is closed (e.g. `POST /messages` after `DELETE`) |
 | `413` | `payload_too_large` | Message body > 1 MiB — split into multiple turns or use [attachments](#attachments) for large blobs |
@@ -352,8 +352,8 @@ ones you're most likely to hit on this API:
   (no equivalent for conversations)
 - [Error Reference](/reference/errors) — every `code` the
   conversation endpoints can emit
-- [Authentication & API Keys](/authentication) — including the
-  full scope table
+- [Authentication & API Keys](/authentication) — credential
+  format and the owner-ACL authorization model
 - OpenAPI contract:
   [`backend/openapi/beeos-platform-v1.yaml`](https://github.com/beeos-ai/openagent/blob/main/backend/openapi/beeos-platform-v1.yaml)
   (search for `conversations:` in `paths`)

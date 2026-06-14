@@ -129,7 +129,7 @@ const reply = await agents.invokeAgent({
     message: "Hello, what can you do?",
   },
 });
-console.log("Reply:", reply.data?.reply);
+console.log("Reply:", reply.data?.text);
 console.log("Channel:", reply.data?.context_id);
 ```
 
@@ -195,7 +195,7 @@ const taskId = created.data!.task_id;
 
 // Poll
 let task = await tasks.getTask({ agentId: "agent_abc123", taskId });
-while (task.data?.status !== "completed" && task.data?.status !== "failed") {
+while (task.data?.status !== "succeeded" && task.data?.status !== "failed") {
   await new Promise(r => setTimeout(r, 2_000));
   task = await tasks.getTask({ agentId: "agent_abc123", taskId });
 }
@@ -236,13 +236,13 @@ const conv = await conversations.createConversation({
 
 await conversations.sendConversationMessage({
   agentId: "agent_abc123",
-  conversationId: conv.data!.id,
+  conversationId: conv.data!.conversationId,
   sendConversationMessageRequest: { message: "Start the planning session." },
 });
 
 const msgs = await conversations.listConversationMessages({
   agentId: "agent_abc123",
-  conversationId: conv.data!.id,
+  conversationId: conv.data!.conversationId,
   since: 0,
 });
 ```
@@ -257,8 +257,7 @@ conversations stay open until you delete them. See
 const presigned = await files.presignUpload({
   presignUploadRequest: {
     filename: "report.pdf",
-    content_type: "application/pdf",
-    size_bytes: 4_582_910,
+    contentType: "application/pdf",
   },
 });
 

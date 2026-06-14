@@ -88,7 +88,6 @@ blocking JSON:
 | `invalid_token` | 401 | JSON | JWT / `oag_` failed signature or hash check | Same as `unauthorized` |
 | `missing_token` | 401 | JSON | `Authorization` header is empty | Add the header |
 | `forbidden` | 403 | JSON, SSE error | Caller doesn't own the agent (and it isn't public) | Use a credential that owns the resource |
-| `insufficient_scope` | 403 | JSON | API key is missing the required scope for this route — see [scopes table](/authentication#scopes). `error.metadata.required_scope` echoes the comma-separated set of acceptable scopes (any one is sufficient). JWT callers never hit this | Mint a new key with the right scope; rotate callers |
 | `agent_not_found` | 404 | JSON, SSE error | `agentId` (or `taskId`) unknown to the caller's ACL | Verify ownership / visibility |
 | `conflict` | 409 | JSON, SSE error | Agent rejected the call (busy / refused), or duplicate idempotency key on a changed payload, or task is terminal | Inspect `message`: `agent rejected the request` / `task is already closed` / `duplicate idempotency key`. Retry only on transient rejections |
 | `payload_too_large` | 413 | JSON | Request body exceeds the per-route size limit | catalog/instances/webhook routes cap at 64 KiB; `invoke` / `tasks` / `conversations` cap at 1 MiB. For large attachments use `POST /api/v1/files/presign-upload` (P1-A) instead of inlining bytes |

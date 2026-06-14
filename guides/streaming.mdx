@@ -27,10 +27,11 @@ can pick the right one and write a correct reconnect loop.
 | `GET /api/v1/agents/{agentId}/tasks/{taskId}/events` | Asynchronous task — observe progress, paused state, and the eventual terminal reply | Yes — closes on terminal envelope OR upstream EOF | Named `message` for content, `end` for shutdown |
 | `GET /api/v1/agents/{agentId}/conversations/{convId}/events` | Multi-turn dialog — observe every turn live | No — stays open across turns until `DELETE` or client disconnect | Named `message` for content, `end` for shutdown |
 
-All three require `Authorization: Bearer <JWT or oag_...>`. The
-relevant scopes are `tasks:write` (for invoke), `tasks:read` (for the
-two GET-based streams). See
-[auth-api-keys.md § scopes](/authentication#scopes).
+All three require `Authorization: Bearer <JWT or oag_...>`. `oag_`
+keys are user-scoped — any key whose owner owns the underlying task /
+conversation can invoke or stream. See
+[Authentication & API Keys](/authentication#authorization) for the
+owner-ACL authorization model (per-route scopes were removed in v1.1.0).
 
 ---
 
@@ -121,12 +122,27 @@ The JSON envelope schema is shared (`SSEStreamMessage`):
 | Field | Type | Notes |
 |---|---|---|
 | `type` | string | E.g. `chat_message`, `agent_message_chunk`, `agent_reply`, `agent_reply_error`, `agent.input_required` |
-| `message_id` | string | UUID; unique per message in the channel |
-| `offset` | int64 | Monotonic position in the channel log (use as `since` on reconnect) |
+| `state` | string | **Envelope v3** lifecycle marker: `streaming`, `completed`, `failed`, `cancelled`. Single-shot frames (e.g. `chat_message`) carry `completed` from the start; `agent_reply` arrives as a sequence of `state="streaming"` frames culminating in one `state="completed"`. |
+| `stop_reason` | string | Set only on the terminal `completed`/`failed` frame for `agent_reply` (`end_turn`, `error`, `cancelled`, `length`). |
+| `body` | string | **Envelope v3 cumulative text snapshot** for `agent_reply` streaming. Every PATCH writes the *full* accumulated reply so far — clients SHOULD render `body` directly and IGNORE the legacy per-token `agent_message_chunk` frames if both are present. |
+| `parts` | array | **Envelope v3 structured parts** (tool calls, attachments, etc.) accumulated alongside `body`. Same cumulative snapshot semantic. |
+| `message_id` | string | UUID; unique per message in the channel. **One v3 `agent_reply` envelope = one `message_id` across all streaming frames + the terminal one.** |
+| `offset` | int64 | Monotonic position in the channel log (use as `since` on reconnect). Different per streaming frame even though `message_id` repeats. |
 | `in_reply_to` | string | message_id of the request this is replying to (set on agent_reply / chunks) |
 | `publisher_id` | string | `user:<uid>` or `agent:<id>` — who emitted it |
-| `payload` | any | Per-type body (e.g. `{ "text": "..." }` for chat_message) |
+| `payload` | any | Per-type body (e.g. `{ "text": "..." }` for chat_message). For v3 `agent_reply`, prefer top-level `body` over `payload.text`. |
 | `created_at` | RFC3339 string | Server timestamp |
+
+<Note>
+**Envelope v3 (ADR-0022 + ADR-0023, GA in v1.1)**: Agent replies are
+"one row, mutating in place". The same `message_id` appears across N
+streaming frames (each a cumulative snapshot of `body` / `parts`)
+followed by exactly one `state="completed"` (or `failed` / `cancelled`)
+terminal frame. Legacy per-token `agent_reply_delta` rows are no
+longer emitted by `beeos-claw` and will not appear on new channels,
+but historical rows remain readable via `?include_deltas=true` on the
+`GET /messages` polling path.
+</Note>
 
 ### Terminal `event: end`
 
@@ -185,11 +201,31 @@ as a query parameter. The semantics:
   streaming. Use this on **reconnect**: pass the last observed
   `frame.offset` so you don't see duplicates or miss any frames.
 
+<Warning>
+**Offsets are strictly monotonic but NOT guaranteed contiguous**
+(ADR-0022 §1.2). A producer-side storage failure may leave a small
+hole — you may observe `… 40, 42, …` with `41` missing. Always
+treat `offset > since` as the resume invariant; **never** assume
+`offset == since + 1`. Code like `if (newOffset !== lastOffset + 1)
+throw` is a bug.
+</Warning>
+
 <Note>
 The same cursor doubles as the pagination key on the
 non-streaming `GET /messages` endpoint:
 `?since=<lastOffset>&limit=200` returns up to 200 frames at
 `offset > lastOffset`. Mixing streaming + polling is fine.
+
+**OpenAPI v1.1 (ADR-0022 + ADR-0023)**: `GET /messages` default-filters
+out ephemeral streaming chunks (`agent_reply_delta`,
+`agent_thought_chunk`, `agent_message_chunk`). With v3 envelopes
+(ADR-0023) live `agent_reply` rows carry the full cumulative reply
+in `body` — you no longer need `include_deltas=true` to reconstruct
+the text, and **new** `beeos-claw` channels won't have any
+`agent_reply_delta` rows at all. The flag remains supported for
+reading **historical** pre-v3 channels. `latest_offset` still
+reflects the full server-side max so `since=<latest_offset>`
+resumes from the right place either way.
 </Note>
 
 ### Edge cases
@@ -207,6 +243,31 @@ non-streaming `GET /messages` endpoint:
 3. **Same client opens two SSE connections to the same task.** Both
    get the full live stream. Message Service is fan-out — there's no
    "you already have a subscription" semantic on the gateway.
+4. **`backfill_truncated` frame on reconnect** (since OpenAPI v1.1 /
+   ADR-0022). When the channel has been idle long enough that the
+   ephemeral stream has aged out before your `Last-Event-ID`, the
+   server emits a single `backfill_truncated` event before the
+   normal `replay_complete`. Shape:
+   ```
+   event: backfill_truncated
+   data: { "oldest_redis_offset": 4711, "since": 3120,
+           "hint": "ephemeral chunks before oldest_redis_offset have aged out of the Redis stream" }
+   ```
+   Recovery options, in order of decreasing fidelity:
+   * **Replay surviving durable rows** — fetch
+     `GET /messages?since=<since>` (durable rows only); you'll miss
+     the per-token chunks but recover the final reply / non-chunk
+     state. The server only emits this frame for ephemeral types, so
+     `chat_message` / `agent_reply` / `agent.input_required` etc.
+     are still in the durable log.
+   * **Fast-forward** — resume with `since=replay_complete.latest_offset`
+     and accept that the intermediate token chunks are gone. This is
+     what the official SDK does by default since the chunks are
+     rendering UX, not data of record.
+
+   SDKs that don't recognise `backfill_truncated` SHOULD treat the
+   frame as a no-op message — it's purely informational and doesn't
+   change the rest of the protocol.
 
 ---
 

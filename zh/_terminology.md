@@ -44,7 +44,6 @@
 | User API Key | 用户 API Key | `oag_` 开头 |
 | Agent API Key | 智能体 API Key | `bak_` 开头 |
 | credential | 凭证 | |
-| scope | 作用域 | OAuth 风格的细粒度权限 |
 | JWT | JWT (保留) | |
 | OAuth | OAuth (保留) | |
 | PKCE | PKCE (保留) | |
@@ -91,7 +90,6 @@
 | rate limit | 限流 | |
 | quota | 配额 | |
 | tier | 等级 | rate-limit tier |
-| insufficient_scope | insufficient_scope (保留) | 错误码原样 |
 | 4xx / 5xx | 4xx / 5xx (保留) | |
 
 ## 工具 / MCP

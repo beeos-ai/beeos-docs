@@ -2,13 +2,13 @@
 # AUTO-SYNCED FROM backend/openapi/beeos-platform-v1.yaml
 # DO NOT EDIT HERE — edit the source in the openagent repo and run
 #   cd beeos-docs && npm run sync-spec
-# Last synced: 2026-05-19T20:31:12Z
-# Source SHA: acfb72e
+# Last synced: 2026-05-23T07:11:02Z
+# Source SHA: b06783df
 # ============================================================================
 openapi: 3.1.0
 info:
   title: BeeOS OpenAPI (user contract)
-  version: 1.0.0
+  version: 1.1.0
   description: |
     The **BeeOS OpenAPI** user contract. The sole implementer is
     **[`services/openapi-gateway`](../services/openapi-gateway)** (`openapi-gw`,
@@ -26,6 +26,82 @@ info:
     endpoints (A2A JSON-RPC with `bak_`, MCP) live in
     [beeos-agent-integration-v1.yaml](beeos-agent-integration-v1.yaml) and are
     hosted by A2A Gateway / MCP Gateway — not by `openapi-gateway`.
+
+    ## Changelog
+
+    ### 1.1.0 (ADR-0022 — dual-layer message storage)
+
+    BREAKING for clients that depended on full streaming chunk replay
+    via the persistent message log:
+
+    * `GET /api/v1/agents/{agentId}/conversations/{convId}/messages`
+      and `GET /api/v1/agents/{agentId}/tasks/{taskId}/messages` now
+      **default-filter out** ephemeral streaming chunks
+      (`agent_reply_delta`, `agent_thought_chunk`,
+      `agent_message_chunk`). Add `?include_deltas=true` to opt back in.
+    * `latest_offset` continues to reflect the TRUE server-side max
+      offset across both filtered and unfiltered rows, so `since=` /
+      cursor-style pagination is unaffected.
+    * SSE `/events` is **NOT** affected — live consumers continue to
+      receive every envelope as it happens.
+    * Backwards-compatible recovery path: SSE `/events` may now emit
+      a `backfill_truncated` event frame when the client reconnects
+      with `Last-Event-ID` before the oldest retained chunk. SDKs
+      that don't recognise the frame should treat it as a hint to
+      resume from `oldest_redis_offset` instead (the field carrying
+      the smallest offset still readable on the per-channel stream).
+    * **Clarified contract**: SSE event `offset` is strictly monotonic
+      per channel but **NOT guaranteed contiguous** (ADR-0022 §1.2).
+      Producer-side write failures may leave small holes; clients MUST
+      use `offset > since`, never `offset == since + 1`.
+
+    BREAKING for clients that depended on the `oag_` API key scope
+    vocabulary:
+
+    * The per-route scope gate (`agents:read`, `agents:write`,
+      `tasks:read`, `tasks:write`, `files:read`, `files:write`,
+      `instances:read`, `instances:write`, plus the `admin:*` wildcard)
+      has been **removed entirely**. The 37 routes that previously
+      required scopes are now governed exclusively by owner-ACL — an
+      `oag_` User API Key inherits full access to its owner's resources.
+    * The `403 insufficient_scope` error code is no longer emitted.
+      Existing callers that branched on it should fold the case into
+      their generic 403 / `forbidden` handler.
+    * SDK clients that explicitly passed `scopes` to `createAPIKey`
+      should drop that argument. The Web / Desktop UIs no longer render
+      scope badges on existing keys.
+    * Existing `oag_` keys continue to work unchanged — the owner_id
+      binding is preserved, and no key needs to be re-issued.
+
+    BREAKING for clients of `GET /api/v1/providers` that read the
+    `capabilities` object on the wire:
+
+    * 7 of the 8 `capabilities` field names are now **camelCase**
+      (`longRunning`, `browserUse`, `codeExec`, `fileSystem`,
+      `customImage`, `maxDurationSec`, `costModel`) — matching this
+      OpenAPI contract. Previous wire emitted **snake_case**
+      (`long_running`, `browser_use`, …) because the server DTO bound
+      `capabilities` to the raw protobuf message
+      (`*pb.ProviderCapabilities`) whose auto-generated `json` tags
+      use snake_case. SDK consumers (`@beeos-ai/sdk`,
+      `github.com/beeos-ai/sdk-go`) generated from this spec were
+      **already unable** to read any `capabilities` field — the
+      camelCase property names produced by the generator never
+      matched the snake_case the server actually sent. Raw HTTP
+      callers that hand-coded against the old snake_case names must
+      migrate; SDK callers gain access to the field set for the first
+      time without code changes.
+    * Note: the `device` boolean was always a single word — its wire
+      name (`device`) is unchanged. Only the seven multi-word
+      capability fields are affected by the rename.
+    * `meta`, `id`, `name`, `description`, `version` are unchanged.
+    * A new drift-guard (`internal/dto/contract_test.go`) now locks
+      the server DTO to the spec property names, so the two cannot
+      silently diverge again.
+
+    ### 1.0.0
+
+    Initial OpenAPI contract (ADR-001).
 servers:
   - url: https://openapi.beeos.ai
     description: Production
@@ -76,7 +152,15 @@ paths:
       summary: List available providers (catalog)
       responses:
         "200":
-          description: Standard `{ success, data }` envelope; `data` is a list of provider catalog items.
+          description: |
+            Standard `{ success, data }` envelope; `data` is an array
+            of [`ProviderCatalogItem`](#/components/schemas/ProviderCatalogItem)
+            entries, each carrying a [`meta`](#/components/schemas/ProviderMeta)
+            block (`id`, `name`, `description`, `version`) and a
+            [`capabilities`](#/components/schemas/ProviderCapabilities)
+            block (camelCase booleans + `maxDurationSec` / `costModel`).
+            Mintlify renders the wrapper as `object[]` until you expand
+            "Show child attributes" — the items are fully typed.
           content:
             application/json:
               schema:
@@ -441,23 +525,22 @@ paths:
                   summary: No agents yet
                   value:
                     success: true
-                    data:
-                      agents: []
-                      total: 0
+                    data: []
+                    total: 0
                 single:
                   summary: One agent
                   value:
                     success: true
                     data:
-                      agents:
-                        - id: "agent_abc123"
-                          name: "summariser"
-                          instance_id: "instance_xyz"
-                          visibility: "private"
-                          status: "active"
-                          delivery_mode: "push"
-                          created_at: "2026-05-14T18:00:00Z"
-                      total: 1
+                      - id: "agent_abc123"
+                        instanceId: "instance_xyz"
+                        name: "summariser"
+                        status: "active"
+                        visibility: "private"
+                        mcpEnabled: false
+                        createdAt: "2026-05-14T18:00:00Z"
+                        updatedAt: "2026-05-14T18:00:00Z"
+                    total: 1
         "400": { $ref: '#/components/responses/BadRequest' }
         "401": { $ref: '#/components/responses/Unauthorized' }
         "429": { $ref: '#/components/responses/RateLimited' }
@@ -570,7 +653,7 @@ paths:
                   value:
                     success: true
                     data:
-                      text: "I can't access that file — please grant read scope."
+                      text: "I can't access that file — please re-upload it or check that you own it."
                       context_id: "ch-uuid"
                       is_error: true
             text/event-stream:
@@ -627,7 +710,8 @@ paths:
                     success: true
                     data:
                       task_id: "ch-task-uuid"
-                      context_id: "ch-task-uuid"
+                      agent_id: "agent-uuid"
+                      status: "queued"
                       created_at: "2026-05-14T18:00:00Z"
         "400": { $ref: '#/components/responses/BadRequest' }
         "401": { $ref: '#/components/responses/Unauthorized' }
@@ -712,9 +796,9 @@ paths:
         submit time.
 
         Only `protocol=openapi` channels surface here. Long-running
-        conversations live at `GET /api/v1/conversations` and are
-        not mixed in to keep status semantics stable (tasks have a
-        deadline; conversations don't).
+        conversations live at `GET /api/v1/agents/{agentId}/conversations`
+        and are not mixed in to keep status semantics stable (tasks
+        have a deadline; conversations don't).
       parameters:
         - name: agent_id
           in: query
@@ -790,35 +874,32 @@ paths:
                     success: true
                     data:
                       task_id: "ch-task-uuid"
-                      context_id: "ch-task-uuid"
                       agent_id: "agent_abc123"
                       status: "running"
                       created_at: "2026-05-14T18:00:00Z"
-                      updated_at: "2026-05-14T18:00:42Z"
+                      started_at: "2026-05-14T18:00:42Z"
                 succeeded:
                   summary: Task terminal — success
                   value:
                     success: true
                     data:
                       task_id: "ch-task-uuid"
-                      context_id: "ch-task-uuid"
                       agent_id: "agent_abc123"
                       status: "succeeded"
                       result: "Indexed 312 pages."
                       created_at: "2026-05-14T18:00:00Z"
-                      updated_at: "2026-05-14T18:05:00Z"
+                      completed_at: "2026-05-14T18:05:00Z"
                 failed:
                   summary: Task terminal — failure
                   value:
                     success: true
                     data:
                       task_id: "ch-task-uuid"
-                      context_id: "ch-task-uuid"
                       agent_id: "agent_abc123"
                       status: "failed"
                       error: "missing credentials for upstream Drive API"
                       created_at: "2026-05-14T18:00:00Z"
-                      updated_at: "2026-05-14T18:00:09Z"
+                      completed_at: "2026-05-14T18:00:09Z"
         "401": { $ref: '#/components/responses/Unauthorized' }
         "403": { $ref: '#/components/responses/Forbidden' }
         "404": { $ref: '#/components/responses/NotFound' }
@@ -841,10 +922,16 @@ paths:
       summary: List the persisted message log for a task (paged by offset).
       description: |
         Returns the channel-message log for a task — `chat_message`,
-        `agent_reply_delta`, `agent_reply`, `chat_cancel`, `user.continue`,
-        etc. Same wire shape as `GET /conversations/{convId}/messages`
-        because a task's `task_id` IS the underlying conversation_id (a
-        task is just a single-shot channel with a deadline).
+        `agent_reply`, `chat_cancel`, `user.continue`, etc. By default
+        EXCLUDES ephemeral streaming chunks (`agent_reply_delta`,
+        `agent_thought_chunk`, `agent_message_chunk`); set
+        `include_deltas=true` to receive them. `latest_offset` always
+        reflects the true server-side max offset so resuming with
+        `since=<latest_offset>` is safe regardless of the filter.
+
+        Same wire shape as `GET /conversations/{convId}/messages` because
+        a task's `task_id` IS the underlying conversation_id (a task is
+        just a single-shot channel with a deadline).
 
         Auth path is intentionally cheaper than `getTask` (one MS
         `GetConversation` + metadata check, no full message-log scan)
@@ -861,6 +948,16 @@ paths:
           in: query
           required: false
           schema: { type: integer, format: int32, minimum: 1, maximum: 500 }
+        - name: include_deltas
+          in: query
+          required: false
+          description: |
+            When `true`, include ephemeral streaming chunk rows
+            (`agent_reply_delta`, `agent_thought_chunk`,
+            `agent_message_chunk`) in the response. Default `false`.
+            Accepts `true|1|yes` (case-insensitive); any other value
+            is treated as `false`.
+          schema: { type: boolean, default: false }
       responses:
         "200":
           description: Page of messages.
@@ -903,10 +1000,16 @@ paths:
             The first event the client receives has `offset` > since.
 
           The wire contract guarantees that the `offset` field on
-          emitted events is monotonically increasing per channel, so
-          re-using the last received offset as `since` cannot produce
-          gaps as long as the channel-message log retention covers
-          the gap (MS guarantees 24 h after last-touch).
+          emitted events is **strictly monotonically increasing per
+          channel** but is **NOT guaranteed contiguous** (ADR-0022
+          §1.2). A producer-side storage failure may leave a small
+          hole — e.g. you may observe `... 40, 42, ...` with `41`
+          missing. Clients MUST treat `offset > since` as the resume
+          invariant, never `offset == since + 1`. Per ADR-0022 the
+          retention window is 24 h after last-touch (durable rows) and
+          24 h or 10 000 entries (ephemeral chunk stream, whichever is
+          tighter); outside that window SSE replies with a
+          `backfill_truncated` frame before resuming.
         schema: { type: integer, format: int64, minimum: 0 }
     get:
       operationId: streamTaskEvents
@@ -1055,6 +1158,20 @@ paths:
       operationId: listConversations
       tags: [conversations]
       summary: List conversations for the calling user against this agent.
+      description: |
+        Returns long-lived dialog channels explicitly created via
+        `POST /agents/{agentId}/conversations`. **Synchronous one-shot
+        `POST /agents/{agentId}/invoke` calls do NOT appear here** —
+        they create short-lived `protocol=openapi` task channels that
+        surface under `GET /agents/{agentId}/tasks` and
+        `GET /tasks` instead. Mixing the two would conflate "long
+        dialog" with "single RPC call" and is intentionally avoided so
+        list semantics stay stable per channel kind.
+
+        If `GET /conversations` returns an empty list immediately after
+        an `invoke`, that is expected: call `GET /tasks` for the task
+        channel record, or pre-create a conversation with `POST
+        /conversations` and post messages into it explicitly.
       parameters:
         - name: state
           in: query
@@ -1179,6 +1296,21 @@ paths:
       operationId: listConversationMessages
       tags: [conversations]
       summary: List messages in a conversation (paged by offset).
+      description: |
+        Returns the durable conversation log. By default the response
+        EXCLUDES ephemeral streaming chunks (`agent_reply_delta`,
+        `agent_thought_chunk`, `agent_message_chunk`) — only finalized
+        turns and tool messages are returned, so UIs render a clean
+        transcript without pagination blowing up on token-level chunks.
+
+        Set `include_deltas=true` to also receive the per-token chunks
+        (only present when an in-flight turn is still streaming). Note
+        that `latest_offset` ALWAYS reflects the true server-side max
+        offset across both filtered and unfiltered rows, so resuming
+        with `since=<latest_offset>` is safe regardless of the filter.
+
+        SSE `/events` is unaffected by this filter — live consumers
+        receive every envelope including deltas as they happen.
       parameters:
         - name: since
           in: query
@@ -1191,6 +1323,16 @@ paths:
           in: query
           required: false
           schema: { type: integer, format: int32, minimum: 1, maximum: 200 }
+        - name: include_deltas
+          in: query
+          required: false
+          description: |
+            When `true`, include ephemeral streaming chunk rows
+            (`agent_reply_delta`, `agent_thought_chunk`,
+            `agent_message_chunk`) in the response. Default `false`.
+            Accepts `true|1|yes` (case-insensitive); any other value
+            is treated as `false`.
+          schema: { type: boolean, default: false }
       responses:
         "200":
           description: Page of messages.
@@ -1482,26 +1624,19 @@ components:
         `Authorization: Bearer <token>` header. Both are validated by
         `openapi-gateway` against the Auth service.
 
-        ## Scopes (`oag_` User API Keys only)
+        Both credential types are **user-scoped**: every key (and every
+        JWT) is bound to exactly one owner, and every route grants the
+        caller full access to that owner's own resources. Cross-tenant
+        access is denied by owner-ACL inside the handlers — there is no
+        per-route scope vocabulary on this API.
 
-        JWT-authenticated callers bypass the scope check (a user can do
-        anything they can already do in the dashboard). API-key callers
-        must carry **at least one** of the listed scopes per route:
-
-        | Scope                | Routes |
-        |----------------------|--------|
-        | `agents:read`        | `GET /agents`, `GET /agents/{agentId}` |
-        | `agents:write`       | `PATCH /agents/{agentId}` |
-        | `tasks:read`         | `GET /agents/{agentId}/tasks*`, `GET /agents/{agentId}/conversations*` |
-        | `tasks:write`        | `POST /agents/{agentId}/invoke`, all `POST /agents/{agentId}/tasks*` and `POST /agents/{agentId}/conversations*`, `DELETE` conversations, webhook CRUD |
-        | `files:read`         | `GET /files/{id}` |
-        | `files:write`        | `POST /files/presign-upload` |
-        | `instances:read`     | `GET /providers`, `GET /deploy/*`, `GET /instances*` |
-        | `instances:write`    | All `POST`/`DELETE` `/instances*` |
-
-        A missing or insufficient scope returns `403 insufficient_scope`
-        with the comma-separated acceptable scope set echoed in
-        `error.metadata.required_scope` (any one is sufficient).
+        > **Removed in v1.1.0:** the legacy `agents:*` / `tasks:*` /
+        > `files:*` / `instances:*` scope set has been dropped together
+        > with the `403 insufficient_scope` error. Existing `oag_` keys
+        > automatically gain full owner-level access and do **not** need
+        > to be re-issued. SDK calls that previously passed `scopes` to
+        > `createAPIKey` should drop the argument. See the changelog at
+        > the bottom of this spec for the full migration note.
   schemas:
     # -------- Envelope helpers --------
     SuccessEnvelope:
@@ -1523,6 +1658,7 @@ components:
     # -------- Catalog --------
     ProviderMeta:
       type: object
+      title: ProviderMeta
       required: [id, name, description, version]
       properties:
         id: { type: string }
@@ -1531,6 +1667,7 @@ components:
         version: { type: string }
     ProviderCapabilities:
       type: object
+      title: ProviderCapabilities
       properties:
         longRunning: { type: boolean }
         browserUse: { type: boolean }
@@ -1542,6 +1679,7 @@ components:
         device: { type: boolean }
     ProviderCatalogItem:
       type: object
+      title: ProviderCatalogItem
       required: [meta, capabilities]
       properties:
         meta:
@@ -1560,6 +1698,7 @@ components:
                 $ref: '#/components/schemas/ProviderCatalogItem'
     DeployRegionItem:
       type: object
+      title: DeployRegionItem
       required: [id, name, available]
       properties:
         id: { type: string }
@@ -1577,6 +1716,7 @@ components:
                 $ref: '#/components/schemas/DeployRegionItem'
     DeployModelItem:
       type: object
+      title: DeployModelItem
       required: [id, name, tier, reasoning]
       properties:
         id: { type: string }
@@ -2091,7 +2231,11 @@ components:
         offset:
           type: integer
           format: int64
-          description: Monotonic per-channel offset for SSE resume cursors.
+          description: |
+            Strictly monotonic per-channel offset, used as the SSE
+            resume cursor. **NOT guaranteed contiguous** — small holes
+            can appear after producer-side storage failures (ADR-0022
+            §1.2). Clients use it via `offset > since` only.
         in_reply_to:
           type: string
         publisher_id:
@@ -2101,6 +2245,103 @@ components:
         created_at:
           type: string
           format: date-time
+        updated_at:
+          type: string
+          format: date-time
+          description: |
+            Server's last-write timestamp on this frame (RFC3339 with
+            nanosecond precision, UTC). Equals `created_at` on the
+            initial `message.created` frame and is bumped on every
+            successful PATCH that produces a `message.updated` frame.
+            SSE replay clients SHOULD use it to ack progress
+            checkpoints; omitted only on legacy pre-v3 rows from before
+            migration 006.
+          x-beeos-status: ga
+        state:
+          $ref: '#/components/schemas/MessageState'
+          description: |
+            Message Envelope v3 lifecycle state. When present, SSE
+            clients SHOULD use this as the primary terminal-detection
+            signal: `streaming` keeps the stream open; the four
+            terminal states (`completed`/`failed`/`refused`/`cancelled`)
+            cause the gateway to emit `event: end` with
+            `reason: task_terminal`. Omitted on legacy pre-v3 rows;
+            consumers fall back to the legacy `type`-based
+            classification (`agent_reply`, `agent_reply_error`,
+            `agent.refuse`, `agent_busy`).
+          x-beeos-status: ga
+        stop_reason:
+          $ref: '#/components/schemas/StopReason'
+          description: |
+            Producer-supplied terminal reason, paired with a terminal
+            `state` (omitted for `streaming`). Surfaces the same
+            vocabulary as Message Envelope v3 (`end_turn`,
+            `max_tokens`, `tool_use`, `user_stop`, `timeout`,
+            `error`, `refused`, `content_filter`).
+          x-beeos-status: ga
+        body:
+          type: string
+          description: |
+            Message Envelope v3 cumulative main-text column. On a
+            `state=streaming` frame, `body` is the latest snapshot the
+            producer has PATCHed (monotonically growing). On a terminal
+            frame, `body` is the assembled final text — clients SHOULD
+            prefer it over the legacy `payload.text` field for v3 rows.
+            Omitted on legacy pre-v3 rows.
+          x-beeos-status: ga
+        parts:
+          type: array
+          items:
+            $ref: '#/components/schemas/Part'
+          description: |
+            Message Envelope v3 structured supplementary content
+            (thinking / tool_use / tool_result / file / source / custom).
+            Mutates with `body` during streaming; sealed once `state`
+            becomes terminal. Omitted on legacy pre-v3 rows.
+          x-beeos-status: ga
+
+    TaskSSEBackfillTruncated:
+      type: object
+      required: [oldest_redis_offset, since]
+      description: |
+        Body of an `event: backfill_truncated` frame on
+        `/tasks/{taskId}/events` and
+        `/conversations/{convId}/events`. Forwarded verbatim from
+        Message Service (ADR-0022 §1.2 / R2): emitted when the client
+        reconnected with `since=N` where N is older than the oldest
+        entry still retained in MS's per-channel Redis Stream —
+        chunks within that window have been evicted.
+
+        SDKs SHOULD react by either:
+          1. resuming from `oldest_redis_offset` (skipping the evicted
+             chunks but staying on the live stream), or
+          2. refetching the polling endpoint with
+             `?include_deltas=true` for a best-effort backfill of
+             whatever PG still has.
+
+        Either path keeps the consumer on a consistent offset
+        sequence; ignoring the frame is also legal — clients that
+        only care about terminal `agent_reply` envelopes lose nothing
+        because the terminal row is never evicted.
+      properties:
+        oldest_redis_offset:
+          type: integer
+          format: int64
+          description: |
+            Smallest offset still readable from the per-channel
+            Redis Stream. Clients can resume from any
+            `offset >= oldest_redis_offset` without missing chunks.
+        since:
+          type: integer
+          format: int64
+          description: |
+            The cursor the client reconnected with (echoed back for
+            client-side correlation).
+        hint:
+          type: string
+          description: |
+            Human-readable English string explaining the gap.
+            Informational only — SDKs should not pattern-match on it.
 
     TaskSSEEnd:
       type: object
@@ -2368,7 +2609,11 @@ components:
       description: |
         Server-Sent Events stream.
 
-        Per-event JSON payload format:
+        Per-event JSON payload format (v3 envelope fields `body`,
+        `state`, `stop_reason`, `updated_at` are populated whenever the
+        underlying row was written via the v3 path; legacy v1 / v2 rows
+        leave them empty — consumers should fall back to `payload.text`
+        + `type` to detect terminality):
         ```
         event: message
         data: {
@@ -2378,7 +2623,25 @@ components:
           "in_reply_to": "msg-source-uuid",
           "publisher_id": "agent-identity",
           "payload": { ... },              // opaque, per-type
-          "created_at": "2026-05-14T18:00:00.000Z"
+          "body": "Hello, world",          // v3 cumulative text (optional)
+          "state": "streaming",            // v3 lifecycle (optional)
+          "stop_reason": "",               // v3 terminal reason (only set when state != streaming)
+          "created_at": "2026-05-14T18:00:00.000Z",
+          "updated_at": "2026-05-14T18:00:00.123Z"
+        }
+        ```
+
+        Backfill truncation frame — emitted ONCE when the server caps
+        the historical replay window (see `since=<offset>` semantics
+        above). Field shape matches `TaskSSEBackfillTruncated`. Clients
+        should resume from `oldest_redis_offset` after seeing this
+        frame:
+        ```
+        event: backfill_truncated
+        data: {
+          "since": 100,
+          "oldest_redis_offset": 1500,
+          "hint": "stream evicted entries older than oldest_redis_offset"
         }
         ```
 
@@ -2539,6 +2802,58 @@ components:
         created_at:
           type: string
           format: date-time
+        # v3 envelope (ADR-0022 + ADR-0023). Cumulative-snapshot
+        # semantics: each agent PATCH rewrites `body` to the running
+        # concatenation of all chunks emitted so far, so by the time
+        # a row reaches state="completed" `body` already holds the
+        # full agent reply. Empty / absent for pre-v3 rows; consumers
+        # should fall back to `payload.text` when `body == ""`.
+        body:
+          type: string
+          description: |
+            Cumulative agent reply text. Mutated in place across PATCH
+            updates while state == "streaming"; frozen when state
+            transitions to a terminal value (`completed` / `failed` /
+            `refused` / `cancelled`).
+          x-beeos-status: ga
+        state:
+          $ref: '#/components/schemas/MessageState'
+          description: |
+            Envelope lifecycle (canonical vocabulary, see MessageState).
+            Pre-v3 rows omit this field; v3 consumers should treat
+            absent state as `completed`.
+          x-beeos-status: ga
+        stop_reason:
+          $ref: '#/components/schemas/StopReason'
+          description: |
+            Terminal reason set when state becomes non-streaming
+            (canonical vocabulary, see StopReason). Only meaningful
+            when state ∈ {completed, failed, refused, cancelled}.
+          x-beeos-status: ga
+        parts:
+          type: array
+          description: |
+            Structured part list for rich replies (thinking / tool_use /
+            tool_result / file / source / custom). Empty / absent for
+            plain text replies — consumers should render `body` only in
+            that case. Discriminated union; see the Part schema for the
+            per-type field set.
+          items:
+            $ref: '#/components/schemas/Part'
+          x-beeos-status: ga
+        updated_at:
+          type: string
+          format: date-time
+          description: |
+            Server's last-write timestamp (RFC3339 with nanosecond
+            precision, UTC). Equals `created_at` after the initial POST
+            and is bumped on every successful PATCH (streaming snapshot
+            updates AND terminal state transitions). Terminal rows are
+            immutable, so `updated_at` freezes once `state` leaves
+            `streaming`. SSE replay clients SHOULD use this to ack
+            progress checkpoints; REST clients SHOULD use it to detect
+            mid-stream progress vs `created_at`-only first reads.
+          x-beeos-status: ga
 
     ListMessagesResponse:
       allOf:
@@ -2735,6 +3050,345 @@ components:
                   items:
                     $ref: '#/components/schemas/WebhookDeliveryResponse'
 
+    # -------- Envelope v3 (BETA — Phase 0) --------
+    # The Message Service v3 schemas. The v3 wire is SNAPSHOT-based
+    # (POST/PATCH/GET on `/api/v3/conversations/{cid}/messages` against
+    # the Message Service directly) and is not yet exposed by the
+    # OpenAPI Gateway. These schemas are published as BETA to lock
+    # the shape for SDK clients ahead of Phase 1 cutover; new
+    # production callers should NOT rely on them until v2.0 GA.
+    #
+    # See plan `message-envelope-v3-kiss` for the rationale and the
+    # full migration plan. Wire reference:
+    #   backend/services/message/pkg/infrastructure/server/http/dto_v3.go
+    #
+    # Forward compatibility: `parts[].type` is an OPEN union; new
+    # consumers MUST default-tolerate unknown part types (skip with no
+    # error). New part types are added by appending to the union; old
+    # consumers see them as `type: custom` shape until they upgrade.
+
+    MessageState:
+      type: string
+      description: |
+        Lifecycle state of a v3 message envelope. `streaming` is the
+        sole non-terminal state; everything else is immutable.
+
+        State transitions:
+          - `streaming -> completed`  (normal LLM/agent finish)
+          - `streaming -> failed`     (transport / model error)
+          - `streaming -> refused`    (content filter / agent decline)
+          - `streaming -> cancelled`  (user_stop / timeout)
+        Once terminal, the row is immutable and any PATCH returns
+        `410 Gone` with `code = message_terminal`.
+      enum:
+        - streaming
+        - completed
+        - failed
+        - refused
+        - cancelled
+      x-beeos-status: ga
+
+    StopReason:
+      type: string
+      description: |
+        Reason for entering a terminal state. Borrowed from the
+        Anthropic vocabulary (`end_turn` / `max_tokens` / `tool_use`)
+        and augmented with platform-level terminations.
+
+        `agent_lost` is set by the Message Service stale-streaming
+        reaper when an agent crashes / disconnects without finalising
+        its v3 envelope — the row is transitioned from
+        `state=streaming` to `state=failed` after the configured
+        idle threshold so blocking `/wait` callers and SSE consumers
+        receive a terminal frame instead of hanging indefinitely.
+      enum:
+        - end_turn
+        - max_tokens
+        - tool_use
+        - user_stop
+        - timeout
+        - error
+        - refused
+        - content_filter
+        - agent_lost
+      x-beeos-status: ga
+
+    PartState:
+      type: string
+      description: |
+        Per-part lifecycle. Only `thinking` and `tool_use` parts
+        distinguish a streaming phase from a completed one; other
+        part shapes ignore this field.
+      enum:
+        - streaming
+        - done
+      x-beeos-status: ga
+
+    PartThinking:
+      type: object
+      description: Chain-of-thought / reasoning snippet (model output, opt-in).
+      required: [type, text]
+      properties:
+        type:
+          type: string
+          const: thinking
+        text:
+          type: string
+        state:
+          $ref: '#/components/schemas/PartState'
+      x-beeos-status: ga
+
+    PartToolUse:
+      type: object
+      description: Tool-call invocation issued by the agent.
+      required: [type, id, name]
+      properties:
+        type:
+          type: string
+          const: tool_use
+        id:
+          type: string
+          description: Unique tool-call id; matches the `tool_use_id` on the corresponding tool_result.
+        name:
+          type: string
+        arguments:
+          description: JSON arguments passed to the tool. Shape is tool-specific.
+        state:
+          $ref: '#/components/schemas/PartState'
+      x-beeos-status: ga
+
+    PartToolResult:
+      type: object
+      description: Tool-call output, paired with the originating tool_use via `tool_use_id`.
+      required: [type, tool_use_id, content]
+      properties:
+        type:
+          type: string
+          const: tool_result
+        tool_use_id:
+          type: string
+        content:
+          description: |
+            JSON-encoded tool output. Plain text tool outputs SHOULD be
+            wrapped as `{"text": "..."}` so the structural type stays
+            uniform — but the schema accepts both for ergonomics.
+          oneOf:
+            - type: string
+            - type: object
+              additionalProperties: true
+        is_error:
+          type: boolean
+          description: True iff the tool call errored (model should treat as such).
+      x-beeos-status: ga
+
+    PartFile:
+      type: object
+      description: |
+        File attachment (image / audio / video / document). MIME type
+        distinguishes modalities — the schema deliberately collapses
+        image/audio/video into a single shape so adding new modalities
+        is a renderer-side change rather than a schema migration.
+      required: [type, url, mime_type]
+      properties:
+        type:
+          type: string
+          const: file
+        url:
+          type: string
+          format: uri
+        mime_type:
+          type: string
+        name:
+          type: string
+        size:
+          type: integer
+          format: int64
+      x-beeos-status: ga
+
+    PartSource:
+      type: object
+      description: Citation / reference returned by retrieval-augmented agents.
+      required: [type, url]
+      properties:
+        type:
+          type: string
+          const: source
+        url:
+          type: string
+          format: uri
+        title:
+          type: string
+        snippet:
+          type: string
+      x-beeos-status: ga
+
+    PartCustom:
+      type: object
+      description: |
+        Extension escape hatch. New structured payloads (step markers,
+        artifact refs, audio frames, code edits, …) can be carried
+        under `custom.kind` without a schema migration. Old consumers
+        SHOULD skip unrecognised kinds; new consumers route by
+        `kind`.
+      required: [type, kind, data]
+      properties:
+        type:
+          type: string
+          const: custom
+        kind:
+          type: string
+          description: Caller-controlled extension discriminant.
+        data:
+          description: Arbitrary JSON payload tied to `kind`.
+      x-beeos-status: ga
+
+    Part:
+      description: |
+        Discriminated union of structured supplementary content
+        carried alongside the main `body` text. Six recognized
+        shapes cover 99% of LLM/agent use cases; `custom` is the
+        extension escape hatch.
+
+        Consumers MUST default-tolerate unknown `type` values — new
+        types are added by appending to the union and old consumers
+        should treat them as `custom`.
+      oneOf:
+        - $ref: '#/components/schemas/PartThinking'
+        - $ref: '#/components/schemas/PartToolUse'
+        - $ref: '#/components/schemas/PartToolResult'
+        - $ref: '#/components/schemas/PartFile'
+        - $ref: '#/components/schemas/PartSource'
+        - $ref: '#/components/schemas/PartCustom'
+      discriminator:
+        propertyName: type
+        mapping:
+          thinking: '#/components/schemas/PartThinking'
+          tool_use: '#/components/schemas/PartToolUse'
+          tool_result: '#/components/schemas/PartToolResult'
+          file: '#/components/schemas/PartFile'
+          source: '#/components/schemas/PartSource'
+          custom: '#/components/schemas/PartCustom'
+      x-beeos-status: ga
+
+    MessageEnvelope:
+      type: object
+      description: |
+        v3 wire envelope for a single channel message. Mirrors
+        `V3MessageResponse` in
+        backend/services/message/pkg/infrastructure/server/http/dto_v3.go.
+
+        Lifecycle: rows start at `state=streaming` and become immutable
+        on the first terminal PATCH. `body` is the cumulative main
+        text (90% of consumers read this directly); `parts` is the
+        structured supplementary content (10% rich-render path).
+
+        Backward compatibility: `content` is the legacy v1/v2 payload
+        mirror — populated only when the server is talking to a v1/v2
+        reader. v3-only callers SHOULD ignore it.
+      required: [id, conversation_id, type, sender, body, state, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Stable v3 message id (== Idempotency-Key on POST).
+        conversation_id:
+          type: string
+          format: uuid
+        type:
+          type: string
+          description: Message intent. `agent_reply` for terminal model output; `chat_message` for inbound user/agent requests; custom strings for application-specific intents.
+        sender:
+          type: string
+          description: Publisher principal id (agent / user / service).
+        reply_to:
+          type: string
+          description: |
+            Message id this envelope replies to. Required for
+            request/reply matching via the Message Service
+            `wait` primitive.
+        body:
+          type: string
+          description: Cumulative main text. Empty string on parts-only envelopes.
+        parts:
+          type: array
+          items:
+            $ref: '#/components/schemas/Part'
+        state:
+          $ref: '#/components/schemas/MessageState'
+        stop_reason:
+          $ref: '#/components/schemas/StopReason'
+        content:
+          description: Legacy v1/v2 payload mirror. v3-only readers ignore.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+          description: |
+            Server's last-write timestamp. Bumped on every successful
+            PATCH (streaming or terminal). Equals `created_at` after
+            the initial POST; diverges as subsequent PATCHes accumulate
+            (per-token streaming snapshots and the final terminal
+            transition). Use this for SSE replay checkpoints and
+            client-side freshness decisions.
+      x-beeos-status: ga
+
+    CreateMessageRequest:
+      type: object
+      description: |
+        Request body for `POST /api/v3/conversations/{cid}/messages`.
+        Set `state=streaming` (default) for opening a streaming
+        envelope that subsequent PATCHes will mutate; set
+        `state=completed` for a single-shot terminal message.
+
+        Idempotency: the `Idempotency-Key` header IS the message_id.
+        Strongly recommend setting a stable client-generated UUID.
+      required: [type]
+      properties:
+        type:
+          type: string
+          description: Message intent. Defaults to `agent_reply` in the SDK.
+        reply_to:
+          type: string
+        body:
+          type: string
+        parts:
+          type: array
+          items:
+            $ref: '#/components/schemas/Part'
+        state:
+          $ref: '#/components/schemas/MessageState'
+        stop_reason:
+          $ref: '#/components/schemas/StopReason'
+        require_subscriber:
+          type: boolean
+          description: When true, the POST fails with 410 no_subscriber if no peer is online.
+      x-beeos-status: ga
+
+    PatchMessageRequest:
+      type: object
+      description: |
+        Request body for `PATCH /api/v3/conversations/{cid}/messages/{mid}`.
+        All fields are optional; the wire is SNAPSHOT-based — each
+        PATCH carries the full cumulative body + parts the server
+        should persist (NOT an indexed delta).
+
+        Returns `410 Gone` (`code = message_terminal`) if the row is
+        already in a terminal state.
+      properties:
+        body:
+          type: string
+        parts:
+          type: array
+          items:
+            $ref: '#/components/schemas/Part'
+        state:
+          $ref: '#/components/schemas/MessageState'
+        stop_reason:
+          $ref: '#/components/schemas/StopReason'
+      x-beeos-status: ga
+
     # -------- Error envelope --------
     # P0-D: every 4xx / 5xx response references this schema via the
     # reusable components.responses block below. The canonical
@@ -2777,10 +3431,26 @@ components:
         message:
           type: string
           description: Human-readable explanation; presentation-only, never key on this.
-        details:
+        request_id:
+          type: string
+          description: |
+            Per-request correlation id propagated end-to-end (also returned
+            in the `X-Request-Id` response header). Include this value when
+            reporting errors so the server-side trace can be located.
+        param:
+          type: string
+          description: |
+            Field path of the offending parameter for validation-style
+            errors (`code` in `missing_param` / `invalid_param`). Empty for
+            errors that don't reference a specific field.
+        metadata:
           type: object
-          additionalProperties: true
-          description: Optional structured payload for validation errors etc.
+          additionalProperties:
+            type: string
+          description: |
+            Optional structured key-value hints for the client (retry
+            strategy, related resource ids, etc.). Always a string-to-string
+            map.
     ErrorResponse:
       type: object
       required: [success, error]
@@ -2807,7 +3477,7 @@ components:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
     Forbidden:
-      description: Caller doesn't own the resource (or scope check failed). `code` is `forbidden`.
+      description: Caller doesn't own the resource. `code` is `forbidden`.
       content:
         application/json:
           schema:
@@ -2819,7 +3489,14 @@ components:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
     Conflict:
-      description: Resource is in a state that doesn't allow this operation — agent busy / refused, task terminal, duplicate idempotency key on a changed payload. `code` is `conflict`.
+      description: |
+        Resource is in a state that doesn't allow this operation. `code` is `conflict`.
+
+        Two distinct cases for agent refusal:
+        - **Legacy pre-output refused** (e.g. `agent_busy` from the agent runtime BEFORE any output is streamed): the gateway maps this to **409 Conflict** with `code = task_rejected`. No task body is produced.
+        - **v3 in-band refused** (agent started a streaming reply, then transitioned the v3 envelope to `state = refused` with a refusal `body`): the invoke endpoint returns **200 OK** with `is_error = true` and the body carrying the refusal text. The terminal `stop_reason = refused` lets clients distinguish this from a successful completion. **NOT** a 409.
+
+        Other 409 triggers: task already terminal, duplicate idempotency key on a changed payload.
       content:
         application/json:
           schema:

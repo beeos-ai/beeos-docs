@@ -24,9 +24,11 @@ description: 三个协议接入面的 SSE 流式 —— 连接规则、since cur
 | `GET /api/v1/agents/{agentId}/tasks/{taskId}/events` | 异步任务 —— 观察进度、暂停状态、最终终止回复 | 是 —— 终止信封或上游 EOF 触发关闭 | 命名 `message` 装内容、`end` 装关闭 |
 | `GET /api/v1/agents/{agentId}/conversations/{convId}/events` | 多轮对话 —— 实时观察每一回合 | 否 —— 多回合保持开放，直到 `DELETE` 或客户端断开 | 命名 `message` 装内容、`end` 装关闭 |
 
-三者都要 `Authorization: Bearer <JWT or oag_...>`。所需 scope 是
-`tasks:write`（invoke）和 `tasks:read`（两个 GET 流）。见
-[认证 § scope](/zh/authentication#作用域scope)。
+三者都要 `Authorization: Bearer <JWT or oag_...>`。`oag_` key 是
+user-scoped 的 —— 任何 key 只要 owner 拥有底层任务 / 会话，就能
+invoke 或开流。鉴权模型见
+[认证与 API Key § 鉴权](/zh/authentication#鉴权)（v1.1.0 起 per-route
+scope 已下线）。
 
 ---
 
@@ -113,12 +115,25 @@ JSON 信封 schema 共享（`SSEStreamMessage`）：
 | 字段 | 类型 | 备注 |
 |---|---|---|
 | `type` | string | 例如 `chat_message`、`agent_message_chunk`、`agent_reply`、`agent_reply_error`、`agent.input_required` |
-| `message_id` | string | UUID；每条消息在该通道唯一 |
-| `offset` | int64 | 通道日志中的单调位置（重连时作为 `since`） |
+| `state` | string | **Envelope v3** 生命周期标记：`streaming`、`completed`、`failed`、`cancelled`。单次类型（如 `chat_message`）一开始就是 `completed`；`agent_reply` 会以一组 `state="streaming"` 帧落地，最后以唯一一帧 `state="completed"` 收口。 |
+| `stop_reason` | string | 仅在 `agent_reply` 的终态帧（`completed`/`failed`）上设：`end_turn`、`error`、`cancelled`、`length`。 |
+| `body` | string | **Envelope v3 累积文本快照**，用于 `agent_reply` 的流式渲染。每次 PATCH 都写入截止当前为止的**完整**正文 —— 客户端**应**直接渲染 `body` 并**忽略**遗留的 `agent_message_chunk`。 |
+| `parts` | array | **Envelope v3 结构化 parts**（工具调用、附件等），与 `body` 同样按累积快照语义。 |
+| `message_id` | string | UUID；每条消息在该通道唯一。**一条 v3 `agent_reply` = 一个 `message_id`，跨所有 streaming 帧 + 终态帧。** |
+| `offset` | int64 | 通道日志中的单调位置（重连时作为 `since`）。同一 `message_id` 的多帧 offset 不同。 |
 | `in_reply_to` | string | 它回复的请求的 message_id（在 agent_reply / chunks 上设） |
 | `publisher_id` | string | `user:<uid>` 或 `agent:<id>` —— 谁发的 |
-| `payload` | any | 按 type 的 body（如 `chat_message` 为 `{ "text": "..." }`） |
+| `payload` | any | 按 type 的 body（如 `chat_message` 为 `{ "text": "..." }`）。v3 `agent_reply` 优先读顶层 `body` 而非 `payload.text`。 |
 | `created_at` | RFC3339 string | 服务端时间戳 |
+
+<Note>
+**Envelope v3（ADR-0022 + ADR-0023，v1.1 GA）**：Agent 回复采用"单行原位
+变更"模型 —— 同一 `message_id` 跨 N 个 streaming 帧（每帧都是 `body` /
+`parts` 的累积快照），最后恰好一帧 `state="completed"`（或
+`failed` / `cancelled`）作为终态。`beeos-claw` 不再写 per-token 的
+`agent_reply_delta` 行，新建通道上根本不会出现该类型；为读取**历史**
+通道，`GET /messages?include_deltas=true` 仍然有效。
+</Note>
 
 ### 终止 `event: end`
 
@@ -173,10 +188,27 @@ query 参数。语义：
 - `since=N`（N > 0）—— 回放所有 offset `> N` 的事件，然后继续流式。
   在**重连**时用：传入最后观察到的 `frame.offset`，避免重复或漏掉。
 
+<Warning>
+**Offset 严格单调但不保证连续**（ADR-0022 §1.2）。Producer 端写存储
+失败可能留下小空洞 —— 例如可能观察到 `… 40, 42, …`，其中 `41` 缺失。
+总是用 `offset > since` 做续传不变量；**不要**假定
+`offset == since + 1`。形如 `if (newOffset !== lastOffset + 1) throw`
+的代码是 bug。
+</Warning>
+
 <Note>
 同样的 cursor 还充当非流式 `GET /messages` 端点上的分页 key：
 `?since=<lastOffset>&limit=200` 返回 offset `> lastOffset` 的最多 200
 frame。流式 + 轮询混用没问题。
+
+**OpenAPI v1.1（ADR-0022 + ADR-0023）**：`GET /messages` **默认过滤掉**
+临时流式 chunk（`agent_reply_delta`、`agent_thought_chunk`、
+`agent_message_chunk`）。v3 envelope（ADR-0023）落地后，live 的
+`agent_reply` 行会在 `body` 里直接携带完整累积文本，**不再**需要
+`include_deltas=true` 来重建文本；**新**的 `beeos-claw` 通道根本不
+会写 `agent_reply_delta` 行。该 flag 仅为读取**历史**通道（pre-v3）
+保留。`latest_offset` 仍然反映完整的服务端最大值，所以
+`since=<latest_offset>` 不管怎样都能续到正确位置。
 </Note>
 
 ### 边界情况
@@ -191,6 +223,27 @@ frame。流式 + 轮询混用没问题。
    有不同的 `message_id`。
 3. **同一客户端对同一任务开两个 SSE 连接。** 两者都拿到完整实时流。
    Message Service 是扇出 —— 网关上没有"你已订阅"的语义。
+4. **重连时收到 `backfill_truncated` 帧**（自 OpenAPI v1.1 /
+   ADR-0022）。当通道闲置足够久使临时 stream 在你的 `Last-Event-ID`
+   之前老化失踪时，服务端会在正常 `replay_complete` 之前发一个
+   `backfill_truncated` 事件。形状：
+   ```
+   event: backfill_truncated
+   data: { "oldest_redis_offset": 4711, "since": 3120,
+           "hint": "ephemeral chunks before oldest_redis_offset have aged out of the Redis stream" }
+   ```
+   恢复策略，按保真度从高到低：
+   * **重放幸存的 durable 行** —— 拉
+     `GET /messages?since=<since>`（仅 durable 行）；你会丢掉逐 token
+     chunk，但能恢复终态回复 / 非 chunk 状态。服务端仅对临时类型发此
+     帧，所以 `chat_message` / `agent_reply` / `agent.input_required`
+     等仍然在持久化日志里。
+   * **快进** —— 直接用 `since=replay_complete.latest_offset` 续传，
+     接受中间 token chunk 已经丢失。官方 SDK 默认就这么做，因为
+     chunk 是渲染 UX 不是 system-of-record 数据。
+
+   不识别 `backfill_truncated` 的 SDK **应当**把该帧当作 no-op
+   消息处理 —— 它是纯信息性的，不改变协议的其它部分。
 
 ---
 

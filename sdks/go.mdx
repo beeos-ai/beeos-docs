@@ -129,7 +129,7 @@ reply, _, err := client.AgentsAPI.InvokeAgent(ctx, "agent_abc123").
 if err != nil {
     // see "Error handling" below
 }
-fmt.Println("Reply:", reply.GetData().GetReply())
+fmt.Println("Reply:", reply.GetData().GetText())
 fmt.Println("Channel:", reply.GetData().GetContextId())
 ```
 
@@ -193,7 +193,7 @@ taskID := created.GetData().GetTaskId()
 for {
     task, _, _ := client.TasksAPI.GetTask(ctx, "agent_abc123", taskID).Execute()
     status := task.GetData().GetStatus()
-    if status == "completed" || status == "failed" {
+    if status == "succeeded" || status == "failed" {
         break
     }
     time.Sleep(2 * time.Second)
@@ -253,7 +253,6 @@ msgs, _, _ := client.ConversationsAPI.ListConversationMessages(ctx,
 presignReq := beeos.PresignUploadRequest{
     Filename:    "report.pdf",
     ContentType: "application/pdf",
-    SizeBytes:   4_582_910,
 }
 presigned, _, _ := client.FilesAPI.PresignUpload(ctx).
     PresignUploadRequest(presignReq).Execute()

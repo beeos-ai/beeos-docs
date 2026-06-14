@@ -8,7 +8,7 @@
 openapi: 3.1.0
 info:
   title: BeeOS OpenAPI（用户契约）
-  version: 1.0.0
+  version: 1.1.0
   description: |
     **BeeOS OpenAPI** 用户契约。唯一实现者是
     **[`services/openapi-gateway`](../services/openapi-gateway)**（`openapi-gw`，
@@ -24,6 +24,65 @@ info:
     的 A2A JSON-RPC、MCP）在
     [beeos-agent-integration-v1.yaml](beeos-agent-integration-v1.yaml)
     里，由 A2A Gateway / MCP Gateway 托管 —— 不在 `openapi-gateway`。
+
+    ## Changelog
+
+    ### 1.1.0（ADR-0022 — 双层消息存储）
+
+    对依赖完整流式 chunk 持久化日志回放的客户端是 BREAKING：
+
+    * `GET /api/v1/agents/{agentId}/conversations/{convId}/messages`
+      和 `GET /api/v1/agents/{agentId}/tasks/{taskId}/messages`
+      **默认会过滤掉**临时流式 chunk（`agent_reply_delta`、
+      `agent_thought_chunk`、`agent_message_chunk`）。加
+      **`?include_deltas=true`** 可恢复旧行为。
+    * `latest_offset` 仍然反映服务端真实最大 offset（包含被过滤的行），
+      `since=` / cursor 分页不受影响。
+    * SSE `/events` 不受影响 —— 实时消费者照常收到所有信封。
+    * 向后兼容的恢复路径：SSE `/events` 在客户端用 `Last-Event-ID` 指
+      向已老化失踪的临时 chunk 时，可能新增 **`backfill_truncated`**
+      事件帧。未识别此帧的旧 SDK 应当将其视为提示，跳过中间临时 chunk
+      改用 `latest_offset` 续传。
+    * **契约澄清**：SSE 事件 `offset` 严格按通道单调递增，但**不保证
+      连续**（ADR-0022 §1.2）。Producer 端写存储失败会留下小空洞；
+      客户端必须用 `offset > since` 续传，**不能**用 `offset == since + 1`。
+
+    对依赖 `oag_` API Key scope 体系的客户端是 BREAKING：
+
+    * 此前 37 个路由强制的 scope 列表（`agents:read`、`agents:write`、
+      `tasks:read`、`tasks:write`、`files:read`、`files:write`、
+      `instances:read`、`instances:write`，以及通配符 `admin:*`）
+      **整体下线**。原来按 scope 拦截的路由现在仅由 owner-ACL 守门 ——
+      `oag_` User API Key 自动具备其所属 user 的全部资源权限。
+    * `403 insufficient_scope` 错误码不再下发。原本按此分支处理的
+      客户端应当合并到通用的 403 / `forbidden` 处理逻辑。
+    * 之前显式给 `createAPIKey` 传 `scopes` 的 SDK 调用应删除该参数。
+      Web / Desktop UI 也不再渲染现有 key 的 scope badge。
+    * 已签发的 `oag_` key 透明继续可用 —— owner_id 绑定不变，
+      不需要重建任何 key。
+
+    对读取 `GET /api/v1/providers` 返回的 `capabilities` 对象的客户端是 BREAKING：
+
+    * `capabilities` 中 8 个字段里有 7 个改成 **camelCase**（`longRunning`、
+      `browserUse`、`codeExec`、`fileSystem`、`customImage`、
+      `maxDurationSec`、`costModel`），与本 OpenAPI 契约对齐。
+      之前的 wire 实际吐 **snake_case**（`long_running`、`browser_use` …），
+      因为服务端 DTO 把 `capabilities` 直接绑到 protobuf 消息
+      （`*pb.ProviderCapabilities`），proto 自动生成的 `json` tag 是 snake_case。
+      由本 spec 生成的 SDK 客户端（`@beeos-ai/sdk`、`github.com/beeos-ai/sdk-go`）
+      **本来就读不到任何** `capabilities` 字段 —— 生成器生成的 camelCase
+      属性名从未对上服务端实际发送的 snake_case。手写的 HTTP 客户端
+      若是按 snake_case 直接访问字段必须迁移；SDK 调用方反而不用改代码、
+      第一次能正常读到 capabilities 字段集。
+    * 注：`device` 一直是单词字段，wire 名（`device`）从未变更，
+      仅其余 7 个多词字段受重命名影响。
+    * `meta`、`id`、`name`、`description`、`version` 不变。
+    * 新增 drift-guard（`internal/dto/contract_test.go`）锁住 server DTO
+      和 spec 的字段名，防止两边再次悄悄漂移。
+
+    ### 1.0.0
+
+    初始 OpenAPI 契约（ADR-001）。
 servers:
   - url: https://openapi.beeos.ai
     description: 生产环境
@@ -71,7 +130,16 @@ paths:
       summary: 列出可用 Provider（目录）
       responses:
         "200":
-          description: 标准 `{ success, data }` 信封；`data` 为 Provider 目录项列表。
+          description: |
+            标准 `{ success, data }` 信封；`data` 是
+            [`ProviderCatalogItem`](#/components/schemas/ProviderCatalogItem)
+            数组，每项含一个
+            [`meta`](#/components/schemas/ProviderMeta)
+            块（`id`、`name`、`description`、`version`）和一个
+            [`capabilities`](#/components/schemas/ProviderCapabilities)
+            块（camelCase 布尔字段加 `maxDurationSec` / `costModel`）。
+            Mintlify 默认把外层渲染成 `object[]`，展开 "Show child attributes"
+            就能看到完整字段树 —— item 本身是强类型的。
           content:
             application/json:
               schema:
@@ -559,7 +627,7 @@ paths:
                   value:
                     success: true
                     data:
-                      text: "I can't access that file — please grant read scope."
+                      text: "I can't access that file — please re-upload it or check that you own it."
                       context_id: "ch-uuid"
                       is_error: true
             text/event-stream:
@@ -615,7 +683,8 @@ paths:
                     success: true
                     data:
                       task_id: "ch-task-uuid"
-                      context_id: "ch-task-uuid"
+                      agent_id: "agent-uuid"
+                      status: "queued"
                       created_at: "2026-05-14T18:00:00Z"
         "400": { $ref: '#/components/responses/BadRequest' }
         "401": { $ref: '#/components/responses/Unauthorized' }
@@ -766,35 +835,32 @@ paths:
                     success: true
                     data:
                       task_id: "ch-task-uuid"
-                      context_id: "ch-task-uuid"
                       agent_id: "agent_abc123"
                       status: "running"
                       created_at: "2026-05-14T18:00:00Z"
-                      updated_at: "2026-05-14T18:00:42Z"
+                      started_at: "2026-05-14T18:00:42Z"
                 succeeded:
                   summary: 任务终止 —— 成功
                   value:
                     success: true
                     data:
                       task_id: "ch-task-uuid"
-                      context_id: "ch-task-uuid"
                       agent_id: "agent_abc123"
                       status: "succeeded"
                       result: "Indexed 312 pages."
                       created_at: "2026-05-14T18:00:00Z"
-                      updated_at: "2026-05-14T18:05:00Z"
+                      completed_at: "2026-05-14T18:05:00Z"
                 failed:
                   summary: 任务终止 —— 失败
                   value:
                     success: true
                     data:
                       task_id: "ch-task-uuid"
-                      context_id: "ch-task-uuid"
                       agent_id: "agent_abc123"
                       status: "failed"
                       error: "missing credentials for upstream Drive API"
                       created_at: "2026-05-14T18:00:00Z"
-                      updated_at: "2026-05-14T18:00:09Z"
+                      completed_at: "2026-05-14T18:00:09Z"
         "401": { $ref: '#/components/responses/Unauthorized' }
         "403": { $ref: '#/components/responses/Forbidden' }
         "404": { $ref: '#/components/responses/NotFound' }
@@ -816,11 +882,17 @@ paths:
       tags: [tasks]
       summary: 列出任务的持久化消息日志（按 offset 分页）。
       description: |
-        返回任务的通道消息日志 —— `chat_message`、`agent_reply_delta`、
-        `agent_reply`、`chat_cancel`、`user.continue` 等。与
-        `GET /conversations/{convId}/messages` wire 形状一致，因为任务
-        的 `task_id` **就是**底层 conversation_id（任务只是带 deadline
-        的 single-shot 通道）。
+        返回任务的通道消息日志 —— `chat_message`、`agent_reply`、
+        `chat_cancel`、`user.continue` 等。**默认会过滤掉**临时流式
+        chunk（`agent_reply_delta`、`agent_thought_chunk`、
+        `agent_message_chunk`）；若需要这些 token 级 chunk，请显式传
+        `include_deltas=true`。`latest_offset` 始终反映服务端真实的
+        最大 offset，所以无论是否打开 `include_deltas`，下一轮分页用
+        `since=<latest_offset>` 都不会丢消息。
+
+        与 `GET /conversations/{convId}/messages` wire 形状一致，因为
+        任务的 `task_id` **就是**底层 conversation_id（任务只是带
+        deadline 的 single-shot 通道）。
 
         鉴权路径**故意**比 `getTask` 便宜（一次 MS `GetConversation` +
         元数据检查、无完整消息日志扫描），让分页读保持 O(1)-per-page
@@ -837,6 +909,15 @@ paths:
           in: query
           required: false
           schema: { type: integer, format: int32, minimum: 1, maximum: 500 }
+        - name: include_deltas
+          in: query
+          required: false
+          description: |
+            置 `true` 时返回中包含临时流式 chunk（`agent_reply_delta`、
+            `agent_thought_chunk`、`agent_message_chunk`），默认
+            `false`。接受 `true|1|yes`（大小写不敏感），其他值按
+            `false` 处理。
+          schema: { type: boolean, default: false }
       responses:
         "200":
           description: 消息分页。
@@ -876,9 +957,13 @@ paths:
           * `<offset>`  —— 严格在给定 offset 之后 resume。客户端收到的
             第一个事件 `offset` > since。
 
-          wire 契约保证发出的事件 `offset` 字段按通道单调递增，所以
-          只要通道消息日志保留覆盖了缺口（MS 保证 last-touch 后 24h）、
-          复用最近一次 offset 作 `since` 就不可能产生缺口。
+          wire 契约保证发出的事件 `offset` 字段**严格按通道单调递增**，
+          但**不保证连续**（ADR-0022 §1.2）。Producer 端写存储失败可能
+          留下小空洞 —— 例如可能观察到 `… 40, 42, …`，其中 `41` 缺失。
+          客户端**必须**用 `offset > since` 做续传不变量，**不能**用
+          `offset == since + 1`。按 ADR-0022，保留窗口为 last-touch 后
+          24h（持久化行）和 24h 或 10 000 条（临时 chunk 流，取更紧的
+          一个）；超出该窗口 SSE 会在续传前先回一帧 `backfill_truncated`。
         schema: { type: integer, format: int64, minimum: 0 }
     get:
       operationId: streamTaskEvents
@@ -1024,6 +1109,17 @@ paths:
       operationId: listConversations
       tags: [conversations]
       summary: 列出调用方在此智能体上的对话。
+      description: |
+        仅返回通过 `POST /agents/{agentId}/conversations` 显式创建的
+        长生命周期对话通道。**同步一次性的 `POST /agents/{agentId}/invoke`
+        调用不会出现在此列表中** —— 它们创建的是短生命周期的
+        `protocol=openapi` 任务通道，需到 `GET /agents/{agentId}/tasks`
+        或 `GET /tasks` 下查询。混在一起会让「长对话」与「单次 RPC」
+        的语义糊在一起，因此故意分开，保证每种通道的列表语义稳定。
+
+        如果在调用 `invoke` 之后立即 `GET /conversations` 返回空列表，
+        属于预期行为：请调用 `GET /tasks` 查询任务通道记录，或者
+        先用 `POST /conversations` 显式创建一个对话再往里面写消息。
       parameters:
         - name: state
           in: query
@@ -1145,6 +1241,19 @@ paths:
       operationId: listConversationMessages
       tags: [conversations]
       summary: 列出对话里的消息（按 offset 分页）。
+      description: |
+        返回对话的持久化日志。**默认会过滤掉**临时流式 chunk
+        （`agent_reply_delta`、`agent_thought_chunk`、
+        `agent_message_chunk`），只返回最终化的对话轮次和工具消息，
+        前端可以渲染干净的对话日志，不会被 token 级 chunk 占爆分页。
+
+        若需要这些 token 级 chunk，请显式传 `include_deltas=true`
+        （只在某一轮还在流式输出时才会出现）。注意 `latest_offset`
+        **始终**反映服务端真实的最大 offset，无论 `include_deltas`
+        取值如何，下一轮分页用 `since=<latest_offset>` 都是安全的。
+
+        SSE `/events` 不受此过滤器影响 —— 实时消费者照常收到所有信封
+        包括 deltas。
       parameters:
         - name: since
           in: query
@@ -1157,6 +1266,15 @@ paths:
           in: query
           required: false
           schema: { type: integer, format: int32, minimum: 1, maximum: 200 }
+        - name: include_deltas
+          in: query
+          required: false
+          description: |
+            置 `true` 时返回中包含临时流式 chunk（`agent_reply_delta`、
+            `agent_thought_chunk`、`agent_message_chunk`），默认
+            `false`。接受 `true|1|yes`（大小写不敏感），其他值按
+            `false` 处理。
+          schema: { type: boolean, default: false }
       responses:
         "200":
           description: 消息分页。
@@ -1429,25 +1547,16 @@ components:
         **`oag_`** User API Key。两者都由 `openapi-gateway` 对 Auth
         service 验证。
 
-        ## Scope（仅 `oag_` User API Key）
+        JWT 与 API Key 都是 **user-scoped**：每个 key（以及每个 JWT）
+        绑定到唯一 owner，所有路由都自动放开该 owner 名下的全部资源。
+        跨租户访问由 handler 内的 owner-ACL 拦截 —— API 表面**没有**
+        per-route scope 词汇。
 
-        JWT 认证的调用方绕过 scope 检查（用户在 dashboard 能做的事
-        在这里都能做）。API key 调用方每条路由**至少**要带列出的
-        scope 之一：
-
-        | Scope                | 路由 |
-        |----------------------|------|
-        | `agents:read`        | `GET /agents`、`GET /agents/{agentId}` |
-        | `agents:write`       | `PATCH /agents/{agentId}` |
-        | `tasks:read`         | `GET /agents/{agentId}/tasks*`、`GET /agents/{agentId}/conversations*` |
-        | `tasks:write`        | `POST /agents/{agentId}/invoke`、全部 `POST /agents/{agentId}/tasks*` 和 `POST /agents/{agentId}/conversations*`、`DELETE` conversations、webhook CRUD |
-        | `files:read`         | `GET /files/{id}` |
-        | `files:write`        | `POST /files/presign-upload` |
-        | `instances:read`     | `GET /providers`、`GET /deploy/*`、`GET /instances*` |
-        | `instances:write`    | 全部 `POST`/`DELETE` `/instances*` |
-
-        scope 缺失或不足返回 `403 insufficient_scope`，可接受 scope
-        集合以逗号分隔回显在 `error.metadata.required_scope`（任一即可）。
+        > **v1.1.0 已移除：** 历史 scope 词汇（`agents:*` / `tasks:*` /
+        > `files:*` / `instances:*`）以及 `403 insufficient_scope`
+        > 错误码已下线。已签发的 `oag_` key 自动获得 owner 全权限，
+        > **无需**重建。之前显式传 `scopes` 调用 `createAPIKey` 的 SDK
+        > 客户端可以直接删除该参数。详见文末 changelog 迁移说明。
   schemas:
     # -------- 信封辅助 --------
     SuccessEnvelope:
@@ -1469,6 +1578,7 @@ components:
     # -------- 目录 --------
     ProviderMeta:
       type: object
+      title: ProviderMeta
       required: [id, name, description, version]
       properties:
         id: { type: string }
@@ -1477,6 +1587,7 @@ components:
         version: { type: string }
     ProviderCapabilities:
       type: object
+      title: ProviderCapabilities
       properties:
         longRunning: { type: boolean }
         browserUse: { type: boolean }
@@ -1488,6 +1599,7 @@ components:
         device: { type: boolean }
     ProviderCatalogItem:
       type: object
+      title: ProviderCatalogItem
       required: [meta, capabilities]
       properties:
         meta:
@@ -1506,6 +1618,7 @@ components:
                 $ref: '#/components/schemas/ProviderCatalogItem'
     DeployRegionItem:
       type: object
+      title: DeployRegionItem
       required: [id, name, available]
       properties:
         id: { type: string }
@@ -1523,6 +1636,7 @@ components:
                 $ref: '#/components/schemas/DeployRegionItem'
     DeployModelItem:
       type: object
+      title: DeployModelItem
       required: [id, name, tier, reasoning]
       properties:
         id: { type: string }
@@ -2023,7 +2137,10 @@ components:
         offset:
           type: integer
           format: int64
-          description: SSE resume cursor 用的单调 per-channel offset。
+          description: |
+            SSE resume cursor 用的**严格单调** per-channel offset。
+            **不保证连续** —— Producer 端写存储失败会留下小空洞
+            （ADR-0022 §1.2）。客户端只用 `offset > since` 续传。
         in_reply_to:
           type: string
         publisher_id:
@@ -2033,6 +2150,16 @@ components:
         created_at:
           type: string
           format: date-time
+        updated_at:
+          type: string
+          format: date-time
+          description: |
+            该 frame 的服务端最后一次写入时间戳（RFC3339 纳秒精度，
+            UTC）。在 `message.created` 首帧上等于 `created_at`，
+            之后每次产生 `message.updated` 帧的成功 PATCH 都会 bump。
+            SSE 重放客户端**应**用它 ACK 进度 checkpoint；只有
+            migration 006 之前的 legacy 行才省略。
+          x-beeos-status: ga
 
     TaskSSEEnd:
       type: object
@@ -2285,7 +2412,10 @@ components:
       description: |
         Server-Sent Events 流。
 
-        per-event JSON payload 格式：
+        per-event JSON payload 格式（v3 envelope 字段 `body` /
+        `state` / `stop_reason` / `updated_at` 当底层行经 v3 路径
+        写入时有值；旧 v1 / v2 行缺这些字段——消费者请回退到
+        `payload.text` + `type` 判断终态）：
         ```
         event: message
         data: {
@@ -2295,7 +2425,23 @@ components:
           "in_reply_to": "msg-source-uuid",
           "publisher_id": "agent-identity",
           "payload": { ... },              // 不透明 per-type
-          "created_at": "2026-05-14T18:00:00.000Z"
+          "body": "Hello, world",          // v3 累计文本（可选）
+          "state": "streaming",            // v3 生命周期（可选）
+          "stop_reason": "",               // v3 终态原因（仅在 state != streaming 时有值）
+          "created_at": "2026-05-14T18:00:00.000Z",
+          "updated_at": "2026-05-14T18:00:00.123Z"
+        }
+        ```
+
+        Backfill 截断帧——服务端把回放窗口截断时**只**发一次
+        （见 `since=<offset>` 语义）。客户端看到这帧后应从
+        `latest_offset` 继续：
+        ```
+        event: backfill_truncated
+        data: {
+          "since": 100,
+          "latest_offset": 1500,
+          "dropped_count": 1400
         }
         ```
 
@@ -2454,6 +2600,58 @@ components:
         created_at:
           type: string
           format: date-time
+        # v3 envelope（ADR-0022 + ADR-0023）。Cumulative-snapshot 语义：
+        # 每次 agent PATCH 都把 `body` 重写为当前所有 chunk 的累计拼接，
+        # 等行进入 state="completed" 时 `body` 已经是完整 agent 回复。
+        # 旧 v1 / v2 行该字段缺失；消费者在 `body == ""` 时回退到
+        # `payload.text`。
+        body:
+          type: string
+          description: |
+            累计 agent 回复文本。state=="streaming" 期间被 PATCH 原地
+            mutation；状态转换到终态值（`completed` / `failed` /
+            `refused` / `cancelled`）时冻结。
+          x-beeos-status: ga
+        # v3 状态机字段 —— $ref 到本文件 `components.schemas` 中的
+        # `MessageState` / `StopReason`。Plan 2.5（v3 envelope 二轮 review）
+        # 把内联枚举改为引用，避免与英文 canonical spec 漂移。
+        state:
+          allOf:
+            - $ref: '#/components/schemas/MessageState'
+          description: |
+            Envelope 生命周期。旧 v1 / v2 行该字段缺失；v3 消费者应把
+            缺失视为 `completed`。
+          x-beeos-status: ga
+        stop_reason:
+          allOf:
+            - $ref: '#/components/schemas/StopReason'
+          description: |
+            状态进入非 streaming 终态时的原因。只有 state ∈ {completed,
+            failed, refused, cancelled} 时才有意义。
+          x-beeos-status: ga
+        parts:
+          type: array
+          description: |
+            富回复的结构化 part 列表（thinking / tool_use / tool_result /
+            file / source / custom）。纯文本回复时为空 / 缺失 —— 此时
+            消费者只渲染 `body`。Discriminated union；完整 part 形态
+            见英文 spec 的 `Part` schema（中文版未单独翻译）。
+          items:
+            type: object
+            additionalProperties: true
+          x-beeos-status: ga
+        updated_at:
+          type: string
+          format: date-time
+          description: |
+            服务端最后一次写入时间戳（RFC3339 纳秒精度，UTC）。
+            初次 POST 后等于 `created_at`，之后每次成功 PATCH
+            （streaming snapshot 更新或终态切换）都会 bump。
+            终态行不可变，所以 `state` 离开 `streaming` 之后
+            `updated_at` 冻结。SSE 重放客户端**应**用它 ACK 进度
+            checkpoint；REST 客户端**应**用它区分 mid-stream
+            进度 vs 仅 `created_at` 的首读。
+          x-beeos-status: ga
 
     ListMessagesResponse:
       allOf:
@@ -2684,6 +2882,49 @@ components:
           type: object
           additionalProperties: true
           description: 校验错误等可选结构化 payload。
+    MessageState:
+      type: string
+      description: |
+        v3 消息 envelope 的生命周期状态。`streaming` 是唯一的非终态，
+        其余值一旦写入即不可变更（PATCH 会返回 `410 Gone`，`code` 为
+        `message_terminal`）。
+
+        合法迁移：
+          - `streaming -> completed`（正常 LLM / agent 完成）
+          - `streaming -> failed`（传输 / 模型错误）
+          - `streaming -> refused`（内容过滤 / agent 拒答）
+          - `streaming -> cancelled`（user_stop / 超时）
+      enum:
+        - streaming
+        - completed
+        - failed
+        - refused
+        - cancelled
+      x-beeos-status: ga
+
+    StopReason:
+      type: string
+      description: |
+        进入终态（非 streaming）时的原因。借用 Anthropic 词汇
+        （`end_turn` / `max_tokens` / `tool_use`），并加入平台级终止值。
+        与英文 spec 的 `StopReason` 一一对应。
+
+        `agent_lost` 由 Message Service 的 stale-streaming reaper 设置：当
+        agent 崩溃 / 断开但未 finalize v3 envelope 时，达到配置的 idle
+        阈值后由 reaper 把该行从 `state=streaming` 转为 `state=failed`，
+        让等待 `/wait` 与 SSE 的调用方收到终态帧而不是无限挂起。
+      enum:
+        - end_turn
+        - max_tokens
+        - tool_use
+        - user_stop
+        - timeout
+        - error
+        - refused
+        - content_filter
+        - agent_lost
+      x-beeos-status: ga
+
     ErrorResponse:
       type: object
       required: [success, error]
@@ -2710,7 +2951,7 @@ components:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
     Forbidden:
-      description: 调用方不拥有该资源（或 scope 检查失败）。`code` 是 `forbidden`。
+      description: 调用方不拥有该资源。`code` 是 `forbidden`。
       content:
         application/json:
           schema:
@@ -2722,7 +2963,14 @@ components:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
     Conflict:
-      description: 资源处在不允许此操作的状态 —— 智能体忙 / 拒接、task 终止、改了 payload 后的重复幂等 key。`code` 是 `conflict`。
+      description: |
+        资源处于不允许此操作的状态。`code` 是 `conflict`。
+
+        智能体拒答的两种情况要区分清楚：
+        - **Legacy 出文本前拒接**（智能体运行时在产生任何 output **之前**回 `agent_busy`）：网关映射为 **409 Conflict**，`code = task_rejected`。task 没有 body。
+        - **v3 in-band refused**（智能体已开始流式回复，随后把 v3 envelope 切到 `state = refused` 并写入拒答 `body`）：invoke 接口返回 **200 OK**、`is_error = true`，body 是拒答文案。终态 `stop_reason = refused` 让客户端区分这种情况和正常完成。**不是** 409。
+
+        其他 409 触发条件：task 已终态、idempotency key 重复但 payload 变了。
       content:
         application/json:
           schema:

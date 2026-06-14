@@ -29,8 +29,8 @@ contract version follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 | Bump | Triggered by |
 |---|---|
-| **MAJOR** | Removing routes, renaming required fields, changing the shape of an existing response, changing auth semantics (e.g. scope a previously-unscoped endpoint), changing error `code` semantics. |
-| **MINOR** | Adding new routes, adding optional request fields, adding optional response fields, adding new `code` values, adding scopes (existing scopes keep working). |
+| **MAJOR** | Removing routes, renaming required fields, changing the shape of an existing response, changing auth semantics (e.g. tightening the ownership model), changing error `code` semantics. |
+| **MINOR** | Adding new routes, adding optional request fields, adding optional response fields, adding new `code` values. |
 | **PATCH** | Documentation, examples, OpenAPI `description` polish, generator config tweaks that don't change emitted code. |
 
 The TypeScript and Go SDK packages share **one** version line.
@@ -81,18 +81,104 @@ get copied on top of the generator output (README, LICENSE).
 
 ## [Unreleased]
 
+### Added (Message Envelope v3 — `MessageDTO` alignment)
+
+- **`MessageDTO` now references canonical v3 unions.** The
+  `state`, `stop_reason`, and `parts` fields previously inlined
+  their enums / array-of-object schema in `MessageDTO` only.
+  They now `$ref` the platform-wide `MessageState`, `StopReason`,
+  and `Part` schemas — the same union shapes already exposed on
+  `TaskSSEMessage` and the streaming envelopes. **Generated
+  SDKs gain typed `MessageState` / `StopReason` / `Part`
+  imports automatically**; raw-JSON callers see no wire change
+  (the union values were already the same string set on the
+  wire — this is a contract-level dedupe).
+- **`MessageDTO.updated_at` (RFC3339Nano, UTC).** Server's
+  last-PATCH timestamp on v3 envelopes. Emitted only when
+  distinct from `created_at` — fresh POST replies omit it,
+  streaming envelopes mutate it on every PATCH, terminal rows
+  freeze it at the moment of state transition. SSE replay
+  clients SHOULD use it to ack progress checkpoints; chat-log
+  UIs MAY ignore it. Empty / absent on legacy v1 rows.
+
+### Fixed (SDK guide typos)
+
+- TypeScript guide: `reply.data?.reply` corrected to
+  `reply.data?.text`; `task.data?.status === "completed"` →
+  `"succeeded"` (the actual `TaskStatus` terminal value);
+  `conv.data!.id` → `conv.data!.conversationId` (matches the
+  generated `ConversationResponseAllOfData` field); dropped the
+  non-existent `size_bytes` field on `PresignUploadRequest`.
+- Go guide: `reply.GetData().GetReply()` → `GetText()`;
+  `status == "completed"` → `"succeeded"`; dropped
+  `SizeBytes` from `PresignUploadRequest`.
+- Quickstart guide: same `reply` → `text` rename in both
+  TypeScript and Go examples.
+
+### Breaking (scope vocabulary removed — v1.1.0)
+
+- **`oag_` User API Key per-route scopes deleted.** The set
+  `agents:read`, `agents:write`, `tasks:read`, `tasks:write`,
+  `files:read`, `files:write`, `instances:read`, `instances:write`
+  (and the `admin:*` wildcard) is **no longer recognised**. The
+  37 routes that previously required a scope are now governed
+  purely by owner-ACL — every `oag_` key has full access to its
+  owner's resources, the same way a JWT does.
+- **`403 insufficient_scope` is no longer emitted.** Drop any
+  code that branches on `error.code === "insufficient_scope"`;
+  fold the case into your generic `forbidden` (403) handler.
+- **`POST /api/v1/api-keys` ignores `scopes` in the request
+  body** and the response no longer carries `scopes`. SDK
+  callers should remove the argument from `createAPIKey(...)` —
+  it is silently dropped on the wire during the rolling deploy
+  window and will be removed from the request schema entirely
+  in the next contract revision.
+- **No data migration required.** Existing `oag_` keys keep
+  working with full owner-level access; the `api_keys.scopes`
+  column is dropped server-side.
+
+### Breaking (ADR-0022 — dual-layer message storage)
+
+- **`GET /api/v1/agents/{agentId}/conversations/{convId}/messages`** and
+  **`GET /api/v1/agents/{agentId}/tasks/{taskId}/messages`** now
+  **default-filter out** ephemeral streaming chunks
+  (`agent_reply_delta`, `agent_thought_chunk`, `agent_message_chunk`).
+  Add **`?include_deltas=true`** to opt back in. `latest_offset` continues
+  to reflect the TRUE server-side max offset across both filtered and
+  unfiltered rows, so `since=` / cursor-style pagination is unaffected.
+  SSE `/events` is NOT affected — live consumers continue to receive
+  every envelope as it happens. Migration recipe: client code that
+  rebuilt streaming transcripts by polling `/messages` should either
+  (a) pass `include_deltas=true` to preserve current behaviour, or
+  (b) switch to the SSE `/events` stream which is the supported way
+  to consume live token chunks.
+- **SSE `/events`** may emit a new **`backfill_truncated`** event
+  frame when the client reconnects with `Last-Event-ID` pointing
+  before the oldest retained ephemeral chunk. Older SDKs that don't
+  recognise the frame should treat it as a hint to resume from
+  `latest_offset` (returned in `replay_complete`) instead of replaying
+  individual chunks. Per ADR-0022 §6 the retention window is 24h /
+  10k entries by default.
+- **SSE event `offset` clarified as monotonic-but-not-contiguous.**
+  Producer-side write failures may leave small holes in the offset
+  sequence (e.g. `… 40, 42, …` with `41` missing). Clients MUST
+  treat `offset > since` as the resume invariant — code that
+  asserts `offset == since + 1` was always undefined behaviour
+  and is now explicitly documented as a bug. See
+  [`guides/streaming.md`](/guides/streaming) for the resume recipe.
+
 ### Added
 
 - **`POST /api/v1/agents/{agentId}/tasks/{taskId}/webhooks/{webhookId}/deliveries/{deliveryId}/redeliver`** —
   manual re-queue of a single webhook delivery attempt. Returns
   a new `pending` `WebhookDeliveryResponse`. Useful when the
   receiver was down and you want to replay without waiting for
-  the next exponential-backoff slot. Scope: `tasks:write`.
+  the next exponential-backoff slot.
 - **`GET /api/v1/agents/{agentId}/tasks/{taskId}/webhooks/{webhookId}/deliveries`** —
   per-attempt delivery audit log for a webhook binding. Returns
   the last N attempts (default 50, max 100) including
   `status`, `attempt_num`, `last_response_status`, `last_error`,
-  `next_attempt_at`. Scope: `tasks:read`.
+  `next_attempt_at`.
 - **`secret` (optional, write-only)** field on
   `RegisterTaskWebhookRequest` and the underlying A2A
   `pushNotificationConfig/set`. When supplied, every delivery
@@ -114,7 +200,7 @@ get copied on top of the generator output (README, LICENSE).
   tasks the authenticated caller created via the OpenAPI
   surface, optionally filtered by `agent_id`. Pages with
   `limit` + `since`. Useful for multi-agent UIs (one inbox
-  across an organization's agents). Scope: `tasks:read`.
+  across an organization's agents).
 - **`POST /api/v1/files/presign-upload`** — request a short-lived
   S3-style PUT URL for uploading a file. Returns a `file_id`
   that can be embedded in subsequent
@@ -145,9 +231,6 @@ get copied on top of the generator output (README, LICENSE).
   caller-supplied value is clamped to `[100, 115_000]` (the
   upstream end-to-end budget is 120s). Going past the clamp
   surfaces `service_timeout` instead of a stale connection.
-- **`insufficient_scope` error code.** Returned when an `oag_`
-  User API Key has the right ownership but lacks the required
-  scope (e.g. trying `POST /tasks` with a read-only key).
 - **Examples in OpenAPI** for the top 5 operations
   (`listInstances`, `listAgents`, `invokeAgent`, `createTask`,
   `getTask`) plus all 4xx/5xx response shapes.

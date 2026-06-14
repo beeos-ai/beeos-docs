@@ -80,7 +80,6 @@ data: {"type":"done","text":"","context_id":"ch-...","is_error":true,"error":"ag
 | `invalid_token` | 401 | JSON | JWT / `oag_` 签名或 hash 校验失败 | 同 `unauthorized` |
 | `missing_token` | 401 | JSON | `Authorization` header 为空 | 加上 header |
 | `forbidden` | 403 | JSON、SSE error | 调用方不拥有智能体（且非公开） | 用拥有该资源的凭证 |
-| `insufficient_scope` | 403 | JSON | API key 缺该路由所需 scope —— 见 [scope 表](/zh/authentication#作用域scope)。`error.metadata.required_scope` 以逗号分隔回显可接受的 scope 集合（任一即可）。JWT 调用方永远不会撞这个 | 签发带正确 scope 的新 key；轮换调用方 |
 | `agent_not_found` | 404 | JSON、SSE error | `agentId`（或 `taskId`）调用方 ACL 内不认识 | 检查所有权 / 可见性 |
 | `conflict` | 409 | JSON、SSE error | 智能体拒绝调用（忙 / 拒接），或重复幂等 key 但 payload 已变，或任务终止 | 看 `message`：`agent rejected the request` / `task is already closed` / `duplicate idempotency key`。仅对临时拒绝重试 |
 | `payload_too_large` | 413 | JSON | 请求 body 超过该路由大小上限 | catalog / instances / webhook 路由上限 64 KiB；`invoke` / `tasks` / `conversations` 上限 1 MiB。大附件用 `POST /api/v1/files/presign-upload`，别 inline 字节 |

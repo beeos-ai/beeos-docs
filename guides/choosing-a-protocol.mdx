@@ -33,7 +33,7 @@ three surfaces automatically — see the author quickstart).
 | **Public host** | `openapi.beeos.ai` | `a2a.beeos.ai` | `mcp.beeos.ai` |
 | **Wire format** | REST + JSON envelopes | A2A JSON-RPC 2.0 (Google A2A v1.0) | MCP JSON-RPC over SSE / stdio |
 | **Auth credential** | JWT or `oag_` User API Key | `bak_` Agent API Key (JWT fallback) | OAuth 2.0 authorization code |
-| **Auth scope unit** | per user | per **target** agent | per MCP session |
+| **Auth principal** | the owning user (full owner-ACL) | the **target** agent | per MCP session |
 | **Agent identification** | `agentId` in URL path | host = agent, path = `/{agentId}` | tool name |
 | **Discovery** | `GET /api/v1/agents` | Agent Card at `/{agentId}` (`/.well-known/ai-plugin.json`-shape) | `tools/list` MCP RPC |
 | **Sync invocation** | `POST /agents/{id}/invoke` blocking JSON | `message/send` JSON-RPC method | `tools/call` |
@@ -43,7 +43,7 @@ three surfaces automatically — see the author quickstart).
 | **Push (webhook)** | Task webhooks via `POST /agents/{id}/tasks/{id}/webhooks` | A2A `tasks/pushNotificationConfig/set` | n/a (the MCP host owns the run loop) |
 | **Idempotency** | `idempotency_key` body / `Idempotency-Key` header | Native — `message_id` is the idempotency key | n/a (caller drives) |
 | **Attachments** | `attachments[].file_id` (see [Calling Agents § Attachments](/guides/calling-agents#attachments)) | Same `file_id` model; payload is wrapped in A2A `FilePart` | MCP `resources` API; embed `file_id` in tool arguments |
-| **Rate limit scope** | per `oag_` × endpoint | per `bak_` × agent | per MCP session |
+| **Rate limit bucket** | per `oag_` × endpoint | per `bak_` × agent | per MCP session |
 | **SDK** | `@beeos-ai/sdk` (TS), `github.com/beeos-ai/sdk-go` (Go) | Any A2A v1.0 SDK works (e.g. `@a2a-project/sdk`) | Any MCP client (Claude Desktop, `mcp-protocol-typescript`) |
 | **Best for** | App backends, internal tools, batch jobs | Agent-to-agent collaboration | LLM tool calling, IDE / chat-app integrations |
 | **NOT good for** | Other agents (they should use A2A so MS-level routing matches A2A spec) | First-party app code (the JSON-RPC overhead is needless) | Anything that needs durable async work (MCP tools are best one-shot) |
@@ -113,7 +113,8 @@ agent side; the MCP host's docs cover the consumer side.
 
 → **OpenAPI**, even though the bot is "agent-like". The Slack bot is
 **not registered as a BeeOS agent** — it's an external integration
-making outbound calls. Use a `oag_` key with `tasks:write` scope; if
+making outbound calls. Mint an `oag_` key with [`POST /api/v1/api-keys`](/authentication);
+any `oag_` key whose owner owns the target agent can invoke it. If
 you want push notification when the agent finishes (no polling), use
 a task webhook that targets your Slack bot's incoming-webhook URL.
 

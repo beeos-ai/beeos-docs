@@ -106,27 +106,24 @@ Content-Type: application/json
 
 流由三种 frame 形状之一组成，契约里建模为 `InvokeEventStream`
 （`InvokeAgentSSEDelta` / `InvokeAgentSSEError` / `InvokeAgentSSEDone`
-的 `oneOf`）：
+的 `oneOf`）。与 `/tasks/{id}/events` 不同，**invoke 端点的 SSE 帧
+不命名 event** —— 全部是裸 `data:` 行，客户端通过 JSON 的 `type`
+字段做区分：
 
 ```
-event: delta
 data: {"type":"delta","text":"智能体是"}
 
-event: delta
 data: {"type":"delta","text":"自主的"}
 
-event: done
 data: {"type":"done","text":"智能体是自主的 …","context_id":"ch-...","is_error":false}
 ```
 
 如果网关在智能体产出终止回复之前放弃了（超时、智能体拒绝、内部错误），
-会在最终 `event: done` **之前**发出一个 `event: error` frame：
+会在最终 `done` 之前发一个 `error` 帧：
 
 ```
-event: error
 data: {"type":"error","code":"service_timeout","status_code":504,"message":"agent invocation timed out"}
 
-event: done
 data: {"type":"done","text":"","context_id":"ch-...","is_error":true,"error":"agent invocation timed out","code":"service_timeout"}
 ```
 
@@ -192,7 +189,8 @@ while (true) {
   if (done) break;
   buffer += decoder.decode(value, { stream: true });
   for (const event of buffer.split("\n\n")) {
-    // parse "event: delta\ndata: {...}" frames; emit to UI
+    // 解析裸 "data: {...}" 帧（invoke 不带 event: 前缀），通过 JSON `type`
+    // 字段分发；把 delta 渲染到 UI
   }
 }
 ```
@@ -403,7 +401,7 @@ Authorization: Bearer oag_...
       { "offset": 3, "type": "agent_reply_delta",   "payload": {"text": " 第 1 页完成。"} },
       { "offset": 4, "type": "agent_reply",         "payload": {"text": "所有页索引完成。", "is_error": false} }
     ],
-    "next_since": 5
+    "latest_offset": 4
   }
 }
 ```
@@ -412,7 +410,7 @@ Query 参数：
 
 | 名称 | 类型 | 默认 | 说明 |
 |---|---|---|---|
-| `since` | integer (offset) | `0` | 仅返回 `offset > since` 的消息。用上一次响应的 `next_since`。 |
+| `since` | integer (offset) | `0` | 仅返回 `offset > since` 的消息。前向翻页传上一页最后一条的 `offset` 即可；当响应里的 `latest_offset` 与该值相等就说明追上了。 |
 | `limit` | integer | `200`（最大 500） | 每页最大行数。 |
 
 ### TypeScript SDK（列表助手）

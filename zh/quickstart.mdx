@@ -209,7 +209,7 @@ const reply = await agents.invokeAgent({
     message: "你好 —— 你能做什么？",
   },
 });
-console.log("回复:", reply.data?.reply);
+console.log("回复:", reply.data?.text);
 console.log("Channel:", reply.data?.context_id);
 ```
 
@@ -218,7 +218,7 @@ reply, _, _ := client.AgentsAPI.InvokeAgent(ctx, agentID).
     InvokeAgentRequest(beeos.InvokeAgentRequest{
         Message: "你好 —— 你能做什么？",
     }).Execute()
-fmt.Println("回复:", reply.GetData().GetReply())
+fmt.Println("回复:", reply.GetData().GetText())
 ```
 
 ```bash curl
@@ -243,6 +243,21 @@ curl -N -X POST "$BASE/api/v1/agents/$AGENT_ID/invoke" \
   -H "Content-Type: application/json" \
   -d '{"message": "讲个短故事。"}'
 ```
+
+## 6.5. invoke 调用会出现在哪里？
+
+每次 `invoke` 都会创建一个短生命周期的 `protocol=openapi` **任务** 通道，
+而不是会话。可以通过下面的命令查看：
+
+```bash
+curl -s "$BASE/api/v1/agents/$AGENT_ID/tasks?state=all" \
+  -H "Authorization: Bearer $BEEOS_API_KEY" | jq
+```
+
+`GET /agents/{agentId}/conversations` 只返回你通过 `POST /conversations`
+显式创建的长生命周期对话通道。`invoke` 之后立即调用该接口返回空列表
+属于预期行为 —— 见 [调用智能体](/zh/guides/calling-agents) 指南，了解
+何时该用 conversation 何时该用 invoke。
 
 ## 7. 清理
 

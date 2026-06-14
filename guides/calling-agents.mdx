@@ -111,28 +111,26 @@ Content-Type: application/json
 
 The stream is one of three frame shapes, modelled in the contract as
 `InvokeEventStream` (a `oneOf` of `InvokeAgentSSEDelta` /
-`InvokeAgentSSEError` / `InvokeAgentSSEDone`):
+`InvokeAgentSSEError` / `InvokeAgentSSEDone`). Unlike the
+`/tasks/{id}/events` stream, **the invoke endpoint does NOT name the
+SSE event** — every frame is a bare `data:` line and clients
+discriminate via the JSON `type` field:
 
 ```
-event: delta
 data: {"type":"delta","text":"Agents are"}
 
-event: delta
 data: {"type":"delta","text":" autonomous"}
 
-event: done
 data: {"type":"done","text":"Agents are autonomous …","context_id":"ch-...","is_error":false}
 ```
 
 If the gateway gives up before the agent produces a terminal reply
-(timeout, agent rejection, internal error), a single `event: error`
-frame is emitted **before** the final `event: done`:
+(timeout, agent rejection, internal error), a single `error` frame is
+emitted **before** the final `done`:
 
 ```
-event: error
 data: {"type":"error","code":"service_timeout","status_code":504,"message":"agent invocation timed out"}
 
-event: done
 data: {"type":"done","text":"","context_id":"ch-...","is_error":true,"error":"agent invocation timed out","code":"service_timeout"}
 ```
 
@@ -202,7 +200,8 @@ while (true) {
   if (done) break;
   buffer += decoder.decode(value, { stream: true });
   for (const event of buffer.split("\n\n")) {
-    // parse "event: delta\ndata: {...}" frames; emit to UI
+    // parse bare "data: {...}" frames (no event: prefix on invoke);
+    // discriminate by JSON `type` field; emit deltas to UI
   }
 }
 ```
@@ -425,7 +424,7 @@ Authorization: Bearer oag_...
       { "offset": 3, "type": "agent_reply_delta",   "payload": {"text": " Done page 1."} },
       { "offset": 4, "type": "agent_reply",         "payload": {"text": "All pages indexed.", "is_error": false} }
     ],
-    "next_since": 5
+    "latest_offset": 4
   }
 }
 ```
@@ -434,7 +433,7 @@ Query parameters:
 
 | Name | Type | Default | Description |
 |---|---|---|---|
-| `since` | integer (offset) | `0` | Only return messages with `offset > since`. Use `next_since` from the previous response. |
+| `since` | integer (offset) | `0` | Only return messages with `offset > since`. Page forward by passing the last returned row's `offset`; when the response's `latest_offset` equals that value the caller is caught up. |
 | `limit` | integer | `200` (max 500) | Maximum rows per page. |
 
 ### TypeScript SDK (list helpers)

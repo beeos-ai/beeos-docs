@@ -12,8 +12,9 @@ production.
 
 - A BeeOS account at [beeos.ai](https://beeos.ai).
 - A **User API Key** (`oag_...`) from **Settings &rarr; API Keys**. The key
-  acts as a long-lived bearer credential — see
-  [Authentication](/authentication) for scopes and rotation.
+  acts as a long-lived bearer credential bound to your user — see
+  [Authentication](/authentication) for the credential format and
+  rotation guidance.
 
 ## 1. Install the SDK
 
@@ -213,7 +214,7 @@ const reply = await agents.invokeAgent({
     message: "Hello — what can you do?",
   },
 });
-console.log("Reply:", reply.data?.reply);
+console.log("Reply:", reply.data?.text);
 console.log("Channel:", reply.data?.context_id);
 ```
 
@@ -222,7 +223,7 @@ reply, _, _ := client.AgentsAPI.InvokeAgent(ctx, agentID).
     InvokeAgentRequest(beeos.InvokeAgentRequest{
         Message: "Hello — what can you do?",
     }).Execute()
-fmt.Println("Reply:", reply.GetData().GetReply())
+fmt.Println("Reply:", reply.GetData().GetText())
 ```
 
 ```bash curl
@@ -247,6 +248,22 @@ curl -N -X POST "$BASE/api/v1/agents/$AGENT_ID/invoke" \
   -H "Content-Type: application/json" \
   -d '{"message": "Tell me a short story."}'
 ```
+
+## 6.5. Where does the invoke show up?
+
+Each `invoke` creates a short-lived `protocol=openapi` **task** channel,
+not a conversation. List it with:
+
+```bash
+curl -s "$BASE/api/v1/agents/$AGENT_ID/tasks?state=all" \
+  -H "Authorization: Bearer $BEEOS_API_KEY" | jq
+```
+
+`GET /agents/{agentId}/conversations` returns only long-lived dialog
+channels you opened explicitly with `POST /conversations`. If that
+list is empty right after an `invoke`, that is expected — see the
+[calling agents](/guides/calling-agents) guide for when to pick
+conversation vs invoke.
 
 ## 7. Clean up
 

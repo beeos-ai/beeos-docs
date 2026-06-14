@@ -24,8 +24,8 @@ accidentally pick up a user's session cookie.
 
 Issued by the main Gateway (`gateway.beeos.ai`, local `:9080`) on
 login. Short-lived (typically 1 h, refreshed automatically by the
-SDK / web client). **Carries the user's full scope** — any operation
-the user can do from the web UI works with their JWT.
+SDK / web client). Grants full access to the user's own resources —
+any operation the user can do from the web UI works with their JWT.
 
 ```http
 POST /api/v1/auth/login        ← Gateway, not openapi-gw
@@ -57,7 +57,6 @@ Content-Type: application/json
 
 {
   "name": "my-cron-job",
-  "scopes": ["agents:read", "tasks:write"],
   "rate_limit_per_minute": 600,
   "expires_at": "2027-05-01T00:00:00Z"
 }
@@ -77,34 +76,28 @@ fixed  32 random bytes hex-encoded (64 chars)
 The first 12 characters (`oag_<8 hex>`) are stored separately as
 `key_prefix` for safe display in lists / audit logs.
 
-### Scopes
+### Authorization
 
-OpenAPI Gateway enforces scopes per route. Each request needs **at
-least one** of the scopes listed for that route; a request that
-matches none returns `403 insufficient_scope` with the acceptable
-scope set echoed in `error.metadata.required_scope` (comma-separated;
-any one is sufficient).
+`oag_` User API Keys are **user-scoped**: each key is bound to one
+owner and inherits full access to that owner's resources. Every
+route is gated by owner-ACL inside the handler — cross-tenant access
+is denied uniformly, no matter which credential the caller used.
 
-| Scope | Routes |
-|---|---|
-| `agents:read` | `GET /agents`, `GET /agents/{agentId}` |
-| `agents:write` | `PATCH /agents/{agentId}` |
-| `tasks:read` | `GET /agents/{agentId}/tasks*`, `GET /agents/{agentId}/conversations*` (incl. history, SSE stream) |
-| `tasks:write` | `POST /agents/{agentId}/invoke`, all `POST /agents/{agentId}/tasks*` (create, cancel, continue), all `POST /agents/{agentId}/conversations*` (create, send), `DELETE /conversations/{convId}`, webhook CRUD (`POST` / `DELETE /tasks/{taskId}/webhooks*`) |
-| `files:read` | `GET /files/{id}` |
-| `files:write` | `POST /files/presign-upload` |
-| `instances:read` | `GET /providers`, `GET /deploy/regions`, `GET /deploy/models`, `GET /instances*` |
-| `instances:write` | All `POST /instances*` and `DELETE /instances/{id}` |
+There is **no per-route scope vocabulary** any more. Earlier
+revisions of this surface required scopes like `agents:read` /
+`tasks:write` to be explicitly granted at key-creation time, with
+missing scopes returning `403 insufficient_scope`. That gate has
+been removed (see the [v1.1.0 changelog migration](#scope-removal-v1-1-0)
+below) — once authenticated, an `oag_` key behaves like the
+underlying user's JWT for the purposes of authorization.
 
+<a id="scope-removal-v1-1-0" />
 <Note>
-**JWT callers bypass the scope check.** A user in the dashboard
-already has the full surface; scopes only apply to `oag_` keys.
-</Note>
->
-<Note>
-If you forget to set scopes when minting a key the request is
-denied — there is no "all scopes" implicit default. Pick the
-narrowest set that does the job.
+**Migration from pre-v1.1.0 SDKs.** If you used `createAPIKey(name, scopes, ...)`
+or `POST /api/v1/api-keys` with a `scopes` body field, drop the
+argument — existing keys continue to work and grant full owner-level
+access. The `403 insufficient_scope` error is no longer emitted;
+fold it into your generic 403 / `forbidden` handler.
 </Note>
 
 ### Listing / revoking
@@ -211,10 +204,10 @@ planned).
   the user's keys belong to the user, not your app. Web apps should
   authenticate the user (JWT) and your server mints a server-side
   `oag_` for backend work.
-- **Forgetting to set scopes** — scope enforcement is live; a key
-  missing the required scope returns `403 insufficient_scope` with
-  the acceptable scope set echoed in `error.metadata.required_scope`.
-  Pick the narrowest scope set per [the table above](#scopes).
+- **Expecting per-route scope gating** — the `agents:*` / `tasks:*` /
+  `files:*` / `instances:*` scope vocabulary was removed in v1.1.0.
+  `oag_` keys are user-scoped; owner-ACL inside each handler is the
+  sole authorization gate.
 - **Expecting key rotation from openapi-gw** — rotation /
   revocation lives on the main Gateway (see endpoints above). The
   OpenAPI Gateway is read-only for credential metadata; it does not
