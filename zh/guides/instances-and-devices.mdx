@@ -1,0 +1,282 @@
+---
+title: 实例与设备 (Instances & Devices)
+description: 查看你的实例与智能体，并读取用户自备设备（BYOD）的注册信息 —— 何时用 device/info、何时用 live 的 /mobile 控制面。
+---
+
+<Note>
+**受众**：部署实例（云桌面、Android 运行时、或用户自备设备手机）并
+需要**读取**其状态、列出其上运行的智能体、识别其后端设备的 SDK 用户。
+</Note>
+
+本指南所有内容都在用户 OpenAPI 接入面上（`/api/v1`，base URL
+`https://openapi.beeos.ai`），用 `oag_` 用户 API Key 认证 —— 获取方式
+见 [认证与 API Key](/zh/authentication)。所有响应都用标准
+`{ success, data }` 信封。
+
+---
+
+## 1. 获取单个实例
+
+`GET /api/v1/instances/{id}` 返回你拥有的某个实例的完整
+`InstanceDataDTO`。这是后续一切的起点：它告诉你这个实例**是什么**
+（`osType`）、是否**运行中**（`status`）、是否**可达**（`connectivity`）、
+以及在哪里访问（`endpoint`）。
+
+```bash
+curl https://openapi.beeos.ai/api/v1/instances/instance_abc123 \
+  -H "Authorization: Bearer oag_..."
+```
+
+```json
+{
+  "success": true,
+  "data": {
+    "id": "instance_abc123",
+    "ownerId": "user_xyz",
+    "name": "my-agent-1",
+    "agentFramework": "openclaw",
+    "providerId": "openclaw-k8s",
+    "osType": "android",
+    "status": "running",
+    "desiredStatus": "running",
+    "endpoint": "https://rt-abc123.beeos.ai",
+    "connectivity": "online",
+    "clusterId": "cl-east-1",
+    "capabilities": { "longRunning": true, "vision": true },
+    "createdAt": "2026-05-14T18:00:00Z"
+  }
+}
+```
+
+### 关键字段
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `osType` | string | 实例的 OS 家族 —— 如 `android`、`linux`、`windows`、`macos`。决定适用哪个控制面（`/mobile` 还是 `/computer`）。 |
+| `status` | string | 生命周期状态：`pending` \| `provisioning` \| `running` \| `stopped` \| `terminated`。 |
+| `desiredStatus` | string | 控制面正在收敛到的目标状态：`running` \| `stopped` \| `terminated`。`status` 与 `desiredStatus` 不一致表示有一次转移正在进行。 |
+| `connectivity` | string | 后端运行时/设备的 live 可达性：`unknown` \| `online` \| `offline`。与 `status` 独立 —— 一个 `running` 实例若其设备掉线仍可能是 `offline`。 |
+| `connectivityReason` | string | 注解非 `online` 的 `connectivity`。规范值：`device_disconnected` \| `device_unauthorized` \| `instance_disconnected`。`connectivity` 为 `online` 时为空（任何进入 `online` 的转移都严格清空它）。 |
+| `endpoint` | string | 实例的运行时 endpoint URL。 |
+| `capabilities` | object | **实例级**能力声明 —— 从计费/目录模板冻结下来的原始 JSON 对象。它与设备级能力的区别见 [§5](#5-两类-capabilities)。 |
+
+<Note>
+`connectivity`（及 `connectivityReason`）描述与后端设备的 **live** 链路，
+而 `status` 描述控制面意图的**生命周期**。在下发控制调用前务必同时
+检查两者 —— 一个 `running` + `offline` 的实例会拒绝 tap/click。
+</Note>
+
+---
+
+## 2. 列出你的实例
+
+`GET /api/v1/instances` 返回 `InstanceDataDTO` 的分页数组，外加一个
+`total` 计数，便于你构建仪表盘或挑选要操作的实例。
+
+```bash
+curl "https://openapi.beeos.ai/api/v1/instances?status=running&pageSize=20" \
+  -H "Authorization: Bearer oag_..."
+```
+
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "id": "instance_abc123",
+      "name": "my-agent-1",
+      "providerId": "openclaw-k8s",
+      "status": "running",
+      "osType": "android",
+      "createdAt": "2026-05-14T18:00:00Z"
+    }
+  ],
+  "total": 1
+}
+```
+
+### 分页
+
+| 参数 | 类型 | 说明 |
+|---|---|---|
+| `page` | integer（≥ 0） | 从 0 起的页索引。 |
+| `pageSize` | integer（0–200） | 每页行数。 |
+
+`total` 是**当前过滤条件下**未分页的总数，所以分页直到
+`page * pageSize >= total` 为止。
+
+### 过滤
+
+所有过滤条件以 `AND` 组合。不需要的可省略。
+
+| 参数 | 类型 | 说明 |
+|---|---|---|
+| `status` | string | 匹配单一生命周期状态（如 `running`）。 |
+| `providerId` | string | 匹配特定 Provider 上的实例（如 `openclaw-k8s`）。 |
+| `agentFramework` | string | 按 agent framework 匹配（如 `openclaw`）。 |
+| `clusterId` | string | 匹配特定集群。 |
+| `search` | string | 对实例名 / 元数据做自由文本搜索。 |
+
+---
+
+## 3. 列出实例上的智能体
+
+一个实例承载一个或多个智能体。`GET /api/v1/agents` 列出你拥有的
+智能体；传 `instance_id` 把列表限定到单个实例。
+
+```bash
+curl "https://openapi.beeos.ai/api/v1/agents?instance_id=instance_abc123&limit=20" \
+  -H "Authorization: Bearer oag_..."
+```
+
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "id": "agent_abc123",
+      "instanceId": "instance_abc123",
+      "name": "summariser",
+      "status": "active",
+      "visibility": "private",
+      "mcpEnabled": false,
+      "createdAt": "2026-05-14T18:00:00Z",
+      "updatedAt": "2026-05-14T18:00:00Z"
+    }
+  ],
+  "total": 1
+}
+```
+
+### Query 参数
+
+| 参数 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `instance_id` | string | 未设置 | 按智能体运行的实例过滤。 |
+| `limit` | integer | `20` | 每页最大行数。 |
+| `offset` | integer | `0` | 跳过的行数（offset 分页）。 |
+
+### `AgentDTO` 字段
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `id` | string | 智能体标识 —— 即你在 [调用智能体](/zh/guides/calling-agents) 中传入的 `agentId`。 |
+| `instanceId` | string | 该智能体运行所在的实例。 |
+| `name` | string | 机器名（slug 友好）。 |
+| `displayName` | string | 人类友好名称（若设置）。 |
+| `description` | string | 可选描述（由 pod 侧 sync 协调）。 |
+| `status` | string | 智能体状态（如 `active`）。 |
+| `slug` | string | URL 友好标识（若设置）。 |
+| `visibility` | string | `private` \| `public` \| `marketplace` \| `unlisted` 之一。 |
+| `mcpEnabled` | boolean | 是否通过 MCP 网关暴露该智能体。 |
+| `createdAt` / `updatedAt` | string（date-time） | 时间戳。 |
+
+---
+
+## 4. 用户自备设备（BYOD）设备信息
+
+当实例由**用户自备设备**（bring your own device，如你注册的一部手机）
+支撑时，可用下面的接口读取设备的**注册 / 静态信息**：
+
+```bash
+curl https://openapi.beeos.ai/api/v1/instances/instance_abc123/device/info \
+  -H "Authorization: Bearer oag_..."
+```
+
+```json
+{
+  "success": true,
+  "data": {
+    "type": "android",
+    "model": "Pixel 8 Pro",
+    "os": "Android",
+    "osVersion": "15",
+    "width": 1344,
+    "height": 2992,
+    "density": 480,
+    "capabilities": ["screenshot", "tap", "swipe", "camera"],
+    "metadata": { "registeredBy": "user_xyz" }
+  }
+}
+```
+
+这回答的是**“这部手机是什么、能做什么？”**。它是注册时的硬件快照，
+所以**即使设备离线也能读取** —— 返回的是缓存的静态信息，而不是 404。
+
+### `DeviceInfoDTO` 字段
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `type` | string | 设备类型 —— 如 `android`、`windows`、`linux`、`macos`。 |
+| `model` | string | 设备型号 / 硬件名（如 `Pixel 8 Pro`）。 |
+| `os` | string | 操作系统名称。 |
+| `osVersion` | string | 操作系统版本。 |
+| `width` | integer | 注册的屏幕宽度（设备像素）。 |
+| `height` | integer | 注册的屏幕高度（设备像素）。 |
+| `density` | integer | 注册的屏幕密度（DPI）。 |
+| `capabilities` | string[] | **设备级**能力字符串（硬件 / Agent 上报）。见 [§5](#5-两类-capabilities)。 |
+| `metadata` | object | 可选的调用方 / 设备附加 JSON。缺失或格式非法时整体省略。 |
+
+<Note>
+这里的 `width` / `height` / `density` 是设备入网时**注册的**几何，是
+设备的静态规格 —— 不一定等于请求时的 live 前台几何（Android 手机可能
+旋转、折叠或改分辨率）。要 *live* 几何请用 `/mobile`，见下文。
+</Note>
+
+---
+
+## 5. device/info 还是 /mobile —— 怎么选？
+
+了解一个 Android / 移动实例有两条路，它们回答不同的问题：
+
+| | `GET /instances/{id}/device/info` | `GET /instances/{id}/mobile` |
+|---|---|---|
+| Schema | `DeviceInfoDTO` | `ControlInfo` |
+| 性质 | **注册 / 静态**快照 | 同步**控制面** |
+| 回答 | “这是什么手机？型号 / OS / 规格 / 能力？” | “现在能不能驱动它？live 屏幕几何是多少？” |
+| 几何 | 注册的 `width` / `height` / `density`（入网时） | 请求时的 live `screen_width` / `screen_height` |
+| 可达性 | **设备离线也能读**（缓存） | `online` 标志反映 live 控制通道；桌面实例返回 404 |
+| 动作 | `capabilities[]`（硬件 / Agent 上报的能力） | `supported_actions[]`（控制面当前接受的动作）+ `current_app` |
+
+经验法则：
+
+- **识别 / 盘点**设备（“这是什么 / 什么配置 / 能做什么”）→
+  `device/info`。
+- **实时控制**（“现在驱动它 / 当前屏幕几何”）→ `/mobile`（见
+  `ControlInfo` schema 与 `/mobile/*` 动作端点，在 **API 参考** tab 中）。
+
+<Warning>
+不要为了读设备静态规格就用 `/mobile` —— 它需要 live 控制通道，且对
+非移动（桌面）实例返回 `404`。识别 / 盘点请用 `device/info`，它离线
+也能用。
+</Warning>
+
+---
+
+## 6. 两类 `capabilities`
+
+“capabilities” 这个词在**实例**和**设备**上都出现，而它们**语义不同**
+—— 切勿混为一谈：
+
+| | `InstanceDataDTO.capabilities` | `DeviceInfoDTO.capabilities` |
+|---|---|---|
+| 来源 | `GET /api/v1/instances/{id}`（及 list） | `GET /api/v1/instances/{id}/device/info` |
+| 类型 | **JSON 对象**（原始声明） | **字符串数组** |
+| 含义 | 从计费/目录模板冻结下来的实例级能力**声明**（如 `{ "longRunning": true, "vision": true }`） | 设备具体的硬件 / Agent 上报能力**标签**（如 `["screenshot", "tap", "camera"]`） |
+| 用途 | 推断该*实例等级*被授予什么 | 推断该*物理设备*实际能做什么 |
+
+当实例没有声明任何能力时，实例级该字段会**整体省略**（而不是给出
+`null`）。
+
+---
+
+## 另见
+
+- [调用智能体](/zh/guides/calling-agents) —— 调用你在 §3 列出的智能体
+- [选择协议](/zh/guides/choosing-a-protocol) —— 与智能体对话时选
+  OpenAPI / A2A / MCP
+- [认证与 API Key](/zh/authentication) —— `oag_` Key 与授权模型
+- [错误参考](/zh/reference/errors) —— 这些端点可能返回的每个 wire `code`
+- [OpenAPI 契约](https://github.com/beeos-ai/openagent/blob/main/backend/openapi/beeos-platform-v1.yaml)
+  —— `instances`、`agents`、`mobile`、`device/info` 的完整操作契约
+  （同时渲染在 **API 参考** tab 中）

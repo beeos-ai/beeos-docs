@@ -2,8 +2,8 @@
 # AUTO-SYNCED FROM backend/openapi/beeos-platform-v1.yaml
 # DO NOT EDIT HERE — edit the source in the openagent repo and run
 #   cd beeos-docs && npm run sync-spec
-# Last synced: 2026-05-23T07:11:02Z
-# Source SHA: b06783df
+# Last synced: 2026-06-30T18:23:46Z
+# Source SHA: 50dd6b05
 # ============================================================================
 openapi: 3.1.0
 info:
@@ -114,6 +114,22 @@ tags:
     description: Provider / region / model catalog.
   - name: instances
     description: Agent instance lifecycle (deploy, start, stop, restart, destroy).
+  - name: computer
+    description: |
+      Synchronous desktop control (linux / windows / mac instances):
+      screenshot, click, move, scroll, type, key. Coordinates are
+      absolute device pixels (origin top-left); query
+      `GET /instances/{id}/computer` for the live screen geometry and
+      supported action set. Android instances are controlled via the
+      `mobile` tag instead (calling `computer` on an android instance
+      returns 404). Aligns with Anthropic / OpenAI "computer use".
+  - name: mobile
+    description: |
+      Synchronous mobile (android) control: screenshot, tap, swipe,
+      scroll, type, key, press_button. Coordinates are absolute device
+      pixels. Query `GET /instances/{id}/mobile` for live geometry and
+      supported actions. Desktop instances are controlled via the
+      `computer` tag (calling `mobile` on a desktop instance returns 404).
   - name: agents
     description: Agent listing, details, and synchronous invocation.
   - name: tasks
@@ -411,6 +427,442 @@ paths:
         "404": { $ref: '#/components/responses/NotFound' }
         "409": { $ref: '#/components/responses/Conflict' }
         "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+
+  # ---------------------------------------------------------------------
+  # Computer control (desktop: linux / windows / mac)
+  # ---------------------------------------------------------------------
+  /api/v1/instances/{id}/computer:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+    get:
+      operationId: getComputerInfo
+      tags: [computer]
+      summary: Live desktop control info (geometry + supported actions).
+      description: |
+        Returns the instance's online status, OS, current screen
+        geometry (absolute device pixels), the supported action verbs,
+        and the foreground app. Geometry is fetched live so it reflects
+        the current display state. Returns 404 if the instance is an
+        android device (use the `mobile` endpoints instead).
+      responses:
+        "200":
+          description: Standard envelope; `data` is a `ControlInfo`.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/ControlInfo' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "503": { $ref: '#/components/responses/ServerError' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+  /api/v1/instances/{id}/computer/screenshot:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+    post:
+      operationId: computerScreenshot
+      tags: [computer]
+      summary: Capture a desktop screenshot (returns a file reference).
+      description: |
+        Captures the current screen, stages it in BeeOS file storage,
+        and returns a `file_id` plus a short-lived presigned download
+        `url` — never inline base64.
+      responses:
+        "200":
+          description: Standard envelope; `data` is a `ScreenshotResult`.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/ScreenshotResult' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "409": { $ref: '#/components/responses/Conflict' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "503": { $ref: '#/components/responses/ServerError' }
+        "504": { $ref: '#/components/responses/ServerError' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+  /api/v1/instances/{id}/computer/click:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+    post:
+      operationId: computerClick
+      tags: [computer]
+      summary: Mouse click at (x, y).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ClickRequest' }
+      responses:
+        "200": { $ref: '#/components/responses/ControlActionOK' }
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "409": { $ref: '#/components/responses/Conflict' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "503": { $ref: '#/components/responses/ServerError' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+  /api/v1/instances/{id}/computer/move:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+    post:
+      operationId: computerMove
+      tags: [computer]
+      summary: Move the pointer to (x, y) without clicking.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MoveRequest' }
+      responses:
+        "200": { $ref: '#/components/responses/ControlActionOK' }
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "503": { $ref: '#/components/responses/ServerError' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+  /api/v1/instances/{id}/computer/scroll:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+    post:
+      operationId: computerScroll
+      tags: [computer]
+      summary: Scroll in a cardinal direction.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ScrollRequest' }
+      responses:
+        "200": { $ref: '#/components/responses/ControlActionOK' }
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "503": { $ref: '#/components/responses/ServerError' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+  /api/v1/instances/{id}/computer/type:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+    post:
+      operationId: computerType
+      tags: [computer]
+      summary: Type Unicode text into the focused field.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TypeRequest' }
+      responses:
+        "200": { $ref: '#/components/responses/ControlActionOK' }
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "503": { $ref: '#/components/responses/ServerError' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+  /api/v1/instances/{id}/computer/key:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+    post:
+      operationId: computerKey
+      tags: [computer]
+      summary: Press a key (single) or hotkey combo (multiple keys).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/KeyRequest' }
+      responses:
+        "200": { $ref: '#/components/responses/ControlActionOK' }
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "503": { $ref: '#/components/responses/ServerError' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+
+  # ---------------------------------------------------------------------
+  # Mobile control (android)
+  # ---------------------------------------------------------------------
+  /api/v1/instances/{id}/mobile:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+    get:
+      operationId: getMobileInfo
+      tags: [mobile]
+      summary: Live mobile control info (geometry + supported actions).
+      description: |
+        Returns the android instance's online status, screen geometry,
+        supported actions, and foreground app. Returns 404 if the
+        instance is a desktop device (use the `computer` endpoints).
+
+        This is the synchronous **control plane**: `online` + `screen_*`
+        reflect the *live* control-channel state at request time. For the
+        device's **registration / static** metadata (BYOD device type,
+        model, OS, registered geometry, hardware capabilities) — readable
+        even when the device is offline — use
+        `GET /api/v1/instances/{id}/device/info` (`DeviceInfoDTO`) instead.
+      responses:
+        "200":
+          description: Standard envelope; `data` is a `ControlInfo`.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/ControlInfo' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "503": { $ref: '#/components/responses/ServerError' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+  /api/v1/instances/{id}/mobile/screenshot:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+    post:
+      operationId: mobileScreenshot
+      tags: [mobile]
+      summary: Capture a mobile screenshot (returns a file reference).
+      responses:
+        "200":
+          description: Standard envelope; `data` is a `ScreenshotResult`.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/ScreenshotResult' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "409": { $ref: '#/components/responses/Conflict' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "503": { $ref: '#/components/responses/ServerError' }
+        "504": { $ref: '#/components/responses/ServerError' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+  /api/v1/instances/{id}/mobile/tap:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+    post:
+      operationId: mobileTap
+      tags: [mobile]
+      summary: Tap at (x, y).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TapRequest' }
+      responses:
+        "200": { $ref: '#/components/responses/ControlActionOK' }
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "409": { $ref: '#/components/responses/Conflict' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "503": { $ref: '#/components/responses/ServerError' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+  /api/v1/instances/{id}/mobile/swipe:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+    post:
+      operationId: mobileSwipe
+      tags: [mobile]
+      summary: Swipe from (x1, y1) to (x2, y2).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SwipeRequest' }
+      responses:
+        "200": { $ref: '#/components/responses/ControlActionOK' }
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "503": { $ref: '#/components/responses/ServerError' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+  /api/v1/instances/{id}/mobile/scroll:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+    post:
+      operationId: mobileScroll
+      tags: [mobile]
+      summary: Scroll in a cardinal direction.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ScrollRequest' }
+      responses:
+        "200": { $ref: '#/components/responses/ControlActionOK' }
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "503": { $ref: '#/components/responses/ServerError' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+  /api/v1/instances/{id}/mobile/type:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+    post:
+      operationId: mobileType
+      tags: [mobile]
+      summary: Type Unicode text into the focused field.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TypeRequest' }
+      responses:
+        "200": { $ref: '#/components/responses/ControlActionOK' }
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "503": { $ref: '#/components/responses/ServerError' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+  /api/v1/instances/{id}/mobile/key:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+    post:
+      operationId: mobileKey
+      tags: [mobile]
+      summary: Press an Android key (KeyCode name).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/KeyRequest' }
+      responses:
+        "200": { $ref: '#/components/responses/ControlActionOK' }
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "503": { $ref: '#/components/responses/ServerError' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+  /api/v1/instances/{id}/mobile/press_button:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+    post:
+      operationId: mobilePressButton
+      tags: [mobile]
+      summary: Press a hardware / navigation button (back / home / ...).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PressButtonRequest' }
+      responses:
+        "200": { $ref: '#/components/responses/ControlActionOK' }
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "503": { $ref: '#/components/responses/ServerError' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+
+  # ---------------------------------------------------------------------
+  # Device info (BYOD registration / static device metadata)
+  # ---------------------------------------------------------------------
+  /api/v1/instances/{id}/device/info:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+    get:
+      operationId: getDeviceInfo
+      tags: [instances]
+      summary: BYOD device registration / static metadata.
+      description: |
+        Returns the **registration / static** device metadata for an
+        instance backed by a user-provided device (BYOD), e.g. a phone:
+        device type, model, OS + version, the registered screen geometry
+        (`width` / `height` / `density`), and the device hardware /
+        Agent-reported `capabilities`.
+
+        This is distinct from `GET /api/v1/instances/{id}/mobile`
+        (`ControlInfo`): `/mobile` is the synchronous **control plane** and
+        reports *live* geometry + reachability via the control channel,
+        whereas `/device/info` is the **registered/static** device snapshot
+        and can be read even when the device is offline (cached static
+        info is returned). Returns 404 if the instance does not exist or is
+        not owned by the caller.
+      responses:
+        "200":
+          description: Standard envelope; `data` is a `DeviceInfoDTO`.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/DeviceInfoDTO' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "503": { $ref: '#/components/responses/ServerError' }
         "5XX": { $ref: '#/components/responses/ServerError' }
 
   # ---------------------------------------------------------------------
@@ -808,6 +1260,16 @@ paths:
             calling `GET /agents/{agentId}/tasks` directly; kept on
             this endpoint so callers can collapse their pagination
             logic across the "all agents" and "single agent" paths.
+          schema: { type: string, maxLength: 128 }
+        - name: instance_id
+          in: query
+          required: false
+          description: |
+            Narrow the result to tasks running on a specific instance
+            (across any agent on that instance). Combine with
+            `state=open` to answer "is this instance currently running
+            a task?" — a non-empty result means busy. Device control
+            commands (computer / mobile) are NOT counted here.
           schema: { type: string, maxLength: 128 }
         - name: state
           in: query
@@ -1655,6 +2117,210 @@ components:
             data:
               type: string
 
+    # -------- Device control (computer + mobile) --------
+    ControlInfo:
+      type: object
+      title: ControlInfo
+      description: |
+        Live control surface for an instance: online status, OS,
+        current screen geometry, and the supported action verbs.
+      required: [online, os, screen_width, screen_height, coordinate_system, supported_actions]
+      properties:
+        online:
+          type: boolean
+          description: Whether the device is currently reachable for control.
+        os:
+          type: string
+          description: Device OS (e.g. `android`, `linux`, `windows`, `macos`).
+        screen_width:
+          type: integer
+          format: int32
+          description: Current screen width in device pixels.
+        screen_height:
+          type: integer
+          format: int32
+          description: Current screen height in device pixels.
+        coordinate_system:
+          type: string
+          description: Always `absolute_pixels` (origin top-left).
+        supported_actions:
+          type: array
+          items: { type: string }
+          description: Action verbs this device supports (e.g. `screenshot`, `tap`).
+        current_app:
+          type: string
+          description: Foreground app / window, when known.
+    DeviceInfoDTO:
+      type: object
+      title: DeviceInfoDTO
+      description: |
+        BYOD (bring-your-own-device) registration / static metadata for an
+        instance's backing device, e.g. a user-provided phone.
+
+        Distinct from `ControlInfo` (the `/computer` + `/mobile` live
+        control surface): this is the registered hardware snapshot and is
+        readable even when the device is offline. `capabilities` here are
+        device hardware / Agent-reported capability strings — semantically
+        different from `InstanceDataDTO.capabilities` (the instance-level
+        capability JSON declaration).
+      required: [type, model, os, osVersion, width, height, density, capabilities]
+      properties:
+        type:
+          type: string
+          description: Device type (e.g. `android`, `windows`, `linux`, `macos`).
+        model:
+          type: string
+          description: Device model / hardware name.
+        os:
+          type: string
+          description: Operating system name.
+        osVersion:
+          type: string
+          description: Operating system version.
+        width:
+          type: integer
+          format: int32
+          description: Registered screen width in device pixels.
+        height:
+          type: integer
+          format: int32
+          description: Registered screen height in device pixels.
+        density:
+          type: integer
+          format: int32
+          description: Registered screen density (DPI).
+        capabilities:
+          type: array
+          items: { type: string }
+          description: |
+            Device hardware / Agent-reported capability strings. Semantically
+            different from `InstanceDataDTO.capabilities` (an instance-level
+            capability JSON object).
+        metadata:
+          type: object
+          additionalProperties: true
+          description: |
+            Optional caller-/device-supplied extra metadata (raw JSON
+            object). Omitted entirely when absent or malformed.
+    ScreenshotResult:
+      type: object
+      title: ScreenshotResult
+      description: |
+        A captured screenshot staged in BeeOS file storage. The image is
+        referenced by `file_id` + a short-lived presigned `url`, never
+        inline base64.
+      required: [file_id, url]
+      properties:
+        file_id:
+          type: string
+          description: Stable BeeOS file id (resolvable via `GET /files/{id}`).
+        url:
+          type: string
+          description: Short-lived presigned download URL for the image.
+        format:
+          type: string
+          description: Image codec (`png` / `jpeg`).
+        width:
+          type: integer
+          format: int32
+        height:
+          type: integer
+          format: int32
+    ActionResult:
+      type: object
+      title: ActionResult
+      description: Generic acknowledgement that a mutating control action completed.
+      required: [ok]
+      properties:
+        ok:
+          type: boolean
+    ClickRequest:
+      type: object
+      title: ClickRequest
+      required: [x, y]
+      properties:
+        x: { type: integer, format: int32 }
+        y: { type: integer, format: int32 }
+        button:
+          type: string
+          description: Mouse button (`left` / `right` / `middle`). Default `left`.
+        count:
+          type: integer
+          format: int32
+          description: Click count (1 = single, 2 = double). Default 1.
+    MoveRequest:
+      type: object
+      title: MoveRequest
+      required: [x, y]
+      properties:
+        x: { type: integer, format: int32 }
+        y: { type: integer, format: int32 }
+    TapRequest:
+      type: object
+      title: TapRequest
+      required: [x, y]
+      properties:
+        x: { type: integer, format: int32 }
+        y: { type: integer, format: int32 }
+    SwipeRequest:
+      type: object
+      title: SwipeRequest
+      required: [x1, y1, x2, y2]
+      properties:
+        x1: { type: integer, format: int32 }
+        y1: { type: integer, format: int32 }
+        x2: { type: integer, format: int32 }
+        y2: { type: integer, format: int32 }
+        duration_ms:
+          type: integer
+          format: int32
+          description: Gesture duration; clamped device-side to [1, 10000].
+    PressButtonRequest:
+      type: object
+      title: PressButtonRequest
+      required: [button]
+      properties:
+        button:
+          type: string
+          description: |
+            Hardware / nav button name (`back` / `home` / `recent` /
+            `power` / `volume_up` / `volume_down` / `enter`).
+    ScrollRequest:
+      type: object
+      title: ScrollRequest
+      required: [direction]
+      properties:
+        x: { type: integer, format: int32 }
+        y: { type: integer, format: int32 }
+        direction:
+          type: string
+          description: Scroll direction (`up` / `down` / `left` / `right`).
+        amount:
+          type: integer
+          format: int32
+          description: Distance multiplier (~300px per unit). Default 1.
+    TypeRequest:
+      type: object
+      title: TypeRequest
+      required: [text]
+      properties:
+        text:
+          type: string
+        submit:
+          type: boolean
+          description: When true, press ENTER after typing.
+    KeyRequest:
+      type: object
+      title: KeyRequest
+      required: [keys]
+      properties:
+        keys:
+          type: array
+          items: { type: string }
+          description: |
+            Key name(s). One key = a key press; multiple keys = a hotkey
+            combo (desktop). Mobile callers pass a single Android KeyCode.
+
     # -------- Catalog --------
     ProviderMeta:
       type: object
@@ -1826,6 +2492,23 @@ components:
         updatedAt: { type: string, format: date-time }
         screenshotUrl: { type: string }
         screenshotUpdatedAt: { type: string, format: date-time }
+        capabilities:
+          description: |
+            Frozen capability declaration snapshot (raw JSON object,
+            nullable). Byte-for-byte passthrough of the stored
+            `capabilities_json` (proto `InstanceData` field 98). Omitted
+            entirely when the instance has no declared capabilities
+            (pre-migration rows / no matching billing template) rather
+            than emitted as `null`. Mirrors the same field on the main
+            Gateway DTO (services/gateway/internal/dto/instance_data.go).
+
+            Note: this is the **instance-level** capability JSON object and
+            is semantically distinct from `DeviceInfoDTO.capabilities`
+            (a string array of device hardware / Agent-reported
+            capabilities returned by
+            `GET /api/v1/instances/{id}/device/info`).
+          type: object
+          additionalProperties: true
     InstanceResponse:
       allOf:
         - $ref: '#/components/schemas/SuccessEnvelope'
@@ -2127,10 +2810,18 @@ components:
 
         Frame format:
         ```
+        data: {"type":"reasoning","text":"Let me think… "}
         data: {"type":"delta","text":"Hello "}
         data: {"type":"delta","text":"world"}
         data: {"type":"done","text":"Hello world","context_id":"ch-1","is_error":false}
         ```
+
+        `reasoning` frames carry the agent's live chain-of-thought
+        ("thinking"), delivered on a parallel stream and interleaved with
+        `delta` (answer) frames. They are independent: concatenate only
+        `delta` text for the answer, and only `reasoning` text for the
+        thinking trace. Clients that don't render reasoning can ignore
+        `reasoning` frames entirely.
 
         On agent error (audit-v4 P1-1 unified error frame):
         ```
@@ -2139,6 +2830,7 @@ components:
         ```
 
         Frame schemas:
+        - `reasoning` — see [`InvokeAgentSSEReasoning`](#/components/schemas/InvokeAgentSSEReasoning)
         - `delta` — see [`InvokeAgentSSEDelta`](#/components/schemas/InvokeAgentSSEDelta)
         - `error` — see [`InvokeAgentSSEError`](#/components/schemas/InvokeAgentSSEError)
         - `done`  — see [`InvokeAgentSSEDone`](#/components/schemas/InvokeAgentSSEDone)
@@ -2153,6 +2845,22 @@ components:
         text:
           type: string
           description: Streaming chunk text. Concatenate in order for the full reply.
+
+    InvokeAgentSSEReasoning:
+      type: object
+      required: [type, text]
+      description: |
+        Agent reasoning ("thinking") chunk, delivered on a parallel
+        stream independent of the answer `delta` frames. Concatenate
+        `reasoning` text in order for the full chain-of-thought; it does
+        NOT contribute to the final answer text. Optional to render.
+      properties:
+        type:
+          type: string
+          enum: [reasoning]
+        text:
+          type: string
+          description: Streaming reasoning chunk text.
 
     InvokeAgentSSEError:
       type: object
@@ -2672,7 +3380,8 @@ components:
         | type                  | meaning                                 |
         |-----------------------|-----------------------------------------|
         | `chat_message`        | caller's prompt                         |
-        | `agent_thought_chunk` | agent reasoning (incremental)           |
+        | `agent_reasoning`     | agent reasoning / chain-of-thought as an independent append-only row (v3; `body` carries the cumulative reasoning text, `state` transitions streaming→completed). Never terminal — it never closes the SSE. |
+        | `agent_thought_chunk` | agent reasoning (incremental, legacy pre-v3) |
         | `agent_message_chunk` | agent reply delta (incremental)         |
         | `agent_reply_delta`   | terminal-bound streaming delta          |
         | `agent_reply`         | terminal success reply                  |
@@ -3464,6 +4173,22 @@ components:
     # P0-D: reusable response components referenced from every
     # operation's responses block. Adding a new code only means adding
     # a constant here; operations stay readable.
+    ControlActionOK:
+      description: |
+        Standard `{ success, data }` envelope; `data` is an
+        [`ActionResult`](#/components/schemas/ActionResult) (`{ ok: true }`)
+        acknowledging the device action completed. Device-reported
+        failures map to 400 `action_unsupported` / `invalid_param`,
+        409 `device_busy`, 503 `device_offline`, or 504 `service_timeout`.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/SuccessEnvelope'
+              - type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/ActionResult' }
     BadRequest:
       description: Malformed request body, query parameter, or path parameter (`code` is one of `invalid_json` / `invalid_body` / `invalid_param` / `missing_param`).
       content:
