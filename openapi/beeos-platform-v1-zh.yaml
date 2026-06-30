@@ -395,6 +395,46 @@ paths:
         "5XX": { $ref: '#/components/responses/ServerError' }
 
   # ---------------------------------------------------------------------
+  # 设备信息（BYOD 注册 / 静态设备元数据）
+  # ---------------------------------------------------------------------
+  /api/v1/instances/{id}/device/info:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+    get:
+      operationId: getDeviceInfo
+      tags: [instances]
+      summary: BYOD 设备注册 / 静态元数据。
+      description: |
+        返回由用户自备设备（BYOD，如一部手机）支撑的实例的**注册 /
+        静态**设备元数据：设备类型、型号、OS + 版本、注册的屏幕几何
+        （`width` / `height` / `density`），以及设备硬件 / Agent 上报的
+        `capabilities`。
+
+        这与 `GET /api/v1/instances/{id}/mobile`（`ControlInfo`）不同：
+        `/mobile` 是同步**控制面**，通过控制通道上报 *live* 几何 + 可达性；
+        而 `/device/info` 是**注册 / 静态**设备快照，即使设备离线也能读取
+        （返回缓存的静态信息）。若实例不存在或不属于调用方则返回 404。
+      responses:
+        "200":
+          description: 标准信封；`data` 为 `DeviceInfoDTO`。
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/DeviceInfoDTO' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "503": { $ref: '#/components/responses/ServerError' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+
+  # ---------------------------------------------------------------------
   # Files（P1-A —— presign 上传 + 通过 Runtime FileService 解析）
   # ---------------------------------------------------------------------
   /api/v1/files/presign-upload:
@@ -1745,6 +1785,55 @@ components:
         updatedAt: { type: string, format: date-time }
         screenshotUrl: { type: string }
         screenshotUpdatedAt: { type: string, format: date-time }
+    DeviceInfoDTO:
+      type: object
+      title: DeviceInfoDTO
+      description: |
+        实例后端设备的 BYOD（用户自备设备）注册 / 静态元数据，例如
+        用户提供的一部手机。
+
+        与 `ControlInfo`（`/computer` + `/mobile` 的 live 控制面）不同：
+        这是注册的硬件快照，即使设备离线也能读取。这里的 `capabilities`
+        是设备硬件 / Agent 上报的能力字符串 —— 与
+        `InstanceDataDTO.capabilities`（实例级能力 JSON 声明）语义不同。
+      required: [type, model, os, osVersion, width, height, density, capabilities]
+      properties:
+        type:
+          type: string
+          description: 设备类型（如 `android`、`windows`、`linux`、`macos`）。
+        model:
+          type: string
+          description: 设备型号 / 硬件名。
+        os:
+          type: string
+          description: 操作系统名称。
+        osVersion:
+          type: string
+          description: 操作系统版本。
+        width:
+          type: integer
+          format: int32
+          description: 注册的屏幕宽度（设备像素）。
+        height:
+          type: integer
+          format: int32
+          description: 注册的屏幕高度（设备像素）。
+        density:
+          type: integer
+          format: int32
+          description: 注册的屏幕密度（DPI）。
+        capabilities:
+          type: array
+          items: { type: string }
+          description: |
+            设备硬件 / Agent 上报的能力字符串。与
+            `InstanceDataDTO.capabilities`（实例级能力 JSON 对象）语义不同。
+        metadata:
+          type: object
+          additionalProperties: true
+          description: |
+            可选的调用方 / 设备提供的附加元数据（原始 JSON 对象）。
+            缺失或格式非法时整体省略。
     InstanceResponse:
       allOf:
         - $ref: '#/components/schemas/SuccessEnvelope'

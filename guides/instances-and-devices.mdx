@@ -1,0 +1,299 @@
+---
+title: Instances & Devices
+description: "Inspect your instances and agents, and read BYOD device registration metadata — when to use device/info vs the live /mobile control plane."
+---
+
+<Note>
+**Audience**: SDK users who deploy instances (cloud desktops, Android
+runtimes, or bring-your-own-device phones) and need to **read** their
+state, list the agents that run on them, and discover what a backing
+device actually is.
+</Note>
+
+Everything in this guide is on the User OpenAPI surface (`/api/v1`,
+base URL `https://openapi.beeos.ai`) and authenticated with an `oag_`
+User API Key — see [Authentication & API Keys](/authentication) for
+how to obtain one. All responses use the standard `{ success, data }`
+envelope.
+
+---
+
+## 1. Get an instance
+
+`GET /api/v1/instances/{id}` returns the full `InstanceDataDTO` for one
+instance you own. This is your starting point for everything else: it
+tells you what the instance *is* (`osType`), whether it's *running*
+(`status`), whether it's *reachable* (`connectivity`), and where to
+reach it (`endpoint`).
+
+```bash
+curl https://openapi.beeos.ai/api/v1/instances/instance_abc123 \
+  -H "Authorization: Bearer oag_..."
+```
+
+```json
+{
+  "success": true,
+  "data": {
+    "id": "instance_abc123",
+    "ownerId": "user_xyz",
+    "name": "my-agent-1",
+    "agentFramework": "openclaw",
+    "providerId": "openclaw-k8s",
+    "osType": "android",
+    "status": "running",
+    "desiredStatus": "running",
+    "endpoint": "https://rt-abc123.beeos.ai",
+    "connectivity": "online",
+    "clusterId": "cl-east-1",
+    "capabilities": { "longRunning": true, "vision": true },
+    "createdAt": "2026-05-14T18:00:00Z"
+  }
+}
+```
+
+### Key fields
+
+| Field | Type | Description |
+|---|---|---|
+| `osType` | string | The instance's OS family — e.g. `android`, `linux`, `windows`, `macos`. Decides which control surface applies (`/mobile` vs `/computer`). |
+| `status` | string | Lifecycle state: `pending` \| `provisioning` \| `running` \| `stopped` \| `terminated`. |
+| `desiredStatus` | string | The target state the control plane is reconciling toward: `running` \| `stopped` \| `terminated`. A gap between `status` and `desiredStatus` means a transition is in flight. |
+| `connectivity` | string | Live reachability of the backing runtime/device: `unknown` \| `online` \| `offline`. Independent of `status` — a `running` instance can still be `offline` if its device dropped off. |
+| `connectivityReason` | string | Annotates a non-`online` `connectivity`. Canonical values: `device_disconnected` \| `device_unauthorized` \| `instance_disconnected`. Empty when `connectivity` is `online` (any transition into `online` strictly clears it). |
+| `endpoint` | string | The instance's runtime endpoint URL. |
+| `capabilities` | object | **Instance-level** capability declaration — a raw JSON object frozen from the billing/catalog template. See [§5](#5-two-kinds-of-capabilities) for how this differs from device capabilities. |
+
+<Note>
+`connectivity` (and `connectivityReason`) describe the **live** link to
+the backing device, while `status` describes the **lifecycle** the
+control plane intends. Always check both before issuing control calls —
+a `running` + `offline` instance will reject taps/clicks.
+</Note>
+
+---
+
+## 2. List your instances
+
+`GET /api/v1/instances` returns a paginated array of `InstanceDataDTO`,
+plus a `total` count, so you can build dashboards or pick an instance to
+act on.
+
+```bash
+curl "https://openapi.beeos.ai/api/v1/instances?status=running&pageSize=20" \
+  -H "Authorization: Bearer oag_..."
+```
+
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "id": "instance_abc123",
+      "name": "my-agent-1",
+      "providerId": "openclaw-k8s",
+      "status": "running",
+      "osType": "android",
+      "createdAt": "2026-05-14T18:00:00Z"
+    }
+  ],
+  "total": 1
+}
+```
+
+### Pagination
+
+| Param | Type | Description |
+|---|---|---|
+| `page` | integer (≥ 0) | Zero-based page index. |
+| `pageSize` | integer (0–200) | Rows per page. |
+
+`total` is the unfiltered-by-page count for the **current filter set**,
+so paginate until `page * pageSize >= total`.
+
+### Filters
+
+All filters combine with `AND`. Omit any you don't need.
+
+| Param | Type | Description |
+|---|---|---|
+| `status` | string | Match a single lifecycle state (e.g. `running`). |
+| `providerId` | string | Match instances on a specific provider (e.g. `openclaw-k8s`). |
+| `agentFramework` | string | Match by agent framework (e.g. `openclaw`). |
+| `clusterId` | string | Match a specific cluster. |
+| `search` | string | Free-text search over instance name / metadata. |
+
+---
+
+## 3. List agents on an instance
+
+An instance hosts one or more agents. `GET /api/v1/agents` lists the
+agents you own; pass `instance_id` to scope the list to a single
+instance.
+
+```bash
+curl "https://openapi.beeos.ai/api/v1/agents?instance_id=instance_abc123&limit=20" \
+  -H "Authorization: Bearer oag_..."
+```
+
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "id": "agent_abc123",
+      "instanceId": "instance_abc123",
+      "name": "summariser",
+      "status": "active",
+      "visibility": "private",
+      "mcpEnabled": false,
+      "createdAt": "2026-05-14T18:00:00Z",
+      "updatedAt": "2026-05-14T18:00:00Z"
+    }
+  ],
+  "total": 1
+}
+```
+
+### Query parameters
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `instance_id` | string | unset | Filter agents by the instance they run on. |
+| `limit` | integer | `20` | Maximum rows per page. |
+| `offset` | integer | `0` | Number of rows to skip (offset pagination). |
+
+### `AgentDTO` fields
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | string | Agent identifier — the `agentId` you pass to [Calling Agents](/guides/calling-agents). |
+| `instanceId` | string | The instance this agent runs on. |
+| `name` | string | Machine name (slug-friendly). |
+| `displayName` | string | Human-friendly name, when set. |
+| `description` | string | Optional description (reconciled from pod-side sync). |
+| `status` | string | Agent status (e.g. `active`). |
+| `slug` | string | URL-friendly identifier, when set. |
+| `visibility` | string | One of `private` \| `public` \| `marketplace` \| `unlisted`. |
+| `mcpEnabled` | boolean | Whether the agent is exposed over the MCP gateway. |
+| `createdAt` / `updatedAt` | string (date-time) | Timestamps. |
+
+---
+
+## 4. BYOD device info
+
+When an instance is backed by a **user-provided device** (bring your own
+device, e.g. a phone you registered), you can read the device's
+**registration / static metadata** with:
+
+```bash
+curl https://openapi.beeos.ai/api/v1/instances/instance_abc123/device/info \
+  -H "Authorization: Bearer oag_..."
+```
+
+```json
+{
+  "success": true,
+  "data": {
+    "type": "android",
+    "model": "Pixel 8 Pro",
+    "os": "Android",
+    "osVersion": "15",
+    "width": 1344,
+    "height": 2992,
+    "density": 480,
+    "capabilities": ["screenshot", "tap", "swipe", "camera"],
+    "metadata": { "registeredBy": "user_xyz" }
+  }
+}
+```
+
+This is the answer to **"what is this phone, and what is it capable
+of?"** It's the registered hardware snapshot, so it is **readable even
+when the device is offline** — the cached static info is returned rather
+than a 404.
+
+### `DeviceInfoDTO` fields
+
+| Field | Type | Description |
+|---|---|---|
+| `type` | string | Device type — e.g. `android`, `windows`, `linux`, `macos`. |
+| `model` | string | Device model / hardware name (e.g. `Pixel 8 Pro`). |
+| `os` | string | Operating system name. |
+| `osVersion` | string | Operating system version. |
+| `width` | integer | Registered screen width in device pixels. |
+| `height` | integer | Registered screen height in device pixels. |
+| `density` | integer | Registered screen density (DPI). |
+| `capabilities` | string[] | **Device-level** capability strings (hardware / Agent-reported). See [§5](#5-two-kinds-of-capabilities). |
+| `metadata` | object | Optional caller-/device-supplied extra JSON. Omitted entirely when absent or malformed. |
+
+<Note>
+`width` / `height` / `density` here are the **registered** geometry from
+when the device was enrolled. They are the device's static spec — not
+necessarily the live foreground geometry at request time (an Android
+phone can rotate, fold, or change resolution). For the *live* geometry
+use `/mobile` — see below.
+</Note>
+
+---
+
+## 5. device/info vs /mobile — which one?
+
+There are two ways to learn about an Android/mobile instance, and they
+answer different questions:
+
+| | `GET /instances/{id}/device/info` | `GET /instances/{id}/mobile` |
+|---|---|---|
+| Schema | `DeviceInfoDTO` | `ControlInfo` |
+| Nature | **Registration / static** snapshot | Synchronous **control plane** |
+| Answers | "What is this phone? What model / OS / spec / capabilities?" | "Can I drive it right now? What's the live screen geometry?" |
+| Geometry | Registered `width` / `height` / `density` (enrollment-time) | Live `screen_width` / `screen_height` at request time |
+| Reachability | Readable **even when the device is offline** (cached) | `online` flag reflects the live control channel; 404 on a desktop instance |
+| Actions | `capabilities[]` (what the hardware/Agent reports) | `supported_actions[]` (verbs the control plane accepts now) + `current_app` |
+
+Rule of thumb:
+
+- **Identify / inventory** a device ("this is what it is / what config
+  / what it can do") → `device/info`.
+- **Control it live** ("drive it now / current screen geometry") →
+  `/mobile` (see the `ControlInfo` schema and the `/mobile/*` action
+  endpoints in the **API Reference** tab).
+
+<Warning>
+Don't use `/mobile` just to read a device's static spec — it requires a
+live control channel and returns `404` for non-mobile (desktop)
+instances. Use `device/info` for identity/inventory, which works offline.
+</Warning>
+
+---
+
+## 6. Two kinds of `capabilities`
+
+The word "capabilities" appears on **both** the instance and the device,
+and they are **semantically distinct** — don't conflate them:
+
+| | `InstanceDataDTO.capabilities` | `DeviceInfoDTO.capabilities` |
+|---|---|---|
+| Source | `GET /api/v1/instances/{id}` (and list) | `GET /api/v1/instances/{id}/device/info` |
+| Type | **JSON object** (raw declaration) | **Array of strings** |
+| Meaning | Instance-level capability **declaration** frozen from the billing/catalog template (e.g. `{ "longRunning": true, "vision": true }`) | Concrete device hardware / Agent-reported capability **tags** (e.g. `["screenshot", "tap", "camera"]`) |
+| Use it to | Reason about what the *instance tier* is entitled to | Reason about what the *physical device* can physically do |
+
+When the instance has no declared capabilities, the instance-level field
+is **omitted entirely** (not emitted as `null`).
+
+---
+
+## See also
+
+- [Calling Agents](/guides/calling-agents) — invoke the agents you
+  listed in §3
+- [Choosing a Protocol](/guides/choosing-a-protocol) — OpenAPI vs A2A
+  vs MCP for talking to agents
+- [Authentication & API Keys](/authentication) — `oag_` keys and the
+  authorization model
+- [Error Reference](/reference/errors) — every wire `code` these
+  endpoints can return
+- [OpenAPI contract](https://github.com/beeos-ai/openagent/blob/main/backend/openapi/beeos-platform-v1.yaml)
+  — the full `instances`, `agents`, `mobile`, and `device/info`
+  operation contracts (also rendered in the **API Reference** tab)

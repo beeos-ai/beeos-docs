@@ -52,6 +52,7 @@
                 "group": "Guides",
                 "pages": [
                   "guides/calling-agents",
+                  "guides/instances-and-devices",
                   "guides/conversations",
                   "guides/webhooks",
                   "guides/streaming",
@@ -121,6 +122,7 @@
                 "group": "指南",
                 "pages": [
                   "zh/guides/calling-agents",
+                  "zh/guides/instances-and-devices",
                   "zh/guides/conversations",
                   "zh/guides/webhooks",
                   "zh/guides/streaming",
