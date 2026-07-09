@@ -5,10 +5,13 @@ on:
     branches: [main]
 
 jobs:
-  deploy:
+  validate:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: mintlify/github-action@v4
+      - uses: actions/setup-node@v4
         with:
-          api-key: ${{ secrets.MINTLIFY_API_KEY }}
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run validate

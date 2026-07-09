@@ -8,6 +8,6 @@
     "sync-spec": "./scripts/sync-spec.sh"
   },
   "devDependencies": {
-    "mintlify": "^4.2.569"
+    "mintlify": "4.2.527"
   }
 }
