@@ -3572,7 +3572,7 @@ components:
           properties:
             data:
               type: object
-              required: [messages, latest_offset]
+              required: [messages, latest_offset, has_more]
               properties:
                 messages:
                   type: array
@@ -3582,6 +3582,12 @@ components:
                   type: integer
                   format: int64
                   description: Channel's current max offset for "caught up" detection.
+                next_since:
+                  type: string
+                  description: Public offset cursor to pass as the next request's since value.
+                has_more:
+                  type: boolean
+                  description: True when another page is available via next_since.
 
     # -------- Webhooks (ADR-0017 D4) --------
     RegisterTaskWebhookRequest:
