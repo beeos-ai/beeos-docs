@@ -23,9 +23,34 @@ SDK 只针对 **Platform API**。[A2A 协议](/zh/a2a/overview)
 npm install @beeos-ai/sdk
 ```
 
-当前发布版本：**0.5.0**（wire delta 见 [SDK 变更日志](/zh/sdks/changelog)）。
+当前发布版本：**0.6.0**（wire delta 见 [SDK 变更日志](/zh/sdks/changelog)）。
 
-## 配置
+## 稳定任务 facade（推荐）
+
+0.6.0 新增手工维护的 `BeeOSClient`，覆盖常用 Agent 任务生命周期；
+OpenAPI 生成代码重新生成时，它的调用方式保持稳定。
+
+```typescript
+import { BeeOSClient } from "@beeos-ai/sdk";
+
+const client = new BeeOSClient({
+  apiKey: process.env.BEEOS_API_KEY!,
+  baseUrl: "https://openapi.beeos.ai",
+});
+
+const agents = await client.listAgents();
+const created = await client.createTask(agents[0].id, {
+  message: "汇总最新设备状态。",
+});
+const task = await client.getTask(agents[0].id, created.data.taskId);
+await client.cancelTask(agents[0].id, created.data.taskId);
+```
+
+`client.taskEvents(agentId, taskId)` 是任务 SSE 流的 async generator。
+完整生成 API 仍从 package root 导出，facade 也可从
+`@beeos-ai/sdk/facade` 显式导入。
+
+## 完整生成客户端
 
 生成代码遵循 OpenAPI Generator `typescript-fetch` 模板：一个
 `Configuration` 值 + 每个 OpenAPI tag 一个 class。

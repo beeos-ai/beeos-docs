@@ -129,11 +129,30 @@ clients can use it for filtering.
 
 ---
 
-## 2. `0.4.x` → `0.5.0`
+## 2. `0.5.0` → `0.6.0`
+
+This release has no wire-level migration. Existing generated-client calls
+continue to work. You can adopt the new task facade incrementally:
+
+```ts
+import { BeeOSClient } from "@beeos-ai/sdk";
+
+const client = new BeeOSClient({ apiKey: process.env.BEEOS_API_KEY! });
+const agents = await client.listAgents();
+```
+
+For TypeScript consumers, Node.js 20 or newer is now required. Both ESM and
+CommonJS remain supported through explicit package exports. Go callers can
+adopt `NewClient(ClientOptions{...})` while retaining direct access to the
+generated client through `Client.API`.
+
+---
+
+## 3. `0.4.x` → `0.5.0`
 
 The entries below shipped together in `0.5.0`. None are breaking.
 
-### 2.1 Webhook HMAC signing — opt-in but recommended
+### 3.1 Webhook HMAC signing — opt-in but recommended
 
 Set `secret` when registering a webhook and every delivery
 ships an `X-BeeOS-Signature` header. The wire response only
@@ -173,7 +192,7 @@ if (!timingSafeEqual(Buffer.from(expected), Buffer.from(got))) {
 See [Webhooks § 6 HMAC signing](/guides/webhooks#6-hmac-signing-p2-a)
 for the Python variant and the full delivery contract.
 
-### 2.2 Webhook delivery audit log + manual replay
+### 3.2 Webhook delivery audit log + manual replay
 
 Two new endpoints:
 
@@ -194,7 +213,7 @@ for (const d of failed) {
 }
 ```
 
-### 2.3 `GET /api/v1/tasks` — cross-agent inbox
+### 3.3 `GET /api/v1/tasks` — cross-agent inbox
 
 Previously you had to call `GET /agents/{id}/tasks` once per
 agent to assemble a multi-agent inbox. Now:
@@ -208,7 +227,7 @@ const inbox = await api.listUserTasks({
 
 Pages with `since` (offset cursor).
 
-### 2.4 `attachments[].file_id` on invoke / tasks / conversations
+### 3.4 `attachments[].file_id` on invoke / tasks / conversations
 
 Replace the old "stuff the binary in `message`" workflow with:
 
@@ -233,7 +252,7 @@ await api.invokeAgent({
 Old "no attachments" callers keep working — the field is
 optional.
 
-### 2.5 `PATCH /api/v1/agents/{agentId}`
+### 3.5 `PATCH /api/v1/agents/{agentId}`
 
 Owner-only update of `visibility` and `mcp_enabled` (whitelist).
 Other fields (`name`, `description`, …) are still synced by the
@@ -250,14 +269,14 @@ await api.updateAgent({
 });
 ```
 
-### 2.6 Wire-error envelope tightened
+### 3.6 Wire-error envelope tightened
 
 All 4xx / 5xx now follow the canonical envelope (`type`,
 `code`, `message`, `param?`, `request_id`). Old code that only
 inspected the HTTP status keeps working; new code should branch
 on `error.code`. See [Error Reference](/reference/errors).
 
-### 2.7 Scope vocabulary removed (v1.1.0)
+### 3.7 Scope vocabulary removed (v1.1.0)
 
 The `oag_` User API Key per-route scope gate
 (`agents:read`, `agents:write`, `tasks:read`, `tasks:write`,
@@ -280,7 +299,7 @@ What this means for SDK migrations:
 - **Remove scope badges / pickers from your UI.** Server-side responses
   no longer carry a `scopes` field on `APIKey` or `APIKeyCreateResult`.
 
-### 2.8 `timeout_ms` clamp on `invoke`
+### 3.8 `timeout_ms` clamp on `invoke`
 
 The blocking-invoke timeout is clamped to `[100, 115_000]` ms
 server-side. Passing `timeoutMs: 200_000` no longer hangs your
@@ -291,7 +310,7 @@ error out promptly.
 
 ---
 
-## 3. Hand-rolled HTTP → SDK
+## 4. Hand-rolled HTTP → SDK
 
 If you've been calling `https://openapi.beeos.ai/api/v1/...`
 with `fetch` / `axios` / `net/http` directly, the migration is
@@ -333,7 +352,7 @@ mostly mechanical:
 
 ---
 
-## 4. `0.2.x` → `0.4.x`
+## 5. `0.2.x` → `0.4.x`
 
 `0.2` predates the OpenAPI Gateway BFF decoupling (ADR-001).
 The SDK was generated from the **main** Gateway's swagger and

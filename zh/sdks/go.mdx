@@ -22,9 +22,45 @@ SDK 只针对 **Platform API**。[A2A 协议](/zh/a2a/overview)
 go get github.com/beeos-ai/sdk-go
 ```
 
-当前发布版本：**v0.5.0**（wire delta 见 [SDK 变更日志](/zh/sdks/changelog)）。
+当前发布版本：**v0.6.0**（wire delta 见 [SDK 变更日志](/zh/sdks/changelog)）。
 
-## 配置
+## 稳定任务 facade（推荐）
+
+0.6.0 新增手工维护的 `Client`，覆盖常用 Agent 任务生命周期；
+OpenAPI 生成代码重新生成时，它的调用方式保持稳定。
+
+```go
+package main
+
+import (
+    "context"
+    "os"
+
+    beeos "github.com/beeos-ai/sdk-go"
+)
+
+func main() {
+    client, err := beeos.NewClient(beeos.ClientOptions{
+        APIKey:  os.Getenv("BEEOS_API_KEY"),
+        BaseURL: "https://openapi.beeos.ai",
+    })
+    if err != nil {
+        panic(err)
+    }
+
+    agents, err := client.ListAgents(context.Background())
+    if err != nil {
+        panic(err)
+    }
+    _ = agents
+}
+```
+
+facade 同时提供 `CreateTask`、`GetTask`、`CancelTask` 和
+`TaskEvents`。完整生成客户端仍可通过 `client.API` 或
+`NewAPIClient` 使用。
+
+## 完整生成客户端
 
 ```go
 package main

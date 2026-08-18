@@ -1,12 +1,12 @@
 ---
 title: SDK 变更日志
-description: OpenAPI 契约以及 @beeos-ai/sdk 和 github.com/beeos-ai/sdk-go 这两个生成 SDK 的版本变更。
+description: OpenAPI 契约以及 TypeScript、Go、Python 三个生成 SDK 的版本变更。
 ---
 
 BeeOS **公开 OpenAPI 契约**
 （`backend/openapi/beeos-platform-v1.yaml`）以及从中生成的 SDK
-（TypeScript 的 `@beeos-ai/sdk`、Go 的
-`github.com/beeos-ai/sdk-go`）所有值得注意的变更都记录在本文件。
+（TypeScript 的 `@beeos-ai/sdk`、Go 的 `github.com/beeos-ai/sdk-go`、
+Python 的 `beeos-sdk`）所有值得注意的变更都记录在本文件。
 
 本文件是**规范变更日志**：
 
@@ -35,8 +35,8 @@ README 与
 | **MINOR** | 加新路由、加可选请求字段、加可选响应字段、加新 `code` 值。 |
 | **PATCH** | 文档、示例、OpenAPI `description` 打磨、不影响生成代码的 generator 配置调整。 |
 
-TypeScript 和 Go SDK package 共享**同一条**版本线。它们总是从同一次
-generator run 一起切，不能放出版本不一致的对子。
+TypeScript、Go 和 Python SDK package 共享**同一条**版本线。它们总是
+从同一次 generator run 一起切，不能发布版本不一致的组合。
 
 ---
 
@@ -54,7 +54,7 @@ generator run 一起切，不能放出版本不一致的对子。
    ```
 3. **更新 generator 版本戳。** 同一个 commit 里把
    [`sdks/openapi-sdk/generate.sh`](https://github.com/beeos-ai/openagent/blob/main/sdks/openapi-sdk/generate.sh)
-   88-95 行的 `npmVersion=` 和 `packageVersion=` 一起升上去。两个 SDK
+   `npmVersion=` 和所有 `packageVersion=` 一起升上去。三个 SDK
    共享版本号。
 4. **写下面的条目。** 在 `[Unreleased]` 块顶部加新段；只描述 **wire**
    变更。不影响任何消费方字节的实现侧重构，放对应服务的 README，不放这里。
@@ -63,8 +63,8 @@ generator run 一起切，不能放出版本不一致的对子。
    里的契约漂移测试，并对生成的 Go SDK 跑 `go build ./...`。
 6. **合并后，同步工作流：** 重新生成并验证三个客户端，然后向
    `beeos-ai/sdk`、`beeos-ai/sdk-go` 和 `beeos-ai/sdk-python` 推送不可变的
-   `v<version>` tag。各独立仓库负责自己的包发布：TypeScript 使用 npm
-   Trusted Publisher，Go 通过 Go Module Proxy 分发，Python 使用 PyPI
+   `v<version>` tag。各独立仓库负责自己的包发布：TypeScript 发布到 npm
+   并携带 provenance，Go 通过 Go Module Proxy 分发，Python 使用 PyPI
    Trusted Publisher。
 
 **不要**手动改 `sdks/beeos-ai-sdk/` 或 `sdks/beeos-ai-sdk-go/`
@@ -77,6 +77,35 @@ generator 输出之上（README、LICENSE）。
 ## [Unreleased]
 
 当前没有尚未发布的 SDK 变更。
+
+---
+
+## [0.6.0] — 2026-08-18
+
+### 新增
+
+- **稳定 TypeScript facade。** `BeeOSClient` 提供 `listAgents`、
+  `createTask`、`getTask`、`cancelTask`，以及 async-generator 形式的
+  `taskEvents` SSE 客户端；完整生成 API 仍保留。
+- **稳定 Go facade。** `Client` 提供同一组任务能力，并通过
+  `TaskEvents` channel 解析 SSE；完整生成客户端保留在 `Client.API`。
+- **公开包黑盒验证。** CI 从 npm、PyPI 和 Go Proxy 安装同一个指定版本，
+  检查 CommonJS、ESM、Python import、Go 编译、facade、npm provenance，
+  以及 staging 未鉴权请求边界。
+
+### 变更
+
+- **缩小 TypeScript 包体。** npm 只包含 `dist`、README 和 LICENSE：
+  151 files / 1.85 MB unpacked；0.5.0 为 719 files / 5.36 MB。
+- **明确运行时契约。** `@beeos-ai/sdk` 声明 Node.js `>=20`，提供 root
+  与 `./facade` exports，并在 Node 20、22、24 上分别验证 ESM/CJS。
+- **发布职责清晰化。** OpenAgent 生成并同步三个 SDK，各独立 SDK 仓库
+  发布自己的 registry artifact；npm 0.6.0 带已验证 provenance attestation。
+
+### 兼容性
+
+- 本版本不改变 Backend 或 OpenAPI wire 行为；原有生成客户端 import
+  继续受支持。
 
 ---
 

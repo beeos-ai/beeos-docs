@@ -25,10 +25,36 @@ what you get in the SDK.
 npm install @beeos-ai/sdk
 ```
 
-Current published version: **0.5.0** (see [SDK Changelog](/sdks/changelog)
+Current published version: **0.6.0** (see [SDK Changelog](/sdks/changelog)
 for wire deltas).
 
-## Configure
+## Stable task facade (recommended)
+
+Version 0.6.0 adds `BeeOSClient`, a hand-maintained facade for the common
+agent-task lifecycle. Its API remains stable when the generated OpenAPI
+surface is regenerated.
+
+```typescript
+import { BeeOSClient } from "@beeos-ai/sdk";
+
+const client = new BeeOSClient({
+  apiKey: process.env.BEEOS_API_KEY!,
+  baseUrl: "https://openapi.beeos.ai",
+});
+
+const agents = await client.listAgents();
+const created = await client.createTask(agents[0].id, {
+  message: "Summarize the latest device status.",
+});
+const task = await client.getTask(agents[0].id, created.data.taskId);
+await client.cancelTask(agents[0].id, created.data.taskId);
+```
+
+`client.taskEvents(agentId, taskId)` is an async generator for the task SSE
+stream. The full generated API remains available through the package root and
+the explicit `@beeos-ai/sdk/facade` export.
+
+## Full generated client
 
 The generated code follows the OpenAPI Generator `typescript-fetch`
 template: one `Configuration` value plus one class per OpenAPI tag.

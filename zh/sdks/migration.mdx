@@ -117,11 +117,29 @@ if (task.truncated) {
 
 ---
 
-## 2. `0.4.x` → `0.5.0`
+## 2. `0.5.0` → `0.6.0`
+
+本版本没有 wire 层迁移；原有生成客户端调用继续可用。可以渐进采用新的
+任务 facade：
+
+```ts
+import { BeeOSClient } from "@beeos-ai/sdk";
+
+const client = new BeeOSClient({ apiKey: process.env.BEEOS_API_KEY! });
+const agents = await client.listAgents();
+```
+
+TypeScript 消费方现在要求 Node.js 20 或更高版本；ESM 和 CommonJS
+继续通过显式 package exports 支持。Go 调用方可以采用
+`NewClient(ClientOptions{...})`，同时通过 `Client.API` 继续访问完整生成客户端。
+
+---
+
+## 3. `0.4.x` → `0.5.0`
 
 下面的条目已随 `0.5.0` 一起发布，都不是 breaking。
 
-### 2.1 Webhook HMAC 签名 —— 可选但推荐
+### 3.1 Webhook HMAC 签名 —— 可选但推荐
 
 注册 webhook 时设 `secret`，每次投递就携带 `X-BeeOS-Signature`
 header。wire 响应只回 `has_secret: true`；原 secret 从不回显。
@@ -160,7 +178,7 @@ if (!timingSafeEqual(Buffer.from(expected), Buffer.from(got))) {
 Python 版本及完整投递契约见
 [Webhooks § 6 HMAC 签名](/zh/guides/webhooks#6-hmac-签名)。
 
-### 2.2 Webhook 投递审计日志 + 手动重放
+### 3.2 Webhook 投递审计日志 + 手动重放
 
 两个新端点：
 
@@ -181,7 +199,7 @@ for (const d of failed) {
 }
 ```
 
-### 2.3 `GET /api/v1/tasks` —— 跨智能体收件箱
+### 3.3 `GET /api/v1/tasks` —— 跨智能体收件箱
 
 以前你得逐智能体调 `GET /agents/{id}/tasks` 才能拼出多智能体收件箱。
 现在：
@@ -195,7 +213,7 @@ const inbox = await api.listUserTasks({
 
 按 `since`（offset cursor）分页。
 
-### 2.4 invoke / tasks / conversations 上的 `attachments[].file_id`
+### 3.4 invoke / tasks / conversations 上的 `attachments[].file_id`
 
 把老的 "把二进制塞 `message` 里" 工作流替换成：
 
@@ -219,7 +237,7 @@ await api.invokeAgent({
 
 老 "无附件" 调用方仍工作 —— 字段是可选的。
 
-### 2.5 `PATCH /api/v1/agents/{agentId}`
+### 3.5 `PATCH /api/v1/agents/{agentId}`
 
 仅 owner 更新 `visibility` 和 `mcp_enabled`（白名单）。其他字段（`name`、
 `description` 等）仍由智能体进程通过 `POST /api/v1/agents/sync` 同步
@@ -235,13 +253,13 @@ await api.updateAgent({
 });
 ```
 
-### 2.6 wire 错误信封收紧
+### 3.6 wire 错误信封收紧
 
 所有 4xx / 5xx 现在遵循规范信封（`type`、`code`、`message`、`param?`、
 `request_id`）。只检查 HTTP 状态的老代码仍工作；新代码应按 `error.code`
 分支。见 [错误参考](/zh/reference/errors)。
 
-### 2.7 scope 词汇下线（v1.1.0）
+### 3.7 scope 词汇下线（v1.1.0）
 
 `oag_` User API Key 的 per-route scope 网关（`agents:read`、
 `agents:write`、`tasks:read`、`tasks:write`、`files:read`、
@@ -260,7 +278,7 @@ SDK 迁移要点：
 - **从 UI 删 scope badge / scope 选择器。** 服务端 `APIKey` /
   `APIKeyCreateResult` 已不再带 `scopes` 字段。
 
-### 2.8 invoke 上的 `timeout_ms` 钳制
+### 3.8 invoke 上的 `timeout_ms` 钳制
 
 阻塞 invoke 超时服务端钳在 `[100, 115_000]` ms。传 `timeoutMs: 200_000`
 不再让连接挂过 gateway 上限 —— 在钳值处钳住返回 `service_timeout`。
@@ -268,7 +286,7 @@ SDK 迁移要点：
 
 ---
 
-## 3. 手写 HTTP → SDK
+## 4. 手写 HTTP → SDK
 
 如果你一直用 `fetch` / `axios` / `net/http` 直接调
 `https://openapi.beeos.ai/api/v1/...`，迁移基本是机械的：
@@ -308,7 +326,7 @@ SDK 迁移要点：
 
 ---
 
-## 4. `0.2.x` → `0.4.x`
+## 5. `0.2.x` → `0.4.x`
 
 `0.2` 在 OpenAPI Gateway BFF 解耦（ADR-001）之前。SDK 是从 **main**
 Gateway 的 swagger 生成、路由集更宽（也不一致 —— 一半是用户专属、

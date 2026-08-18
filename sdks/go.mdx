@@ -23,10 +23,47 @@ that powers this site's API Reference tab.
 go get github.com/beeos-ai/sdk-go
 ```
 
-Current published version: **v0.5.0** (see
+Current published version: **v0.6.0** (see
 [SDK Changelog](/sdks/changelog) for wire deltas).
 
-## Configure
+## Stable task facade (recommended)
+
+Version 0.6.0 adds `Client`, a hand-maintained facade for the common
+agent-task lifecycle. Its API remains stable when the generated OpenAPI
+surface is regenerated.
+
+```go
+package main
+
+import (
+    "context"
+    "os"
+
+    beeos "github.com/beeos-ai/sdk-go"
+)
+
+func main() {
+    client, err := beeos.NewClient(beeos.ClientOptions{
+        APIKey:  os.Getenv("BEEOS_API_KEY"),
+        BaseURL: "https://openapi.beeos.ai",
+    })
+    if err != nil {
+        panic(err)
+    }
+
+    agents, err := client.ListAgents(context.Background())
+    if err != nil {
+        panic(err)
+    }
+    _ = agents
+}
+```
+
+The facade also provides `CreateTask`, `GetTask`, `CancelTask`, and
+`TaskEvents`. The complete generated client remains available as
+`client.API` or through `NewAPIClient`.
+
+## Full generated client
 
 ```go
 package main
