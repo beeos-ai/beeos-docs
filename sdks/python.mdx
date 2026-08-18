@@ -22,10 +22,9 @@ python -m pip install beeos
 The `beeos` package installs a compatible `beeos-sdk` dependency. Install
 `beeos-sdk` directly only when generated-client imports are preferred.
 
-Current releases:
-
-- `beeos==0.1.0`
-- `beeos-sdk==0.4.0`
+Application deployments should pin the resolved versions in their lockfile.
+The documentation intentionally does not hard-code patch versions, so package
+releases do not require a documentation-only update.
 
 ## Configure
 
@@ -81,4 +80,3 @@ may change when the OpenAPI contract has a breaking release; use the official
 - GitHub: [`beeos-ai/sdk-python`](https://github.com/beeos-ai/sdk-python)
 - PyPI: [`beeos`](https://pypi.org/project/beeos/)
 - PyPI: [`beeos-sdk`](https://pypi.org/project/beeos-sdk/)
-

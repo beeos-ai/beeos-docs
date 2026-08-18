@@ -15,15 +15,17 @@
 #   - $OPENAGENT_ROOT (optional, default ../) — root of the openagent
 #     meta repo. The repo path matters because beeos-docs is a submodule
 #     of openagent; locally, that submodule lives at openagent/beeos-docs.
+#   - $BACKEND_ROOT (optional, default $OPENAGENT_ROOT/backend) — direct
+#     path to the authoritative Backend checkout, used by cross-repo CI.
+#   - $SYNC_PRESERVE_BANNER (optional) — preserve the existing sync time
+#     and source SHA so drift checks compare contract content only.
 #
 # Outputs:
 #   - openapi/beeos-platform-v1.yaml         (overwritten)
 #   - openapi/beeos-agent-integration-v1.yaml (overwritten)
 #   - openapi/runtime-error-codes-v4.generated.json (overwritten)
 #
-# Does NOT touch openapi/beeos-platform-v1-zh.yaml. That file is a
-# historical localized snapshot and is not used by the API Reference.
-# Both language tabs render the authoritative synced platform spec.
+# Both language tabs render the same authoritative platform spec.
 # ============================================================================
 
 set -euo pipefail
@@ -31,7 +33,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DOCS_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 OPENAGENT_ROOT="${OPENAGENT_ROOT:-$(cd "$DOCS_ROOT/.." && pwd)}"
-SRC="$OPENAGENT_ROOT/backend/openapi"
+BACKEND_ROOT="${BACKEND_ROOT:-$OPENAGENT_ROOT/backend}"
+SRC="$BACKEND_ROOT/openapi"
 DST="$DOCS_ROOT/openapi"
 
 if [[ ! -d "$SRC" ]]; then
@@ -52,8 +55,15 @@ sync_one() {
     exit 1
   fi
 
-  local timestamp
+  local timestamp source_sha
   timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  source_sha="$(cd "$BACKEND_ROOT" && git rev-parse --short HEAD 2>/dev/null || echo 'unknown')"
+  if [[ "${SYNC_PRESERVE_BANNER:-0}" == "1" && -f "$dst_path" ]]; then
+    timestamp="$(sed -n 's/^# Last synced: //p' "$dst_path" | head -n 1)"
+    source_sha="$(sed -n 's/^# Source SHA: //p' "$dst_path" | head -n 1)"
+    [[ -n "$timestamp" ]] || timestamp="unknown"
+    [[ -n "$source_sha" ]] || source_sha="unknown"
+  fi
 
   local banner
   banner="# ============================================================================
@@ -61,7 +71,7 @@ sync_one() {
 # DO NOT EDIT HERE — edit the source in the openagent repo and run
 #   cd beeos-docs && npm run sync-spec
 # Last synced: ${timestamp}
-# Source SHA: $(cd "$OPENAGENT_ROOT/backend" && git rev-parse --short HEAD 2>/dev/null || echo 'unknown')
+# Source SHA: ${source_sha}
 # ============================================================================"
 
   mkdir -p "$DST"
@@ -98,5 +108,3 @@ echo ""
 echo "DONE."
 echo ""
 echo "Note: both language tabs use openapi/beeos-platform-v1.yaml."
-echo "      openapi/beeos-platform-v1-zh.yaml is a historical snapshot"
-echo "      and is intentionally not updated by this script."

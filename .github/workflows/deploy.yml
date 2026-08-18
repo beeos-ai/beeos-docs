@@ -1,6 +1,8 @@
 name: Deploy Docs
 
 on:
+  pull_request:
+    branches: [main]
   push:
     branches: [main]
 
@@ -14,4 +16,5 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci
+      - run: npm run lint-openapi
       - run: npm run validate

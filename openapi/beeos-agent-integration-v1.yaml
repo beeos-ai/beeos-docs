@@ -2,13 +2,16 @@
 # AUTO-SYNCED FROM backend/openapi/beeos-agent-integration-v1.yaml
 # DO NOT EDIT HERE — edit the source in the openagent repo and run
 #   cd beeos-docs && npm run sync-spec
-# Last synced: 2026-08-18T09:40:52Z
-# Source SHA: 296885a5
+# Last synced: 2026-08-18T10:09:08Z
+# Source SHA: 3c5a0736
 # ============================================================================
 openapi: 3.1.0
 info:
   title: BeeOS Agent integration API
   version: 1.0.0
+  license:
+    name: Proprietary
+    identifier: LicenseRef-Proprietary
   description: |
     **Public integration surface** for a single target agent. Transport options:
 

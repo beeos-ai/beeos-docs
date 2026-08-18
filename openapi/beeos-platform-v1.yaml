@@ -2,13 +2,16 @@
 # AUTO-SYNCED FROM backend/openapi/beeos-platform-v1.yaml
 # DO NOT EDIT HERE — edit the source in the openagent repo and run
 #   cd beeos-docs && npm run sync-spec
-# Last synced: 2026-08-18T09:40:52Z
-# Source SHA: 296885a5
+# Last synced: 2026-08-18T10:09:08Z
+# Source SHA: 3c5a0736
 # ============================================================================
 openapi: 3.1.0
 info:
   title: BeeOS OpenAPI (user contract)
   version: 1.1.0
+  license:
+    name: Proprietary
+    identifier: LicenseRef-Proprietary
   description: |
     The **BeeOS OpenAPI** user contract. The sole implementer is
     **[`services/openapi-gateway`](../services/openapi-gateway)** (`openapi-gw`,
@@ -284,10 +287,25 @@ paths:
                     success: true
                     data:
                       - id: "instance_abc123"
+                        ownerId: "user_abc123"
+                        agentFramework: "device-agent"
                         name: "my-agent-1"
                         providerId: "openclaw-k8s"
+                        externalId: "device_abc123"
+                        osType: "android"
+                        hostingType: "physical"
+                        cloudProvider: "local"
+                        modelPrimary: "autoglm-phone"
+                        models: ["autoglm-phone"]
                         status: "running"
-                        regionId: "us-east-1"
+                        desiredStatus: "running"
+                        endpoint: ""
+                        bridgeId: "bridge_abc123"
+                        identityId: "identity_abc123"
+                        totalRunSeconds: 3600
+                        connectivity: "online"
+                        providerConfig: {}
+                        region: "us-east-1"
                         createdAt: "2026-05-14T18:00:00Z"
                     total: 1
         "400": { $ref: '#/components/responses/BadRequest' }
@@ -1000,6 +1018,29 @@ paths:
                         status: "active"
                         visibility: "private"
                         mcpEnabled: false
+                        capabilities:
+                          multipleConversations: false
+                          loadConversation: false
+                          createConversation: false
+                          canvas: false
+                          terminal: false
+                          webSsh: false
+                          fileSystem: false
+                          image: true
+                          audio: false
+                          mcp: false
+                          cron: false
+                          streaming: true
+                          pushNotifications: false
+                          a2a: true
+                          extendedAgentCard: false
+                          modelsList: true
+                          modelsSet: true
+                          skillsList: true
+                          skillsInstall: false
+                          skillsUninstall: false
+                          skillsUpdate: false
+                        conversationTransport: "acp"
                         createdAt: "2026-05-14T18:00:00Z"
                         updatedAt: "2026-05-14T18:00:00Z"
                     total: 1
@@ -1066,21 +1107,6 @@ paths:
         "413": { $ref: '#/components/responses/PayloadTooLarge' }
         "429": { $ref: '#/components/responses/RateLimited' }
         "5XX": { $ref: '#/components/responses/ServerError' }
-    delete:
-      operationId: deleteAgent
-      tags: [agents]
-      summary: Request deletion of an owned agent.
-      description: |
-        The legacy endpoint currently verifies ownership and returns `409`
-        without deleting data. It will translate to the durable runtime
-        `agent/delete` mutation once that projection path is wired.
-      responses:
-        "401": { $ref: '#/components/responses/Unauthorized' }
-        "404": { $ref: '#/components/responses/NotFound' }
-        "409": { $ref: '#/components/responses/Conflict' }
-        "429": { $ref: '#/components/responses/RateLimited' }
-        "5XX": { $ref: '#/components/responses/ServerError' }
-
   /api/v1/agents/{agentId}/invoke:
     parameters:
       - name: agentId
@@ -2260,14 +2286,26 @@ paths:
       operationId: createTerminalSession
       summary: Create a terminal session
       requestBody: { required: true, content: { application/json: { schema: { type: object, required: [platformAgentId], additionalProperties: false, properties: { platformAgentId: { type: string, format: uuid }, conversationId: { type: string, format: uuid }, resumeTerminalId: { type: string, format: uuid } } } } } }
-      responses: { "201": { description: Single-use RS256 terminal ticket, content: { application/json: { schema: { type: object, additionalProperties: true } } } } }
+      responses:
+        "201": { description: Single-use RS256 terminal ticket, content: { application/json: { schema: { type: object, additionalProperties: true } } } }
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
   /api/v1/instances/{instanceId}/canvas-sessions:
     parameters: [{ name: instanceId, in: path, required: true, schema: { type: string, maxLength: 128 } }]
     post:
       operationId: createCanvasSession
       summary: Create a canvas session
       requestBody: { required: true, content: { application/json: { schema: { type: object, required: [platformAgentId, conversationId], additionalProperties: false, properties: { platformAgentId: { type: string, format: uuid }, conversationId: { type: string, format: uuid }, canvasId: { type: string, minLength: 1, maxLength: 128, pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$', description: Opaque Canvas/A2UI surface identifier; not a UUID } } } } } }
-      responses: { "201": { description: Single-use RS256 canvas relay ticket, content: { application/json: { schema: { type: object, additionalProperties: true } } } } }
+      responses:
+        "201": { description: Single-use RS256 canvas relay ticket, content: { application/json: { schema: { type: object, additionalProperties: true } } } }
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
 
 components:
   securitySchemes:
