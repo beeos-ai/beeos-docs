@@ -1,0 +1,5 @@
+# This compatibility endpoint intentionally exposes only fail-closed errors
+# until the durable runtime agent/delete projection path is implemented.
+openapi/beeos-platform-v1.yaml:
+  operation-2xx-response:
+    - '#/paths/~1api~1v1~1agents~1{agentId}/delete/responses'
