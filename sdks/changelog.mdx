@@ -64,12 +64,12 @@ mismatched pair must never be released.
    contract-drift test in
    `backend/services/openapi-gateway/internal/dto/contract_test.go`,
    plus `go build ./...` on the generated Go SDK.
-6. **On merge, the publish workflow:** stamps the changelog
-   header with today's date, tags the meta repo
-   `sdk-v<version>`, publishes `@beeos-ai/sdk` to npm, and
-   pushes the generated Go SDK to `github.com/beeos-ai/sdk-go`
-   (which is itself a release-tagged repo so `go get` resolves
-   the new tag).
+6. **On merge, the sync workflow:** regenerates and verifies all
+   three clients, then pushes immutable `v<version>` tags to
+   `beeos-ai/sdk`, `beeos-ai/sdk-go`, and `beeos-ai/sdk-python`.
+   Each independent repository owns its package publication:
+   npm Trusted Publisher for TypeScript, the Go module proxy for
+   Go, and PyPI Trusted Publisher for Python.
 
 **Never** edit `sdks/beeos-ai-sdk/` or `sdks/beeos-ai-sdk-go/`
 by hand — they are regenerated on every release. The only
@@ -80,6 +80,12 @@ get copied on top of the generator output (README, LICENSE).
 ---
 
 ## [Unreleased]
+
+No unreleased SDK changes yet.
+
+---
+
+## [0.5.0] — 2026-08-18
 
 ### Added (Message Envelope v3 — `MessageDTO` alignment)
 
