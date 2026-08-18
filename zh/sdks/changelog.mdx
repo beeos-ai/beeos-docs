@@ -61,10 +61,11 @@ generator run 一起切，不能放出版本不一致的对子。
 5. **开 PR。** CI 跑 `redocly lint` + `make gen` +
    `backend/services/openapi-gateway/internal/dto/contract_test.go`
    里的契约漂移测试，并对生成的 Go SDK 跑 `go build ./...`。
-6. **合并后，发布工作流：** 用今天的日期戳变更日志头、给 meta repo 打
-   `sdk-v<version>` tag、把 `@beeos-ai/sdk` 发布到 npm、把生成的 Go SDK
-   推到 `github.com/beeos-ai/sdk-go`（那是个 release-tagged repo，所以
-   `go get` 能解析到新 tag）。
+6. **合并后，同步工作流：** 重新生成并验证三个客户端，然后向
+   `beeos-ai/sdk`、`beeos-ai/sdk-go` 和 `beeos-ai/sdk-python` 推送不可变的
+   `v<version>` tag。各独立仓库负责自己的包发布：TypeScript 使用 npm
+   Trusted Publisher，Go 通过 Go Module Proxy 分发，Python 使用 PyPI
+   Trusted Publisher。
 
 **不要**手动改 `sdks/beeos-ai-sdk/` 或 `sdks/beeos-ai-sdk-go/`
 —— 它们每次发布都被重新生成。仅有的手工资产在
@@ -74,6 +75,12 @@ generator 输出之上（README、LICENSE）。
 ---
 
 ## [Unreleased]
+
+当前没有尚未发布的 SDK 变更。
+
+---
+
+## [0.5.0] — 2026-08-18
 
 ### 新增（Message Envelope v3 — `MessageDTO` 对齐）
 
