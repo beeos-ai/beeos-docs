@@ -5,9 +5,12 @@
     "dev": "mintlify dev",
     "validate": "mintlify validate",
     "broken-links": "mintlify broken-links",
-    "sync-spec": "./scripts/sync-spec.sh"
+    "lint-openapi": "redocly lint openapi/beeos-platform-v1.yaml openapi/beeos-agent-integration-v1.yaml",
+    "sync-spec": "./scripts/sync-spec.sh",
+    "check-spec-drift": "SYNC_PRESERVE_BANNER=1 ./scripts/sync-spec.sh && git diff --exit-code -- openapi/beeos-platform-v1.yaml openapi/beeos-agent-integration-v1.yaml openapi/runtime-error-codes-v4.generated.json"
   },
   "devDependencies": {
+    "@redocly/cli": "2.46.1",
     "mintlify": "4.2.527"
   }
 }

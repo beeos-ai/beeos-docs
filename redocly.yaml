@@ -1,0 +1,9 @@
+extends:
+  - recommended
+
+rules:
+  # The localhost server is a supported developer endpoint, not sample data.
+  no-server-example.com: off
+  # Standalone SSE and Message v3 schemas intentionally feed SDK generators;
+  # their wire references live in text/event-stream metadata and prose.
+  no-unused-components: off

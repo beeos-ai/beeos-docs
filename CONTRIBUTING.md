@@ -204,10 +204,8 @@ git add openapi/ && git commit
 
 Both English and Chinese API Reference navigation use the authoritative
 `openapi/beeos-platform-v1.yaml`. Localized explanations belong in the
-hand-maintained `zh/**/*.mdx` guides. The old
-`openapi/beeos-platform-v1-zh.yaml` is retained only as a historical
-localized snapshot; it is not a contract source and must not be added back
-to navigation.
+hand-maintained `zh/**/*.mdx` guides; localized OpenAPI copies are not
+maintained.
 
 ## 6. Style conventions
 
