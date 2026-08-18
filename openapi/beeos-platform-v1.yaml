@@ -2,8 +2,8 @@
 # AUTO-SYNCED FROM backend/openapi/beeos-platform-v1.yaml
 # DO NOT EDIT HERE — edit the source in the openagent repo and run
 #   cd beeos-docs && npm run sync-spec
-# Last synced: 2026-08-18T10:09:08Z
-# Source SHA: 3c5a0736
+# Last synced: 2026-08-18T10:16:10Z
+# Source SHA: 1f20af95
 # ============================================================================
 openapi: 3.1.0
 info:
@@ -1107,6 +1107,22 @@ paths:
         "413": { $ref: '#/components/responses/PayloadTooLarge' }
         "429": { $ref: '#/components/responses/RateLimited' }
         "5XX": { $ref: '#/components/responses/ServerError' }
+    delete:
+      operationId: deleteAgent
+      tags: [agents]
+      summary: Request deletion of an owned agent.
+      description: |
+        This compatibility endpoint deliberately fails closed with `409`.
+        It verifies ownership but does not delete data until the durable
+        runtime `agent/delete` projection path is wired. It therefore has
+        no successful response by design.
+      responses:
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "409": { $ref: '#/components/responses/Conflict' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+
   /api/v1/agents/{agentId}/invoke:
     parameters:
       - name: agentId
