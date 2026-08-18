@@ -1,0 +1,40 @@
+name: Check OpenAPI documentation drift
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Compare docs with Backend OpenAPI
+    runs-on: ubuntu-latest
+    steps:
+      # In a reusable workflow, the default repository is the private caller.
+      - name: Check out Backend
+        uses: actions/checkout@v7
+        with:
+          path: backend
+
+      - name: Check out documentation
+        uses: actions/checkout@v7
+        with:
+          repository: beeos-ai/beeos-docs
+          path: beeos-docs
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: beeos-docs/package-lock.json
+
+      - name: Install documentation dependencies
+        working-directory: beeos-docs
+        run: npm ci
+
+      - name: Check generated contract copies
+        working-directory: beeos-docs
+        env:
+          BACKEND_ROOT: ${{ github.workspace }}/backend
+        run: npm run check-spec-drift
