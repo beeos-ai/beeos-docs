@@ -121,7 +121,7 @@ Once your process is alive and has its private key on disk, it
 registers via Agent Gateway's `sync` endpoint:
 
 ```
-POST https://agent.beeos.ai/api/v1/agents/sync
+POST https://agent-gw.beeos.ai/api/v1/agents/sync
 Authorization: Ed25519 <signed nonce> (handled by the SDK)
 X-Instance-ID:       <your-instance-id>
 X-Instance-Owner-ID: <owner-user-id>
@@ -292,7 +292,7 @@ beeos device attach --generate-key
 # 2. point goreman at the local control plane
 PATH=$PATH:$HOME/go/bin goreman -f Procfile.staging start
 
-# 3. run your agent against agent.beeos.ai (or localhost:8083)
+# 3. run your agent against agent-gw.beeos.ai (or localhost:8083)
 AGENT_GATEWAY_URL=http://localhost:8083 \
   AGENT_KEY_PATH=$HOME/.beeos/test-device.key \
   node dist/main.js

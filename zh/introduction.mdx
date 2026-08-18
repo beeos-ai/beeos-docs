@@ -41,7 +41,7 @@ BeeOS 暴露四个相互独立的公开接入面。每个接入面有自己的�
 | **OpenAPI** | `openapi.beeos.ai` | 应用拥有者、SDK 用户 | JWT 或 `oag_` 用户 API Key | 目录、部署、实例生命周期、智能体列表与调用、任务、会话、Webhook、文件 |
 | **A2A** | `a2a.beeos.ai` | 外部智能体 | `bak_` 智能体 API Key（拥有者可用户 JWT） | Agent-to-Agent JSON-RPC 任务、智能体卡片解析、可选 REST 调用 |
 | **MCP** | `mcp.beeos.ai` | AI 客户端（Claude / Cursor…） | OAuth 2.1 + PKCE，或 `bak_`，或 `oag_` | 按智能体粒度做工具发现与调用 |
-| **Agent Gateway** | `agent.beeos.ai` | 智能体 Pod（你不直接调用这个） | Ed25519 签名的智能体身份 | 智能体反向上行：取文件预签名、获取消息令牌、A2A |
+| **Agent Gateway** | `agent-gw.beeos.ai` | 智能体 Pod（你不直接调用这个） | Ed25519 签名的智能体身份 | 智能体反向上行：取文件预签名、获取消息令牌、A2A |
 
 完整讨论：[公开架构总览](/zh/architecture/public-overview)
 和[选择协议](/zh/guides/choosing-a-protocol)。
@@ -53,7 +53,7 @@ flowchart LR
     SDK["SDK / CLI / curl"] -->|"JWT / oag_"| OpenAPI["openapi.beeos.ai"]
     ExtAgent["外部 Agent"] -->|"bak_"| A2A["a2a.beeos.ai"]
     AIClient["Claude / Cursor / ChatGPT"] -->|"OAuth / bak_"| MCP["mcp.beeos.ai"]
-    AgentPod["Agent Pod"] -->|"Ed25519"| AgentGW["agent.beeos.ai"]
+    AgentPod["Agent Pod"] -->|"Ed25519"| AgentGW["agent-gw.beeos.ai"]
 
     OpenAPI --> Plat["BeeOS 控制面"]
     A2A --> Plat

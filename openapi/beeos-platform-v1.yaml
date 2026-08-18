@@ -2,8 +2,8 @@
 # AUTO-SYNCED FROM backend/openapi/beeos-platform-v1.yaml
 # DO NOT EDIT HERE — edit the source in the openagent repo and run
 #   cd beeos-docs && npm run sync-spec
-# Last synced: 2026-06-30T18:23:46Z
-# Source SHA: 50dd6b05
+# Last synced: 2026-08-18T09:40:52Z
+# Source SHA: 296885a5
 # ============================================================================
 openapi: 3.1.0
 info:
@@ -957,6 +957,16 @@ paths:
           required: false
           schema: { type: string, maxLength: 128 }
           description: Filter agents by instance ID.
+        - name: instanceId
+          in: query
+          required: false
+          schema: { type: string, maxLength: 128 }
+          description: CamelCase alias for `instance_id`.
+        - name: status
+          in: query
+          required: false
+          schema: { type: string }
+          description: Filter agents by runtime/directory status, for example `active`.
         - name: limit
           in: query
           required: false
@@ -1007,7 +1017,7 @@ paths:
     get:
       operationId: getAgent
       tags: [agents]
-      summary: Get agent details by ID.
+      summary: Get an owned agent by ID.
       responses:
         "200":
           description: Agent details.
@@ -1023,7 +1033,7 @@ paths:
     patch:
       operationId: updateAgent
       tags: [agents]
-      summary: Update mutable agent fields (visibility / mcp_enabled).
+      summary: Update mutable agent fields (visibility / mcpEnabled).
       description: |
         Patch a narrow set of caller-managed agent properties. The
         whitelist is intentionally minimal — `description`, `name`,
@@ -1031,9 +1041,9 @@ paths:
         reconciled from the pod-side `POST /api/v1/agents/sync` and
         would silently revert on the next sync if patched here.
 
-        Authorisation: caller MUST own the agent — public agents are
-        readable by anyone but only the owner can flip visibility or
-        toggle MCP. Patches with no recognised fields fail with
+        Authorisation: caller MUST own the agent. Public discovery uses the
+        agent-card endpoints; this management resource never bypasses owner
+        scope. Patches with no recognised fields fail with
         `invalid_param`.
       requestBody:
         required: true
@@ -1052,7 +1062,22 @@ paths:
         "401": { $ref: '#/components/responses/Unauthorized' }
         "403": { $ref: '#/components/responses/Forbidden' }
         "404": { $ref: '#/components/responses/NotFound' }
+        "409": { $ref: '#/components/responses/Conflict' }
         "413": { $ref: '#/components/responses/PayloadTooLarge' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+    delete:
+      operationId: deleteAgent
+      tags: [agents]
+      summary: Request deletion of an owned agent.
+      description: |
+        The legacy endpoint currently verifies ownership and returns `409`
+        without deleting data. It will translate to the durable runtime
+        `agent/delete` mutation once that projection path is wired.
+      responses:
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "409": { $ref: '#/components/responses/Conflict' }
         "429": { $ref: '#/components/responses/RateLimited' }
         "5XX": { $ref: '#/components/responses/ServerError' }
 
@@ -1591,6 +1616,8 @@ paths:
     post:
       operationId: createConversation
       tags: [conversations]
+      parameters:
+        - { name: Idempotency-Key, in: header, required: false, schema: { type: string, minLength: 1, maxLength: 128 } }
       summary: Open a new conversation.
       description: |
         Creates a long-lived dialog channel. Does NOT carry an initial
@@ -1613,6 +1640,7 @@ paths:
         "401": { $ref: '#/components/responses/Unauthorized' }
         "403": { $ref: '#/components/responses/Forbidden' }
         "404": { $ref: '#/components/responses/NotFound' }
+        "409": { $ref: '#/components/responses/Conflict' }
         "413": { $ref: '#/components/responses/PayloadTooLarge' }
         "429": { $ref: '#/components/responses/RateLimited' }
         "5XX": { $ref: '#/components/responses/ServerError' }
@@ -1696,6 +1724,21 @@ paths:
         "404": { $ref: '#/components/responses/NotFound' }
         "429": { $ref: '#/components/responses/RateLimited' }
         "5XX": { $ref: '#/components/responses/ServerError' }
+    patch:
+      operationId: renameConversation
+      tags: [conversations]
+      summary: Rename a conversation through Message Service metadata authority.
+      parameters:
+        - { name: Idempotency-Key, in: header, required: true, schema: { type: string, minLength: 1, maxLength: 128 } }
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, additionalProperties: false, required: [title], properties: { title: { type: string, minLength: 1, maxLength: 256 } } } } }
+      responses:
+        "200": { description: Renamed conversation snapshot, content: { application/json: { schema: { $ref: '#/components/schemas/ConversationResponse' } } } }
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "409": { $ref: '#/components/responses/Conflict' }
     delete:
       operationId: deleteConversation
       tags: [conversations]
@@ -2075,6 +2118,157 @@ paths:
         "429": { $ref: '#/components/responses/RateLimited' }
         "5XX": { $ref: '#/components/responses/ServerError' }
 
+  /api/v1/agents/{agentId}/conversations/{conversationId}/cancel:
+    parameters:
+      - { name: agentId, in: path, required: true, schema: { type: string, maxLength: 128 } }
+      - { name: conversationId, in: path, required: true, schema: { type: string, maxLength: 128 } }
+    post:
+      operationId: cancelConversation
+      summary: Cancel conversation execution
+      tags: [conversations]
+      parameters:
+        - { name: Idempotency-Key, in: header, required: false, schema: { type: string, minLength: 1, maxLength: 128 } }
+        - { name: X-BeeOS-Operation-Id, in: header, required: false, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, additionalProperties: false, required: [target_message_id], properties: { target_message_id: { type: string, minLength: 1, maxLength: 128 }, reason: { type: string } } } } }
+      responses:
+        "202": { description: Durable session/cancel operation accepted, headers: { X-BeeOS-Operation-Id: { required: true, schema: { type: string, format: uuid } } }, content: { application/json: { schema: { type: object, additionalProperties: false, required: [success, data], properties: { success: { type: boolean, const: true }, data: { type: object, additionalProperties: false, required: [operation_id, status], properties: { operation_id: { type: string, format: uuid }, status: { type: string, const: accepted } } } } } } } }
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "409": { $ref: '#/components/responses/Conflict' }
+
+  /api/v1/agents/{agentId}/conversations/{conversationId}/clear:
+    parameters:
+      - { name: agentId, in: path, required: true, schema: { type: string, maxLength: 128 } }
+      - { name: conversationId, in: path, required: true, schema: { type: string, maxLength: 128 } }
+    post:
+      operationId: clearConversation
+      summary: Clear conversation history
+      tags: [conversations]
+      parameters:
+        - { name: Idempotency-Key, in: header, required: true, schema: { type: string, minLength: 1, maxLength: 128 } }
+        - { name: X-BeeOS-Operation-Id, in: header, required: false, schema: { type: string, format: uuid } }
+      responses:
+        "202": { description: Durable conversation clear accepted, headers: { X-BeeOS-Operation-Id: { schema: { type: string, format: uuid } } }, content: { application/json: { schema: { type: object, required: [status, operationId, conversationId, currentGeneration], additionalProperties: false, properties: { status: { type: string, enum: [accepted] }, operationId: { type: string, format: uuid }, conversationId: { type: string }, currentGeneration: { type: string, pattern: '^(0|[1-9][0-9]*)$' } } } } } }
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "409": { $ref: '#/components/responses/Conflict' }
+
+  /api/v1/agents/{agentId}/conversations/{conversationId}/model:
+    parameters:
+      - { name: agentId, in: path, required: true, schema: { type: string, maxLength: 128 } }
+      - { name: conversationId, in: path, required: true, schema: { type: string, maxLength: 128 } }
+    put:
+      operationId: setConversationModel
+      summary: Set conversation model override
+      tags: [conversations]
+      parameters:
+        - { name: Idempotency-Key, in: header, required: true, schema: { type: string, minLength: 1, maxLength: 128 } }
+        - { name: X-BeeOS-Operation-Id, in: header, required: false, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, additionalProperties: false, required: [modelOverrideId], properties: { modelOverrideId: { type: [string, 'null'], minLength: 1, maxLength: 128 } } } } }
+      responses:
+        "202": { description: Durable model mutation accepted, headers: { X-BeeOS-Operation-Id: { schema: { type: string, format: uuid } } } }
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "409": { $ref: '#/components/responses/Conflict' }
+
+  /api/v1/instances/{instanceId}/runtime-capabilities:
+    parameters: [{ name: instanceId, in: path, required: true, schema: { type: string, maxLength: 128 } }]
+    get:
+      operationId: getRuntimeCapabilities
+      summary: Get runtime capabilities
+      responses:
+        "200": { description: Fenced runtime capability manifest, content: { application/json: { schema: { type: object, additionalProperties: true } } } }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "404": { $ref: '#/components/responses/NotFound' }
+  /api/v1/instances/{instanceId}/methods:
+    parameters: [{ name: instanceId, in: path, required: true, schema: { type: string, maxLength: 128 } }]
+    post:
+      operationId: invokeRuntimeMethod
+      summary: Invoke a runtime method
+      parameters:
+        - { name: Idempotency-Key, in: header, required: false, schema: { type: string, minLength: 1, maxLength: 128 } }
+        - { name: X-BeeOS-Operation-Id, in: header, required: false, schema: { type: string, format: uuid } }
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [jsonrpc, id, method, params], additionalProperties: false, properties: { jsonrpc: { type: string, enum: ["2.0"] }, id: {}, method: { type: string }, params: { type: object } } } } } }
+      responses:
+        "200": { description: JSON-RPC business rejection; HTTP transport and authentication succeeded, content: { application/json: { schema: { $ref: '#/components/schemas/RuntimeJSONRPCBusinessError' } } } }
+        "202": { description: Durable runtime invocation accepted, headers: { X-BeeOS-Operation-Id: { schema: { type: string, format: uuid } } }, content: { application/json: { schema: { type: object, additionalProperties: true } } } }
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "409": { $ref: '#/components/responses/Conflict' }
+  /api/v1/instances/{instanceId}/operations:
+    parameters: [{ name: instanceId, in: path, required: true, schema: { type: string, maxLength: 128 } }]
+    get:
+      operationId: listRuntimeOperations
+      summary: List active runtime operations
+      parameters:
+        - { name: status, in: query, required: true, schema: { type: string, enum: [active] } }
+        - { name: cursor, in: query, schema: { type: string, maxLength: 128 } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200 } }
+      responses:
+        "200": { description: Active owner-scoped operations, content: { application/json: { schema: { $ref: '#/components/schemas/ServiceOperationsListResponse' } } } }
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "404": { $ref: '#/components/responses/NotFound' }
+  /api/v1/instances/{instanceId}/operations/{operationId}:
+    parameters:
+      - { name: instanceId, in: path, required: true, schema: { type: string, maxLength: 128 } }
+      - { name: operationId, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      operationId: getRuntimeOperation
+      summary: Get a runtime operation
+      responses:
+        "200": { description: Reduced durable operation snapshot, content: { application/json: { schema: { $ref: '#/components/schemas/RuntimeOperationSnapshot' } } } }
+        "404": { $ref: '#/components/responses/NotFound' }
+  /api/v1/instances/{instanceId}/operations/{operationId}/events:
+    parameters:
+      - { name: instanceId, in: path, required: true, schema: { type: string, maxLength: 128 } }
+      - { name: operationId, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      operationId: streamRuntimeOperationEvents
+      summary: Stream runtime operation events
+      parameters: [{ name: Last-Event-ID, in: header, schema: { type: string, maxLength: 128 } }]
+      responses:
+        "200": { description: "Durable resumable operation events. Every event data field is a RuntimeOperationEventEnvelope.", content: { text/event-stream: { schema: { type: string, x-event-data-schema: { $ref: '#/components/schemas/RuntimeOperationEventEnvelope' } } } } }
+        "409": { description: "Last-Event-ID is ahead of the authoritative public sequence.", content: { application/json: { schema: { $ref: '#/components/schemas/ServiceOperationCursorConflict' } } } }
+  /api/v1/instances/{instanceId}/operations/{operationId}/cancel:
+    parameters:
+      - { name: instanceId, in: path, required: true, schema: { type: string, maxLength: 128 } }
+      - { name: operationId, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      operationId: cancelRuntimeOperation
+      summary: Cancel a runtime operation
+      parameters:
+        - { name: Idempotency-Key, in: header, required: true, schema: { type: string, minLength: 1, maxLength: 128 } }
+        - { name: X-BeeOS-Operation-Id, in: header, required: false, schema: { type: string, format: uuid } }
+      responses:
+        "202": { description: Cancellation requested, headers: { X-BeeOS-Operation-Id: { required: true, schema: { type: string, format: uuid } } }, content: { application/json: { schema: { $ref: '#/components/schemas/ServiceOperationCancelAccepted' } } } }
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "409": { description: Operation cannot be cancelled in its current policy state, content: { application/json: { schema: { $ref: '#/components/schemas/ServiceOperationCancelConflict' } } } }
+        "422": { $ref: '#/components/responses/BadRequest' }
+  /api/v1/instances/{instanceId}/terminal-sessions:
+    parameters: [{ name: instanceId, in: path, required: true, schema: { type: string, maxLength: 128 } }]
+    post:
+      operationId: createTerminalSession
+      summary: Create a terminal session
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [platformAgentId], additionalProperties: false, properties: { platformAgentId: { type: string, format: uuid }, conversationId: { type: string, format: uuid }, resumeTerminalId: { type: string, format: uuid } } } } } }
+      responses: { "201": { description: Single-use RS256 terminal ticket, content: { application/json: { schema: { type: object, additionalProperties: true } } } } }
+  /api/v1/instances/{instanceId}/canvas-sessions:
+    parameters: [{ name: instanceId, in: path, required: true, schema: { type: string, maxLength: 128 } }]
+    post:
+      operationId: createCanvasSession
+      summary: Create a canvas session
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [platformAgentId, conversationId], additionalProperties: false, properties: { platformAgentId: { type: string, format: uuid }, conversationId: { type: string, format: uuid }, canvasId: { type: string, minLength: 1, maxLength: 128, pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$', description: Opaque Canvas/A2UI surface identifier; not a UUID } } } } } }
+      responses: { "201": { description: Single-use RS256 canvas relay ticket, content: { application/json: { schema: { type: object, additionalProperties: true } } } } }
+
 components:
   securitySchemes:
     bearerAuth:
@@ -2116,6 +2310,134 @@ components:
           properties:
             data:
               type: string
+
+    RuntimeOperationTarget:
+      oneOf:
+        - { type: object, additionalProperties: false, required: [scope], properties: { scope: { type: string, enum: [instance] } } }
+        - { type: object, additionalProperties: false, required: [scope, platformAgentId], properties: { scope: { type: string, enum: [agent] }, platformAgentId: { type: string, format: uuid } } }
+        - { type: object, additionalProperties: false, required: [scope, platformAgentId, conversationId], properties: { scope: { type: string, enum: [conversation] }, platformAgentId: { type: string, format: uuid }, conversationId: { type: string, format: uuid } } }
+    RuntimeJSONRPCBusinessError:
+      type: object
+      additionalProperties: false
+      required: [jsonrpc, id, error]
+      properties:
+        jsonrpc: { const: '2.0' }
+        id: {}
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code: { type: integer, minimum: -32021, maximum: -32001 }
+            message: { enum: [METHOD_NOT_SUPPORTED, USE_AGENTS_API, CONTRACT_VERSION_MISMATCH, INSTANCE_OFFLINE, INSTANCE_EPOCH_MISMATCH, IDEMPOTENCY_CONFLICT, COMMAND_EXPIRED, OUTCOME_UNKNOWN, OPERATION_NOT_FOUND, OPERATION_NOT_CANCELLABLE, CONVERSATION_CLEARING, PROJECTION_PENDING, PROJECTION_BLOCKED, UNAUTHORIZED_TARGET, INVALID_INVOCATION, INVALID_EXECUTION_GRANT, UNAUTHORIZED_PUBLISHER, OPERATION_CANCELLED, HISTORY_GENERATION_MISMATCH, AGENT_DEFAULT_MODEL_NOT_CONFIGURED, RUNTIME_EXECUTION_FAILED] }
+            data: {}
+    ServiceRuntimeMethod:
+      type: string
+      enum: [session/set_mode, agent/create, agent/update, agent/delete, agent/applyTemplate, skills/list, skills/install, skills/uninstall, skills/update, models/list, cron/list, cron/status, cron/add, cron/update, cron/remove, cron/run, cron/runs, mcp/list, mcp/prepare, mcp/set, mcp/unset, session/clear, session/set_model, session/cancel]
+    RuntimeOperationError:
+      type: object
+      additionalProperties: false
+      required: [code, message, operationId, effectState, retryMode]
+      properties:
+        code: {"$schema":"https://json-schema.org/draft/2020-12/schema","enum":["AGENT_DEFAULT_MODEL_NOT_CONFIGURED","COMMAND_EXPIRED","CONTRACT_VERSION_MISMATCH","CONVERSATION_CLEARING","HISTORY_GENERATION_MISMATCH","IDEMPOTENCY_CONFLICT","INSTANCE_EPOCH_MISMATCH","INSTANCE_OFFLINE","INVALID_EXECUTION_GRANT","INVALID_INVOCATION","METHOD_NOT_SUPPORTED","OPERATION_CANCELLED","OPERATION_NOT_CANCELLABLE","OPERATION_NOT_FOUND","OUTCOME_UNKNOWN","PROJECTION_BLOCKED","PROJECTION_PENDING","RUNTIME_EXECUTION_FAILED","UNAUTHORIZED_PUBLISHER","UNAUTHORIZED_TARGET","USE_AGENTS_API"],"title":"RuntimeErrorCode","type":"string"}
+        message: { type: string }
+        operationId: { type: string, format: uuid }
+        requestId: { type: string }
+        effectState: { type: string, enum: [failed, cancelled, expired, outcome_unknown, committed] }
+        retryMode: { type: string, enum: [none, resume, resubmit] }
+        context: { type: object, additionalProperties: false, properties: { activeRuntimeEpoch: { type: string, pattern: '^(0|[1-9][0-9]*)$' }, projectionRevision: { type: string, pattern: '^(0|[1-9][0-9]*)$' }, retryAfterMs: { type: integer, minimum: 0 }, expectedContractRevision: { type: string }, resourceId: { type: string } } }
+    RuntimeOperationSnapshot:
+      type: object
+      additionalProperties: false
+      required: [id, instanceId, target, method, capability, transport, sequence, createdAt, updatedAt, status, effectState, terminal]
+      properties:
+        id: { type: string, format: uuid }
+        instanceId: { type: string }
+        target: { $ref: '#/components/schemas/RuntimeOperationTarget' }
+        method: { $ref: '#/components/schemas/ServiceRuntimeMethod' }
+        capability: { type: string, enum: [agents.lifecycle, skills, models, cron, mcp, conversation.control] }
+        transport: { type: string, enum: [service] }
+        sequence: { type: string, pattern: '^(0|[1-9][0-9]*)$' }
+        cursor: { type: string, pattern: '^(0|[1-9][0-9]*)$' }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        status: { type: string, enum: [queued, running, runtime_committed, projection_pending, projection_blocked, succeeded, failed, cancelled, expired, outcome_unknown] }
+        effectState: { type: string, enum: [queued, running, committed, failed, cancelled, expired, outcome_unknown] }
+        terminal: { type: boolean }
+        progress: { type: object, additionalProperties: false, required: [sequence, phase], properties: { sequence: { type: string, pattern: '^(0|[1-9][0-9]*)$' }, phase: { type: string }, current: { type: number, minimum: 0 }, total: { type: number, minimum: 0 } } }
+        cancelRequest: { type: object, additionalProperties: false, required: [requestedBy, requestedAt], properties: { requestedBy: { type: string }, reason: { type: string }, requestedAt: { type: string, format: date-time } } }
+        projection: { type: object, additionalProperties: false, required: [revision, state], properties: { revision: { type: string, pattern: '^(0|[1-9][0-9]*)$' }, state: { type: string, enum: [not_applicable, pending, synced, blocked] }, platformAgentId: { type: string, format: uuid } } }
+        result: {}
+        error: { $ref: '#/components/schemas/RuntimeOperationError' }
+    ServiceOperationsListResponse:
+      type: object
+      additionalProperties: false
+      required: [operations]
+      properties:
+        operations: { type: array, items: { $ref: '#/components/schemas/RuntimeOperationSnapshot' } }
+        nextCursor: { type: string, maxLength: 128 }
+    ServiceOperationCancelAccepted:
+      type: object
+      additionalProperties: false
+      required: [status, operationId]
+      properties:
+        status: { type: string, enum: [cancel_requested] }
+        operationId: { type: string, format: uuid }
+    ServiceOperationCancelConflict:
+      type: object
+      additionalProperties: false
+      required: [code, operationId, httpStatus]
+      properties:
+        code: { const: OPERATION_NOT_CANCELLABLE }
+        operationId: { type: string, format: uuid }
+        httpStatus: { const: 409 }
+    ServiceOperationCursorConflict:
+      type: object
+      additionalProperties: false
+      required: [code, operationId, cursor, lastSequence, httpStatus]
+      properties:
+        code: { const: OPERATION_CURSOR_AHEAD }
+        operationId: { type: string, format: uuid }
+        cursor: { type: string, pattern: '^(0|[1-9][0-9]*)$' }
+        lastSequence: { type: string, pattern: '^(0|[1-9][0-9]*)$' }
+        httpStatus: { const: 409 }
+    RuntimeOperationEventEnvelope:
+      type: object
+      additionalProperties: false
+      required: [id, operationId, method, event]
+      properties:
+        id: { type: string, pattern: '^(0|[1-9][0-9]*)$' }
+        operationId: { type: string, format: uuid }
+        method: { $ref: '#/components/schemas/ServiceRuntimeMethod' }
+        event:
+          type: object
+          additionalProperties: false
+          required: [type, sequence, recordedAt]
+          properties:
+            type: { type: string, enum: [runtime_operation_started, runtime_operation_progress, runtime_effect_committed, runtime_projection_pending, runtime_projection_synced, runtime_projection_blocked, runtime_operation_cancel_requested, runtime_rpc_response] }
+            sequence: { type: string, pattern: '^(0|[1-9][0-9]*)$' }
+            recordedAt: { type: string, format: date-time }
+            payload:
+              type: object
+              additionalProperties: false
+              properties:
+                claimedAt: { type: string, format: date-time }
+                executionMode: { type: string, const: start }
+                phase: { type: string, minLength: 1 }
+                current: { type: number, minimum: 0 }
+                total: { type: number, minimum: 0 }
+                committedAt: { type: string, format: date-time }
+                projectionRevision: { type: string, pattern: '^(0|[1-9][0-9]*)$' }
+                revision: { type: string, pattern: '^(0|[1-9][0-9]*)$' }
+                platformAgentId: { type: string, minLength: 1 }
+                errorCode: { type: string, enum: [PROJECTION_BLOCKED] }
+                causeCode: {"$schema":"https://json-schema.org/draft/2020-12/schema","enum":["AGENT_DEFAULT_MODEL_NOT_CONFIGURED","COMMAND_EXPIRED","CONTRACT_VERSION_MISMATCH","CONVERSATION_CLEARING","HISTORY_GENERATION_MISMATCH","IDEMPOTENCY_CONFLICT","INSTANCE_EPOCH_MISMATCH","INSTANCE_OFFLINE","INVALID_EXECUTION_GRANT","INVALID_INVOCATION","METHOD_NOT_SUPPORTED","OPERATION_CANCELLED","OPERATION_NOT_CANCELLABLE","OPERATION_NOT_FOUND","OUTCOME_UNKNOWN","PROJECTION_BLOCKED","PROJECTION_PENDING","RUNTIME_EXECUTION_FAILED","UNAUTHORIZED_PUBLISHER","UNAUTHORIZED_TARGET","USE_AGENTS_API"],"title":"RuntimeErrorCode","type":"string"}
+                requestedBy: { type: string, minLength: 1 }
+                reason: { type: string }
+            outcome: { type: string, enum: [succeeded, failed, cancelled, expired, outcome_unknown, projection_blocked] }
+            result: {}
+            revision: { type: string, pattern: '^(0|[1-9][0-9]*)$' }
+            error: { $ref: '#/components/schemas/RuntimeOperationError' }
 
     # -------- Device control (computer + mobile) --------
     ControlInfo:
@@ -2664,9 +2986,55 @@ components:
           description: Optional override for the file_record's MIME type.
 
     # -------- Agents --------
+    AgentCapabilitiesDTO:
+      type: object
+      required:
+        - multipleConversations
+        - loadConversation
+        - createConversation
+        - canvas
+        - terminal
+        - webSsh
+        - fileSystem
+        - image
+        - audio
+        - mcp
+        - cron
+        - streaming
+        - pushNotifications
+        - a2a
+        - extendedAgentCard
+        - modelsList
+        - modelsSet
+        - skillsList
+        - skillsInstall
+        - skillsUninstall
+        - skillsUpdate
+      properties:
+        multipleConversations: { type: boolean }
+        loadConversation: { type: boolean }
+        createConversation: { type: boolean }
+        canvas: { type: boolean }
+        terminal: { type: boolean }
+        webSsh: { type: boolean }
+        fileSystem: { type: boolean }
+        image: { type: boolean }
+        audio: { type: boolean }
+        mcp: { type: boolean }
+        cron: { type: boolean }
+        streaming: { type: boolean }
+        pushNotifications: { type: boolean }
+        a2a: { type: boolean }
+        extendedAgentCard: { type: boolean }
+        modelsList: { type: boolean }
+        modelsSet: { type: boolean }
+        skillsList: { type: boolean }
+        skillsInstall: { type: boolean }
+        skillsUninstall: { type: boolean }
+        skillsUpdate: { type: boolean }
     AgentDTO:
       type: object
-      required: [id, instanceId, name, status, visibility, mcpEnabled]
+      required: [id, instanceId, name, status, visibility, mcpEnabled, capabilities, conversationTransport]
       properties:
         id: { type: string }
         instanceId: { type: string }
@@ -2676,9 +3044,20 @@ components:
         status: { type: string }
         slug: { type: string }
         mcpEnabled: { type: boolean }
+        defaultModelId:
+          type: string
+          maxLength: 256
+          pattern: '^[a-z0-9][a-z0-9._-]{0,63}(?:/[A-Za-z0-9][A-Za-z0-9._-]{0,127}){1,7}(?::[A-Za-z0-9][A-Za-z0-9._-]{0,63})?$'
+          description: Safe canonical provider/model selector with an optional tag. Runtime-local keys, credentials, endpoint configuration, and opaque high-entropy values are never exposed.
         visibility:
           type: string
           enum: [private, public, marketplace, unlisted]
+        capabilities:
+          $ref: '#/components/schemas/AgentCapabilitiesDTO'
+        conversationTransport:
+          type: string
+          enum: [acp, message-service]
+          description: Conversation/message transport selected by the agent directory.
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
     AgentListResponse:
@@ -2691,6 +3070,20 @@ components:
           items:
             $ref: '#/components/schemas/AgentDTO'
         total: { type: integer, format: int64 }
+        projection:
+          $ref: '#/components/schemas/InstanceProjectionMetadata'
+    InstanceProjectionMetadata:
+      type: object
+      required: [acceptedEpoch, acceptedRevision, canonicalHash, lastSyncedAt, syncState, agentsComplete, skillsComplete]
+      description: Accepted runtime-directory projection fence for the requested instance. Present only for an owned, instance-scoped list after a runtime projection has been accepted.
+      properties:
+        acceptedEpoch: { type: string, pattern: '^(0|[1-9][0-9]*)$' }
+        acceptedRevision: { type: string, pattern: '^(0|[1-9][0-9]*)$' }
+        canonicalHash: { type: string, pattern: '^[0-9a-f]{64}$' }
+        lastSyncedAt: { type: string, format: date-time }
+        syncState: { type: string, enum: [synced] }
+        agentsComplete: { type: boolean }
+        skillsComplete: { type: boolean }
     AgentResponse:
       allOf:
         - $ref: '#/components/schemas/SuccessEnvelope'
@@ -2701,27 +3094,32 @@ components:
               $ref: '#/components/schemas/AgentDTO'
     UpdateAgentRequest:
       type: object
+      additionalProperties: false
       description: |
         Body for `PATCH /api/v1/agents/{agentId}` (P1-B). Whitelist
         intentionally narrow — `description` / `name` / `version` /
         `avatar_url` / `capabilities` / `skills` are owned by the pod-side
         `POST /api/v1/agents/sync` and would silently revert if patched
-        here. The empty object is rejected with `invalid_param`.
+        here. The empty object and unknown properties are rejected. If both
+        MCP key spellings are supplied, their boolean values must agree.
       properties:
         visibility:
           type: string
-          enum: [private, unlisted, public]
+          enum: [private, unlisted, public, marketplace]
           description: |
             Agent ACL bucket. `private` is owner-only; `public` lets any
             authenticated caller invoke; `unlisted` is invokable but
-            absent from public listings. The `org` bucket is reserved
-            for P1-C when the org-scope ACL lands.
-        mcp_enabled:
+            absent from public listings; `marketplace` is catalog-visible.
+        mcpEnabled:
           type: boolean
           description: |
             Whether the agent shows up under MCP Gateway's `tools/list`.
             Independent of `visibility` — an `unlisted` agent can still
             be MCP-exposed; a `public` agent without MCP is invoke-only.
+        mcp_enabled:
+          type: boolean
+          deprecated: true
+          description: Deprecated snake_case alias for `mcpEnabled`.
     InvokeAgentRequest:
       type: object
       required: [message]
@@ -3250,12 +3648,6 @@ components:
         metadata:
           type: object
           additionalProperties: { type: string }
-        created_at:
-          type: string
-          format: date-time
-        closed_at:
-          type: string
-          format: date-time
         deadline_at:
           type: string
           format: date-time
@@ -3425,9 +3817,24 @@ components:
                 created_at:
                   type: string
                   format: date-time
+                last_activity_at:
+                  type: string
+                  format: date-time
                 closed_at:
                   type: string
                   format: date-time
+                modelOverrideId:
+                  type: string
+                  description: |
+                    Session model override projected by Message Service after
+                    `PUT …/conversations/{id}/model` (session/set_model). Absent
+                    when the conversation uses the agent/instance default.
+                effectiveModelId:
+                  type: string
+                  description: |
+                    Resolved effective model when Core/MS projects one alongside
+                    the override. Clients may fall back to modelOverrideId when
+                    this field is absent.
 
     ListConversationsResponse:
       allOf:
@@ -3457,9 +3864,24 @@ components:
                       created_at:
                         type: string
                         format: date-time
+                      last_activity_at:
+                        type: string
+                        format: date-time
                       closed_at:
                         type: string
                         format: date-time
+                      modelOverrideId:
+                        type: string
+                        description: |
+                          Session model override projected by Message Service after
+                          `PUT …/conversations/{id}/model` (session/set_model). Absent
+                          when the conversation uses the agent/instance default.
+                      effectiveModelId:
+                        type: string
+                        description: |
+                          Resolved effective model when Core/MS projects one alongside
+                          the override. Clients may fall back to modelOverrideId when
+                          this field is absent.
                 next_since:
                   type: string
                   description: |

@@ -9,7 +9,7 @@ language. Pick the one that matches the host you're hitting:
 
 | Credential | Header | Where it works | Who issues it |
 |---|---|---|---|
-| **User JWT** | `Authorization: Bearer <jwt>` | `gateway.beeos.ai` (web / mobile / desktop) **and** `openapi.beeos.ai` (SDK) | User login (Gateway `POST /api/v1/auth/login`) |
+| **User JWT** | `Authorization: Bearer <jwt>` | `api.beeos.ai` (web / mobile / desktop) **and** `openapi.beeos.ai` (SDK) | User login (Gateway `POST /api/v1/auth/login`) |
 | **User API Key (`oag_`)** | `Authorization: Bearer oag_...` | `openapi.beeos.ai` (SDK) **only** | User self-service (Gateway) |
 | **Agent API Key (`bak_`)** | `Authorization: Bearer bak_...` | `a2a.beeos.ai` (A2A JSON-RPC) **only** | Agent owner (Gateway) |
 | **MCP OAuth** | `Authorization: Bearer <oauth-access-token>` | `mcp.beeos.ai` (MCP) **only** | OAuth dance with Gateway |
@@ -22,7 +22,7 @@ accidentally pick up a user's session cookie.
 
 ## 1. User JWT — web / mobile / desktop sessions
 
-Issued by the main Gateway (`gateway.beeos.ai`, local `:9080`) on
+Issued by the main Gateway (`api.beeos.ai`, local `:9080`) on
 login. Short-lived (typically 1 h, refreshed automatically by the
 SDK / web client). Grants full access to the user's own resources —
 any operation the user can do from the web UI works with their JWT.

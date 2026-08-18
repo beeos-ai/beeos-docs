@@ -1,13 +1,14 @@
 ---
 title: 调用智能体
-description: 三种调用模式 —— 同步阻塞、流式 SSE、异步任务 —— 跨 OpenAPI / A2A / MCP 接入面。
+description: OpenAPI 的三种调用模式 —— 同步阻塞、流式 SSE 和异步任务。
 ---
 
 BeeOS OpenAPI 让你通过同一份契约以三种模式调用任何你拥有的智能体
 （或任何公开可见的智能体）。三种模式共用同样的认证（JWT 或
 `oag_` 用户 API Key —— 获取方式参见
-[认证与 API Key](/zh/authentication)）、同样的智能体标识（`agentId`）、
-以及同样的任务生命周期语义 —— 只是 wire 格式不同。
+[认证与 API Key](/zh/authentication)）和同样的智能体标识（`agentId`）。
+本页只描述 OpenAPI wire 契约；A2A Task、Message Envelope 和 Runtime
+Operation 使用相关但不同的状态机，映射见[任务与操作状态](/zh/guides/task-lifecycle)。
 
 | 模式 | 端点 | 何时用 |
 |---|---|---|
@@ -457,7 +458,11 @@ for (const m of log.data.messages ?? []) {
 
 ---
 
-## 状态参考（ADR-0017）
+## OpenAPI TaskStatus 参考（ADR-0017）
+
+这些值只属于版本化的 OpenAPI `/tasks` wire 契约，不是 BeeOS 通用的
+产品状态。把它们映射到 UI 或 A2A client 前，请先阅读
+[任务与操作状态](/zh/guides/task-lifecycle)。
 
 | status | 终止态 | 含义 |
 |---|---|---|
@@ -480,6 +485,8 @@ schema](https://github.com/beeos-ai/openagent/blob/main/backend/openapi/beeos-pl
   代替 `invoke` / `tasks`，以及 SSE `since`-cursor 的完整契约
 - [流式（SSE）](/zh/guides/streaming) —— 三个流式接入面的规范 SSE
   framing / 重连 / 掉线补偿
+- [任务与操作状态](/zh/guides/task-lifecycle) —— OpenAPI、A2A、消息、
+  Runtime 和产品状态的映射
 - [错误参考](/zh/reference/errors) —— 此接入面可能返回的每一个
   wire `code`
 - [认证与 API Key](/zh/authentication) —— JWT 对 `oag_`，以及 scope 表

@@ -1,6 +1,6 @@
 ---
 title: Quickstart
-description: "Deploy your first agent and invoke it in 5 minutes — typed SDK, curl, and Go."
+description: "Deploy your first agent and invoke it in 5 minutes — TypeScript, Python, Go, or curl."
 ---
 
 This guide walks you from zero to a running agent that you can chat with
@@ -26,6 +26,10 @@ npm install @beeos-ai/sdk
 
 ```bash go
 go get github.com/beeos-ai/sdk-go
+```
+
+```bash python
+python -m pip install beeos
 ```
 
 ```bash curl
@@ -90,12 +94,33 @@ func main() {
 }
 ```
 
+```python Python
+import os
+import beeos
+
+configuration = beeos.Configuration(
+    host="https://openapi.beeos.ai",
+    access_token=os.environ["BEEOS_API_KEY"],
+)
+
+client = beeos.ApiClient(configuration)
+deploy = beeos.sdk.DeployApi(client)
+instances = beeos.sdk.InstancesApi(client)
+agents = beeos.sdk.AgentsApi(client)
+```
+
 ```bash curl
 export BEEOS_API_KEY="oag_…"
 export BASE=https://openapi.beeos.ai
 ```
 
 </CodeGroup>
+
+<Tip>
+  Python users should install `beeos`, the stable official entry point. The
+  complete generated OpenAPI surface remains available as `beeos.sdk`; see
+  the [Python SDK guide](/sdks/python).
+</Tip>
 
 ## 3. List the deploy catalog
 

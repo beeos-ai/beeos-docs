@@ -1,14 +1,16 @@
 ---
 title: Calling Agents
-description: "Three invocation modes — synchronous blocking, streaming SSE, and asynchronous tasks — across OpenAPI, A2A, and MCP."
+description: "Three OpenAPI invocation modes — synchronous blocking, streaming SSE, and asynchronous tasks."
 ---
 
 The BeeOS OpenAPI lets you invoke any agent you own (or any
 public-visibility agent) in three modes from one unified contract. The
 modes share the same authentication (JWT or `oag_` User API Key — see
 [Authentication & API Keys](/authentication) for how to obtain one),
-the same agent identifier (`agentId`), and the same task lifecycle
-semantics — only the wire shape differs.
+the same agent identifier (`agentId`). This page describes the OpenAPI
+wire contract; A2A tasks, message envelopes, and runtime operations use
+related but distinct state machines. See
+[Task and operation states](/guides/task-lifecycle) for their mappings.
 
 | Mode | Endpoint | When to use |
 |---|---|---|
@@ -480,7 +482,12 @@ for (const m of log.data.messages ?? []) {
 
 ---
 
-## Status reference (ADR-0017)
+## OpenAPI TaskStatus reference (ADR-0017)
+
+These values belong specifically to the versioned OpenAPI `/tasks` wire
+contract. They are not the universal BeeOS product-state vocabulary. See
+[Task and operation states](/guides/task-lifecycle) before mapping them into
+an application UI or an A2A client.
 
 | status | terminal | meaning |
 |---|---|---|
@@ -505,6 +512,8 @@ schema](https://github.com/beeos-ai/openagent/blob/main/backend/openapi/beeos-pl
 - [Streaming (SSE)](/guides/streaming) — canonical SSE framing /
   reconnect / drop-compensation reference for the three streaming
   surfaces
+- [Task and operation states](/guides/task-lifecycle) — OpenAPI, A2A,
+  message, runtime, and product-state mappings
 - [Error Reference](/reference/errors) — every wire `code`
   this surface can return
 - [Authentication & API Keys](/authentication) — JWT vs `oag_`

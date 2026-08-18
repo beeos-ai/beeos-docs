@@ -1,0 +1,81 @@
+---
+title: Python SDK
+description: "安装并使用官方 beeos package 和自动生成的 beeos-sdk OpenAPI client。"
+---
+
+BeeOS 发布两个相关的 Python package：
+
+| Package | 用途 |
+|---|---|
+| [`beeos`](https://pypi.org/project/beeos/) | 推荐使用的官方入口和稳定 facade。 |
+| [`beeos-sdk`](https://pypi.org/project/beeos-sdk/) | 完整 OpenAPI 生成 client，import 名为 `beeos_sdk`。 |
+
+两者都调用 `https://openapi.beeos.ai` 的 Platform OpenAPI，不封装独立的
+[A2A](/zh/a2a/overview) 或 [MCP](/zh/mcp/overview) 协议。
+
+## 安装
+
+```bash
+python -m pip install beeos
+```
+
+`beeos` 会安装兼容版本的 `beeos-sdk`。只有需要直接使用生成代码时，才需要
+单独安装 `beeos-sdk`。
+
+当前版本：
+
+- `beeos==0.1.0`
+- `beeos-sdk==0.4.0`
+
+## 配置
+
+```python
+import os
+import beeos
+
+configuration = beeos.Configuration(
+    host="https://openapi.beeos.ai",
+    access_token=os.environ["BEEOS_API_KEY"],
+)
+```
+
+认证方式与其他 OpenAPI SDK 相同，支持用户 JWT 或 `oag_` 用户 API Key。
+
+## 创建异步任务
+
+```python
+import beeos
+
+with beeos.ApiClient(configuration) as client:
+    tasks = beeos.sdk.TasksApi(client)
+    response = tasks.create_task(
+        agent_id="agent_abc123",
+        create_task_request=beeos.sdk.CreateTaskRequest(
+            message="打开设置",
+        ),
+    )
+    print(response.data.task_id)
+```
+
+完整的生成 API 和 model 位于 `beeos.sdk`。也可以直接 import `beeos_sdk`：
+
+```python
+import beeos_sdk
+
+configuration = beeos_sdk.Configuration(
+    host="https://openapi.beeos.ai",
+    access_token="oag_...",
+)
+```
+
+## 生成与兼容性
+
+`beeos-sdk` 与 TypeScript、Go SDK 使用同一份
+[`beeos-platform-v1.yaml`](https://github.com/beeos-ai/openagent/blob/main/backend/openapi/beeos-platform-v1.yaml)
+生成。OpenAPI 出现 breaking release 时，生成 class 和方法名可能变化；稳定的顶层
+import 建议使用官方 `beeos` facade。
+
+- GitHub：[`beeos-ai/sdk-python`](https://github.com/beeos-ai/sdk-python)
+- PyPI：[`beeos`](https://pypi.org/project/beeos/)
+- PyPI：[`beeos-sdk`](https://pypi.org/project/beeos-sdk/)
+
