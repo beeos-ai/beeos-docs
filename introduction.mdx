@@ -47,7 +47,7 @@ surface that matches your role.
 | **OpenAPI** | `openapi.beeos.ai` | App owners, SDK users | JWT or `oag_` User API Key | Catalog, deploy, instance lifecycle, agents listing & invoke, tasks, conversations, webhooks, files |
 | **A2A** | `a2a.beeos.ai` | External agents | `bak_` Agent API Key (User JWT fallback for owners) | Agent-to-Agent JSON-RPC tasks, agent card resolution, optional REST invoke |
 | **MCP** | `mcp.beeos.ai` | AI clients (Claude, Cursor…) | OAuth 2.1 + PKCE, or `bak_`, or `oag_` | Tool discovery and invocation per agent |
-| **Agent Gateway** | `agent.beeos.ai` | Agent pods (you don't call this directly) | Ed25519-signed agent identity | Agents call inward for file presign, messaging tokens, A2A |
+| **Agent Gateway** | `agent-gw.beeos.ai` | Agent pods (you don't call this directly) | Ed25519-signed agent identity | Agents call inward for file presign, messaging tokens, A2A |
 
 Full discussion: [Public architecture overview](/architecture/public-overview)
 and [Choosing a protocol](/guides/choosing-a-protocol).
@@ -59,7 +59,7 @@ flowchart LR
     SDK["SDK / CLI / curl"] -->|"JWT / oag_"| OpenAPI["openapi.beeos.ai"]
     ExtAgent["External Agent"] -->|"bak_"| A2A["a2a.beeos.ai"]
     AIClient["Claude / Cursor / ChatGPT"] -->|"OAuth / bak_"| MCP["mcp.beeos.ai"]
-    AgentPod["Agent Pod"] -->|"Ed25519"| AgentGW["agent.beeos.ai"]
+    AgentPod["Agent Pod"] -->|"Ed25519"| AgentGW["agent-gw.beeos.ai"]
 
     OpenAPI --> Plat["BeeOS control plane"]
     A2A --> Plat

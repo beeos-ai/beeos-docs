@@ -31,10 +31,10 @@ data-plane bridge（`ws.beeos.ai`、`bridge-*` 分片）。
 | `openapi.beeos.ai` | 给用户 / 应用后端用的 REST + SSE control plane | JWT 或 `oag_` User API Key | 人类、应用后端、批处理任务、SDK 客户端 |
 | `a2a.beeos.ai` | 给智能体间协作的 A2A v1.0 JSON-RPC | `bak_` Agent API Key（JWT 回退） | 其他智能体、智能体生态 |
 | `mcp.beeos.ai` | 给 LLM 工具 host 的 MCP 协议 | OAuth 2.0 authorization code | Claude Desktop、Cursor、OpenAI、n8n …… |
-| `agent.beeos.ai` | 智能体 pod 的入站（Ed25519 签名） | Ed25519 签名 | **仅智能体进程**，从不是外部集成方 |
+| `agent-gw.beeos.ai` | 智能体 pod 的入站（Ed25519 签名） | Ed25519 签名 | **仅智能体进程**，从不是外部集成方 |
 
 前三个面向调用方；第四个是**智能体 pod** 回家用的边界。如果你在智能体
-进程之外写集成代码，你永远不会直接跟 `agent.beeos.ai` 对话 —— 你的代码
+进程之外写集成代码，你永远不会直接跟 `agent-gw.beeos.ai` 对话 —— 你的代码
 用三个调用方接入面之一，BeeOS 自己把智能体侧接好。
 
 ### 为什么是四个主机、不是一个？
@@ -165,7 +165,7 @@ A2A Gateway 是外部智能体生态（其他 A2A 兼容运行时）跟 BeeOS �
 MCP 故意是 **per-call 无状态** —— 协议的 session 模型不带持久异步语义。
 长任务里 MCP 客户端应并行调 OpenAPI tasks；底层智能体是同一个。
 
-### 3.4 Agent Gateway（`agent.beeos.ai`）
+### 3.4 Agent Gateway（`agent-gw.beeos.ai`）
 
 **仅智能体 pod** 的入站接入面。pod 身份的 Ed25519 签名请求证明调用
 来自真实的 BeeOS 管理的实例、不是外部冒充者。

@@ -1,0 +1,148 @@
+---
+title: Task and operation states
+description: "How BeeOS product tasks, OpenAPI tasks, A2A tasks, message envelopes, and runtime operations relate."
+---
+
+BeeOS exposes several state machines because they describe different objects.
+An OpenAPI task tracks durable user work, an A2A task is a protocol projection,
+a message envelope tracks one streamed reply, and a runtime operation tracks a
+side effect on an instance. Their values are related, but they are not
+interchangeable.
+
+## Product task projection
+
+BeeOS product surfaces normalize execution outcomes to five values:
+
+| Status | Terminal | Meaning |
+|---|---:|---|
+| `queued` | no | Accepted but not yet executing. |
+| `processing` | no | Execution is in progress. |
+| `completed` | yes | Finished successfully. |
+| `failed` | yes | Finished without a confirmed successful result. Inspect `reason` and certainty. |
+| `cancelled` | yes | Stopped by the caller or platform. |
+
+Older producers may emit `pending`, `running`, `succeeded`, `timeout`,
+`uncertain`, or the American spelling `canceled`. Compatibility readers accept
+those values, while new internal product writes use the five values above.
+
+Failure details do not need more top-level states:
+
+```json
+{
+  "status": "failed",
+  "reason": "timeout",
+  "outcome_certainty": "uncertain",
+  "retry_policy": "manual_review"
+}
+```
+
+`outcome_certainty=uncertain` means an imperative action might already have
+reached the agent or device. Do not automatically replay it.
+
+## OpenAPI task state
+
+The existing OpenAPI `/tasks` wire contract keeps its compatibility values:
+
+```text
+queued -> running -> succeeded
+                  -> failed
+                  -> canceled
+                  -> timeout
+                  -> rejected
+```
+
+`input_required` and `auth_required` are resumable, non-terminal states. These
+strings are specific to the OpenAPI Task resource. SDK clients must continue to
+accept them until a versioned contract removes them.
+
+| OpenAPI wire value | Product projection |
+|---|---|
+| `queued` | `queued` |
+| `running` | `processing` |
+| `succeeded` | `completed` |
+| `failed` | `failed` |
+| `canceled` | `cancelled` |
+| `timeout` | `failed`, `reason=timeout` |
+| `rejected` | `failed`, `reason=rejected` |
+
+An HTTP `504 service_timeout` from blocking invoke is a request outcome, not
+proof that an asynchronous task failed. If a task ID exists, query the task
+before deciding whether retry is safe.
+
+## A2A task state
+
+A2A callers see the protocol-native task lifecycle:
+
+```text
+submitted -> working -> completed
+                     -> failed
+                     -> canceled
+                     -> rejected
+```
+
+`input-required` and `auth-required` pause the task and allow it to resume.
+BeeOS internally records `delivered` and `timeout`, but projects them to the A2A
+v1 wire as `submitted` and `failed`, respectively.
+
+| A2A wire value | Product projection |
+|---|---|
+| `submitted` | `queued` |
+| `working` | `processing` |
+| `completed` | `completed` |
+| `failed` | `failed` |
+| `canceled` | `cancelled` |
+| `rejected` | `failed`, `reason=rejected` |
+
+The protobuf names use `TASK_STATE_*`; JSON renderers may expose the standard
+wire spelling. Treat that formatting as a protocol concern rather than a new
+state machine.
+
+## Message envelope state
+
+A streamed agent reply has its own lifecycle:
+
+```text
+streaming -> completed | failed | refused | cancelled
+```
+
+This state belongs to one message row. It can be evidence used to complete a
+task, but a completed user request message does not complete the task. Use the
+terminal agent reply and its `stop_reason` when deriving the task result.
+
+## Runtime operation state
+
+Runtime operations track commands such as model changes, session control, MCP
+configuration, and agent lifecycle mutations:
+
+```text
+queued -> running -> runtime_committed -> projection_pending -> succeeded
+                                                            -> projection_blocked
+```
+
+They may also end as `failed`, `cancelled`, `expired`, or `outcome_unknown`.
+These values must remain available to operators because they describe side
+effects and recovery safety:
+
+| Runtime value | Meaning |
+|---|---|
+| `runtime_committed` | The runtime effect happened; final projection is not yet confirmed. |
+| `projection_pending` | The effect committed and platform projection is still catching up. |
+| `projection_blocked` | The effect committed, but projection cannot currently converge. |
+| `expired` | The command exceeded its execution window. |
+| `outcome_unknown` | The platform cannot prove whether the effect happened. Automatic replay is unsafe. |
+
+Do not replace these internal states with product labels. Project them for UI
+display while retaining `effectState`, projection state, error code, and retry
+policy in the operation detail.
+
+## Cancellation spelling
+
+Both spellings are intentional compatibility surfaces:
+
+- OpenAPI and A2A wire contracts use `canceled`.
+- ACP, message envelopes, runtime operations, and the product projection use
+  `cancelled`.
+
+Readers should accept both. Serializers must emit the spelling required by the
+protocol they implement.
+

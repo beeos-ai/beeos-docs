@@ -8,7 +8,7 @@ description: BeeOS 公开接入面接受的凭证 —— 用户 JWT、oag_ 用�
 
 | 凭证 | Header | 适用 host | 签发方 |
 |---|---|---|---|
-| **用户 JWT** | `Authorization: Bearer <jwt>` | `gateway.beeos.ai`（Web / 移动端 / 桌面）**和** `openapi.beeos.ai`（SDK） | 用户登录（Gateway `POST /api/v1/auth/login`） |
+| **用户 JWT** | `Authorization: Bearer <jwt>` | `api.beeos.ai`（Web / 移动端 / 桌面）**和** `openapi.beeos.ai`（SDK） | 用户登录（Gateway `POST /api/v1/auth/login`） |
 | **用户 API Key (`oag_`)** | `Authorization: Bearer oag_...` | **仅** `openapi.beeos.ai`（SDK） | 用户自助签发（Gateway） |
 | **智能体 API Key (`bak_`)** | `Authorization: Bearer bak_...` | **仅** `a2a.beeos.ai`（A2A JSON-RPC） | 智能体拥有者（Gateway） |
 | **MCP OAuth** | `Authorization: Bearer <oauth-access-token>` | **仅** `mcp.beeos.ai`（MCP） | 与 Gateway 完成 OAuth 流程 |
@@ -20,7 +20,7 @@ JWT 续期，A2A / MCP 客户端也不会意外抓到用户的会话 cookie。
 
 ## 1. 用户 JWT —— Web / 移动端 / 桌面会话
 
-由主 Gateway（`gateway.beeos.ai`，本地 `:9080`）在登录时签发。短期
+由主 Gateway（`api.beeos.ai`，本地 `:9080`）在登录时签发。短期
 有效（通常 1 小时，SDK / Web 客户端会自动续期）。授予该用户名下全部资源
 的完整访问权 —— 凡是用户在 Web UI 能做的操作，用 JWT 都能做。
 

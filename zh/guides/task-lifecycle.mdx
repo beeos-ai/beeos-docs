@@ -1,0 +1,131 @@
+---
+title: 任务与操作状态
+description: "解释 BeeOS 产品任务、OpenAPI、A2A、消息流和 Runtime Operation 状态之间的关系。"
+---
+
+BeeOS 中存在多套状态，是因为它们描述的对象不同：OpenAPI Task 描述持久任务，
+A2A Task 是协议投影，Message Envelope 描述一条流式回复，Runtime Operation
+描述对实例产生副作用的控制操作。它们有关联，但不能直接混用。
+
+## 产品任务投影
+
+BeeOS 产品层把执行结果归一为五个状态：
+
+| 状态 | 终态 | 含义 |
+|---|---:|---|
+| `queued` | 否 | 已接受，尚未开始执行。 |
+| `processing` | 否 | 正在执行。 |
+| `completed` | 是 | 已成功完成。 |
+| `failed` | 是 | 没有得到可确认的成功结果；需要查看原因和确定性。 |
+| `cancelled` | 是 | 被调用方或平台取消。 |
+
+兼容读取仍接受 `pending`、`running`、`succeeded`、`timeout`、`uncertain`
+以及美式拼写 `canceled`；新的内部产品写入使用上面的五个值。
+
+失败的细节放在附加字段中：
+
+```json
+{
+  "status": "failed",
+  "reason": "timeout",
+  "outcome_certainty": "uncertain",
+  "retry_policy": "manual_review"
+}
+```
+
+`outcome_certainty=uncertain` 表示命令可能已经到达 Agent 或手机，不能自动重放。
+
+## OpenAPI Task
+
+现有 OpenAPI `/tasks` 继续保留兼容 wire 值：
+
+```text
+queued -> running -> succeeded
+                  -> failed
+                  -> canceled
+                  -> timeout
+                  -> rejected
+```
+
+`input_required` 和 `auth_required` 是可恢复的暂停态。它们属于 OpenAPI Task
+资源，不是所有 BeeOS 执行链路的统一状态。
+
+| OpenAPI wire 值 | 产品投影 |
+|---|---|
+| `queued` | `queued` |
+| `running` | `processing` |
+| `succeeded` | `completed` |
+| `failed` | `failed` |
+| `canceled` | `cancelled` |
+| `timeout` | `failed`，`reason=timeout` |
+| `rejected` | `failed`，`reason=rejected` |
+
+阻塞调用返回的 HTTP `504 service_timeout` 只表示请求超时，不足以证明异步任务失败。
+如果已经获得 task ID，应先查询任务状态，再决定是否可以安全重试。
+
+## A2A Task
+
+A2A 调用方看到协议原生状态：
+
+```text
+submitted -> working -> completed
+                     -> failed
+                     -> canceled
+                     -> rejected
+```
+
+`input-required` 和 `auth-required` 是可恢复暂停态。BeeOS 内部还记录
+`delivered` 和 `timeout`，但对 A2A v1 wire 分别投影为 `submitted` 和 `failed`。
+
+| A2A wire 值 | 产品投影 |
+|---|---|
+| `submitted` | `queued` |
+| `working` | `processing` |
+| `completed` | `completed` |
+| `failed` | `failed` |
+| `canceled` | `cancelled` |
+| `rejected` | `failed`，`reason=rejected` |
+
+protobuf 中使用 `TASK_STATE_*` 名称；JSON renderer 可能输出标准 wire 拼写。
+这只是序列化格式，不是另一套状态机。
+
+## Message Envelope
+
+一条流式 Agent 回复使用：
+
+```text
+streaming -> completed | failed | refused | cancelled
+```
+
+这是单条消息的状态。用户请求消息本身的 `completed` 不能用来判断任务完成；
+任务投影应依据最终 Agent 回复及其 `stop_reason`。
+
+## Runtime Operation
+
+Runtime Operation 用于模型切换、会话控制、MCP 配置和 Agent 生命周期等操作：
+
+```text
+queued -> running -> runtime_committed -> projection_pending -> succeeded
+                                                            -> projection_blocked
+```
+
+它也可能结束为 `failed`、`cancelled`、`expired` 或 `outcome_unknown`。
+
+| Runtime 值 | 含义 |
+|---|---|
+| `runtime_committed` | Runtime 副作用已发生，但最终投影尚未确认。 |
+| `projection_pending` | 副作用已提交，平台投影仍在追赶。 |
+| `projection_blocked` | 副作用已提交，但投影暂时无法收敛。 |
+| `expired` | 命令超过执行期限。 |
+| `outcome_unknown` | 平台无法证明副作用是否发生，自动重试不安全。 |
+
+这些内部状态不能删除。UI 可以投影成简化状态，但操作详情必须保留
+`effectState`、projection、错误码和重试策略。
+
+## 取消状态的拼写
+
+- OpenAPI 和 A2A wire 使用 `canceled`。
+- ACP、Message Envelope、Runtime Operation 和产品投影使用 `cancelled`。
+
+读取端应兼容两种拼写，写入端必须按所在协议输出对应值。
+

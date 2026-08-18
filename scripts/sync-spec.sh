@@ -19,10 +19,11 @@
 # Outputs:
 #   - openapi/beeos-platform-v1.yaml         (overwritten)
 #   - openapi/beeos-agent-integration-v1.yaml (overwritten)
+#   - openapi/runtime-error-codes-v4.generated.json (overwritten)
 #
-# Does NOT touch openapi/beeos-platform-v1-zh.yaml — that file is
-# hand-translated. Maintainers must update it separately following
-# zh/_terminology.md.
+# Does NOT touch openapi/beeos-platform-v1-zh.yaml. That file is a
+# historical localized snapshot and is not used by the API Reference.
+# Both language tabs render the authoritative synced platform spec.
 # ============================================================================
 
 set -euo pipefail
@@ -70,14 +71,32 @@ sync_one() {
   printf "  synced %-45s -> %s lines\n" "$file" "$(wc -l < "$dst_path" | tr -d ' ')"
 }
 
+sync_support_file() {
+  local file="$1"
+  local src_path="$SRC/$file"
+  local dst_path="$DST/$file"
+
+  if [[ ! -f "$src_path" ]]; then
+    echo "ERROR: support file not found: $src_path"
+    exit 1
+  fi
+
+  cp "$src_path" "$dst_path"
+  printf "  synced %-45s -> %s lines\n" "$file" "$(wc -l < "$dst_path" | tr -d ' ')"
+}
+
 echo "==> Syncing OpenAPI specs from $SRC"
 echo "    Destination: $DST"
 echo ""
 sync_one beeos-platform-v1.yaml
 sync_one beeos-agent-integration-v1.yaml
+sync_support_file runtime-error-codes-v4.generated.json
+node "$SCRIPT_DIR/inline-openapi-refs.mjs" \
+  "$DST/beeos-platform-v1.yaml" \
+  "$DST/runtime-error-codes-v4.generated.json"
 echo ""
 echo "DONE."
 echo ""
-echo "Reminder: openapi/beeos-platform-v1-zh.yaml is hand-translated and"
-echo "          NOT touched by this script. Update it manually following"
-echo "          zh/_terminology.md after en spec changes."
+echo "Note: both language tabs use openapi/beeos-platform-v1.yaml."
+echo "      openapi/beeos-platform-v1-zh.yaml is a historical snapshot"
+echo "      and is intentionally not updated by this script."

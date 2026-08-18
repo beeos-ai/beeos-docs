@@ -181,6 +181,11 @@ are **AUTO-SYNCED** from the [`backend/openapi/`](https://github.com/beeos-ai/op
 directory of the openagent meta repo. The top of each file has a banner
 with the source SHA — **do not edit them by hand**.
 
+The sync also copies `runtime-error-codes-v4.generated.json` and inlines its
+references into the documentation copy of the platform spec because Mintlify
+does not accept external OpenAPI `$ref` values. Do not apply this docs-only
+bundling transform to the Backend source contract.
+
 Sync workflow:
 
 ```bash
@@ -197,9 +202,12 @@ cd beeos-docs && npm run sync-spec   # copies + adds banner
 git add openapi/ && git commit
 ```
 
-`openapi/beeos-platform-v1-zh.yaml` is **hand-translated**, not synced.
-Update it manually following [`zh/_terminology.md`](zh/_terminology.md)
-after the en spec lands.
+Both English and Chinese API Reference navigation use the authoritative
+`openapi/beeos-platform-v1.yaml`. Localized explanations belong in the
+hand-maintained `zh/**/*.mdx` guides. The old
+`openapi/beeos-platform-v1-zh.yaml` is retained only as a historical
+localized snapshot; it is not a contract source and must not be added back
+to navigation.
 
 ## 6. Style conventions
 
@@ -227,8 +235,11 @@ Before opening a PR to this repo:
 
 ## 8. Deployment
 
-`.github/workflows/deploy.yml` triggers `mintlify/github-action@v4` on
-every push to `main` -> publishes immediately to <https://docs.beeos.ai>.
+`.github/workflows/deploy.yml` validates every push and pull request. The
+installed Mintlify GitHub integration creates the separate
+`Mintlify Deployment` check and publishes updates from `main` to
+<https://docs.beeos.ai>. Before considering a documentation release done,
+verify both the repository validation check and `Mintlify Deployment`.
 Always use a feature branch + PR review. Never force-push `main`.
 
 ## 9. Translation rules (zh)

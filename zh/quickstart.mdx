@@ -1,6 +1,6 @@
 ---
 title: 快速开始
-description: "5 分钟部署你的第一个智能体并调用它 —— 涵盖类型化 SDK、curl、Go。"
+description: "5 分钟部署你的第一个智能体并调用它 —— TypeScript、Python、Go 或 curl。"
 ---
 
 本指南带你从零到一个能聊天的运行中智能体，通过 BeeOS 公开 OpenAPI
@@ -23,6 +23,10 @@ npm install @beeos-ai/sdk
 
 ```bash go
 go get github.com/beeos-ai/sdk-go
+```
+
+```bash python
+python -m pip install beeos
 ```
 
 ```bash curl
@@ -86,12 +90,32 @@ func main() {
 }
 ```
 
+```python Python
+import os
+import beeos
+
+configuration = beeos.Configuration(
+    host="https://openapi.beeos.ai",
+    access_token=os.environ["BEEOS_API_KEY"],
+)
+
+client = beeos.ApiClient(configuration)
+deploy = beeos.sdk.DeployApi(client)
+instances = beeos.sdk.InstancesApi(client)
+agents = beeos.sdk.AgentsApi(client)
+```
+
 ```bash curl
 export BEEOS_API_KEY="oag_…"
 export BASE=https://openapi.beeos.ai
 ```
 
 </CodeGroup>
+
+<Tip>
+  Python 用户建议安装官方稳定入口 `beeos`。完整的 OpenAPI 生成接口仍可通过
+  `beeos.sdk` 使用，详见 [Python SDK](/zh/sdks/python)。
+</Tip>
 
 ## 3. 查看部署目录
 

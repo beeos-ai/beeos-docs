@@ -1,0 +1,84 @@
+---
+title: Python SDK
+description: "Install and use the official beeos package and generated beeos-sdk OpenAPI client."
+---
+
+BeeOS publishes two related Python packages:
+
+| Package | Purpose |
+|---|---|
+| [`beeos`](https://pypi.org/project/beeos/) | Recommended official entry point and stable facade. |
+| [`beeos-sdk`](https://pypi.org/project/beeos-sdk/) | Complete OpenAPI-generated client, imported as `beeos_sdk`. |
+
+Both target the Platform OpenAPI at `https://openapi.beeos.ai`. They do not
+wrap the separate [A2A](/a2a/overview) or [MCP](/mcp/overview) protocols.
+
+## Install
+
+```bash
+python -m pip install beeos
+```
+
+The `beeos` package installs a compatible `beeos-sdk` dependency. Install
+`beeos-sdk` directly only when generated-client imports are preferred.
+
+Current releases:
+
+- `beeos==0.1.0`
+- `beeos-sdk==0.4.0`
+
+## Configure
+
+```python
+import os
+import beeos
+
+configuration = beeos.Configuration(
+    host="https://openapi.beeos.ai",
+    access_token=os.environ["BEEOS_API_KEY"],
+)
+```
+
+Authentication uses the same user JWT or `oag_` User API Key as the other
+OpenAPI SDKs.
+
+## Create an async task
+
+```python
+import beeos
+
+with beeos.ApiClient(configuration) as client:
+    tasks = beeos.sdk.TasksApi(client)
+    response = tasks.create_task(
+        agent_id="agent_abc123",
+        create_task_request=beeos.sdk.CreateTaskRequest(
+            message="Open Settings",
+        ),
+    )
+    print(response.data.task_id)
+```
+
+Use `beeos.sdk` for the complete generated API and model surface. The equivalent
+direct imports are available from `beeos_sdk`:
+
+```python
+import beeos_sdk
+
+configuration = beeos_sdk.Configuration(
+    host="https://openapi.beeos.ai",
+    access_token="oag_...",
+)
+```
+
+## Generation and compatibility
+
+`beeos-sdk` is generated from the same
+[`beeos-platform-v1.yaml`](https://github.com/beeos-ai/openagent/blob/main/backend/openapi/beeos-platform-v1.yaml)
+contract as the TypeScript and Go clients. Generated classes and method names
+may change when the OpenAPI contract has a breaking release; use the official
+`beeos` facade for the stable top-level imports.
+
+- GitHub: [`beeos-ai/sdk-python`](https://github.com/beeos-ai/sdk-python)
+- PyPI: [`beeos`](https://pypi.org/project/beeos/)
+- PyPI: [`beeos-sdk`](https://pypi.org/project/beeos-sdk/)
+

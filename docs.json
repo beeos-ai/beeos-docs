@@ -52,6 +52,7 @@
                 "group": "Guides",
                 "pages": [
                   "guides/calling-agents",
+                  "guides/task-lifecycle",
                   "guides/instances-and-devices",
                   "guides/conversations",
                   "guides/webhooks",
@@ -87,6 +88,7 @@
                 "pages": [
                   "sdks/typescript",
                   "sdks/go",
+                  "sdks/python",
                   "sdks/migration",
                   "sdks/changelog"
                 ]
@@ -122,6 +124,7 @@
                 "group": "指南",
                 "pages": [
                   "zh/guides/calling-agents",
+                  "zh/guides/task-lifecycle",
                   "zh/guides/instances-and-devices",
                   "zh/guides/conversations",
                   "zh/guides/webhooks",
@@ -157,6 +160,7 @@
                 "pages": [
                   "zh/sdks/typescript",
                   "zh/sdks/go",
+                  "zh/sdks/python",
                   "zh/sdks/migration",
                   "zh/sdks/changelog"
                 ]
@@ -169,7 +173,7 @@
           },
           {
             "tab": "API 参考",
-            "openapi": "openapi/beeos-platform-v1-zh.yaml"
+            "openapi": "openapi/beeos-platform-v1.yaml"
           }
         ]
       }

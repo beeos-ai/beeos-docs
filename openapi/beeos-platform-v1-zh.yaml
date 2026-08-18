@@ -1,9 +1,8 @@
 # ============================================================================
-# 此文件是 beeos-platform-v1.yaml 的人工翻译镜像。
-# 与 sync-spec.sh 脚本无关 —— **不要**自动覆盖。
-# 翻译规则参见 zh/_terminology.md。
-# 英文 yaml 升级时按照同一个 path / operationId / schema 名手翻 summary
-# 与 description；保留所有 wire 字段名、enum 值、format。
+# 历史本地化快照：不再作为 API Reference 或 API 契约来源。
+# 英文和中文 API Reference 均使用自动同步的 beeos-platform-v1.yaml。
+# 本文件仅为保留历史翻译而存在，请勿据此生成 SDK 或恢复到导航中。
+# 当前协议以 backend/openapi/beeos-platform-v1.yaml 为唯一事实源。
 # ============================================================================
 openapi: 3.1.0
 info:

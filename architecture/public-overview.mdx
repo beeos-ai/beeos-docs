@@ -35,12 +35,12 @@ looks public is either a CDN-fronted asset host (`docs.beeos.ai`,
 | `openapi.beeos.ai` | REST + SSE control plane for users / app backends | JWT or `oag_` User API Key | Humans, app backends, batch jobs, SDK clients |
 | `a2a.beeos.ai` | A2A v1.0 JSON-RPC for agent-to-agent collaboration | `bak_` Agent API Key (JWT fallback) | Other agents, agent ecosystems |
 | `mcp.beeos.ai` | MCP protocol for LLM tool hosts | OAuth 2.0 authorization code | Claude Desktop, Cursor, OpenAI, n8n, … |
-| `agent.beeos.ai` | Inbound for agent pods (Ed25519-signed) | Ed25519 signatures | **Agent processes only**, never external integrators |
+| `agent-gw.beeos.ai` | Inbound for agent pods (Ed25519-signed) | Ed25519 signatures | **Agent processes only**, never external integrators |
 
 The first three are caller-facing; the fourth is the boundary an
 **agent pod** uses to phone home. If you're building integration
 code outside an agent process, you'll never talk to
-`agent.beeos.ai` directly — your code uses one of the three caller
+`agent-gw.beeos.ai` directly — your code uses one of the three caller
 surfaces, and BeeOS handles the agent-side wiring for you.
 
 ### Why four hosts, not one?
@@ -185,7 +185,7 @@ session model doesn't carry durable async semantics. For
 long-running work, MCP clients should call out to OpenAPI tasks
 in parallel; the underlying agent is the same.
 
-### 3.4 Agent Gateway (`agent.beeos.ai`)
+### 3.4 Agent Gateway (`agent-gw.beeos.ai`)
 
 The inbound surface for **agent pods only**. Ed25519 signed
 requests from the pod identity prove the call comes from a real
