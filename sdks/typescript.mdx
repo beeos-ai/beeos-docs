@@ -25,7 +25,7 @@ what you get in the SDK.
 npm install @beeos-ai/sdk
 ```
 
-Current published version: **0.6.0** (see [SDK Changelog](/sdks/changelog)
+Current published version: **0.6.1** (see [SDK Changelog](/sdks/changelog)
 for wire deltas).
 
 ## Stable task facade (recommended)
@@ -221,7 +221,7 @@ const taskId = created.data!.task_id;
 
 // Poll
 let task = await tasks.getTask({ agentId: "agent_abc123", taskId });
-while (task.data?.status !== "succeeded" && task.data?.status !== "failed") {
+while (task.data?.status !== "completed" && task.data?.status !== "failed") {
   await new Promise(r => setTimeout(r, 2_000));
   task = await tasks.getTask({ agentId: "agent_abc123", taskId });
 }

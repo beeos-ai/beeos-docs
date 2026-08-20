@@ -86,6 +86,27 @@ No unreleased SDK changes yet.
 
 ---
 
+## [0.6.1] — 2026-08-20
+
+### Fixed
+
+- **Canonical task success status.** Generated TypeScript, Go, and Python
+  `TaskStatus` enums now expose `completed` instead of the stale
+  `succeeded` value, matching the OpenAPI server, Message Service resolver,
+  and A2A success vocabulary.
+- **Task examples.** Polling, webhook payload, lifecycle, and architecture
+  examples now use `completed`. The separate Runtime Operation and webhook
+  delivery enums continue to use their own `succeeded` value.
+
+### Migration
+
+- Replace comparisons against `TaskStatus.Succeeded`,
+  `TASKSTATUS_SUCCEEDED`, or the string `"succeeded"` with their
+  `completed` equivalents. No endpoint, request shape, or non-success status
+  changed.
+
+---
+
 ## [0.6.0] — 2026-08-18
 
 ### Added

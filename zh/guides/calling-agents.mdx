@@ -248,7 +248,7 @@ GET /api/v1/agents/agent_abc123/tasks/ch-uuid
 }
 ```
 
-当任务到达终止态时，`status` 翻为 `succeeded` / `failed` /
+当任务到达终止态时，`status` 翻为 `completed` / `failed` /
 `canceled` / `timeout` / `rejected` 之一，`result`（成功）或
 `error`（失败）字段被填充。终止态是状态机的叶节点 —— 轮询可短路。
 
@@ -274,7 +274,7 @@ data: {"reason":"task_terminal"}
 
 | `reason` | 含义 |
 |---|---|
-| `task_terminal` | 任务到达了终止 `TaskStatus`（`succeeded` / `failed` / `canceled` / `timeout` / `rejected`）。前一个 `event: message` 是终止回复。 |
+| `task_terminal` | 任务到达了终止 `TaskStatus`（`completed` / `failed` / `canceled` / `timeout` / `rejected`）。前一个 `event: message` 是终止回复。 |
 | `channel_closed` | 底层 Message Service 通道被外部关闭（如被管理员或 reaper 关闭）。按终止态处理。 |
 | `stream_closed` | 客户端关闭，或网关因 idle 超时丢弃流。重新订阅以续传。 |
 
@@ -320,7 +320,7 @@ const created = await tasks.createTask({
 
 // Poll
 let state = await tasks.getTask({ agentId: "agent_abc123", taskId: created.data!.taskId! });
-while (!["succeeded", "failed", "canceled", "timeout", "rejected"].includes(state.data!.status!)) {
+while (!["completed", "failed", "canceled", "timeout", "rejected"].includes(state.data!.status!)) {
   await new Promise(r => setTimeout(r, 2000));
   state = await tasks.getTask({ agentId: "agent_abc123", taskId: created.data!.taskId! });
 }
@@ -470,7 +470,7 @@ for (const m of log.data.messages ?? []) {
 | `running` | 否 | 智能体正在产出 |
 | `input_required` | 否 | 暂停，等 `user.continue` |
 | `auth_required` | 否 | 暂停，等 `user.auth_grant` |
-| `succeeded` | 是 | 终止成功；`result` 填充 |
+| `completed` | 是 | 终止成功；`result` 填充 |
 | `failed` | 是 | 终止错误；`error` 填充 |
 | `canceled` | 是 | 调用方取消 |
 | `timeout` | 是 | deadline 在到达终态前消耗完 |

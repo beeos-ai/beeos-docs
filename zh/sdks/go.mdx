@@ -22,7 +22,7 @@ SDK 只针对 **Platform API**。[A2A 协议](/zh/a2a/overview)
 go get github.com/beeos-ai/sdk-go
 ```
 
-当前发布版本：**v0.6.0**（wire delta 见 [SDK 变更日志](/zh/sdks/changelog)）。
+当前发布版本：**v0.6.1**（wire delta 见 [SDK 变更日志](/zh/sdks/changelog)）。
 
 ## 稳定任务 facade（推荐）
 
@@ -227,7 +227,7 @@ taskID := created.GetData().GetTaskId()
 for {
     task, _, _ := client.TasksAPI.GetTask(ctx, "agent_abc123", taskID).Execute()
     status := task.GetData().GetStatus()
-    if status == "succeeded" || status == "failed" {
+    if status == "completed" || status == "failed" {
         break
     }
     time.Sleep(2 * time.Second)

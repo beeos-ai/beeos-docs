@@ -41,10 +41,10 @@ reached the agent or device. Do not automatically replay it.
 
 ## OpenAPI task state
 
-The existing OpenAPI `/tasks` wire contract keeps its compatibility values:
+The OpenAPI `/tasks` wire contract uses the canonical task values:
 
 ```text
-queued -> running -> succeeded
+queued -> running -> completed
                   -> failed
                   -> canceled
                   -> timeout
@@ -59,7 +59,7 @@ accept them until a versioned contract removes them.
 |---|---|
 | `queued` | `queued` |
 | `running` | `processing` |
-| `succeeded` | `completed` |
+| `completed` | `completed` |
 | `failed` | `failed` |
 | `canceled` | `cancelled` |
 | `timeout` | `failed`, `reason=timeout` |
@@ -145,4 +145,3 @@ Both spellings are intentional compatibility surfaces:
 
 Readers should accept both. Serializers must emit the spelling required by the
 protocol they implement.
-

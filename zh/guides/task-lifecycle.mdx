@@ -37,10 +37,10 @@ BeeOS 产品层把执行结果归一为五个状态：
 
 ## OpenAPI Task
 
-现有 OpenAPI `/tasks` 继续保留兼容 wire 值：
+OpenAPI `/tasks` wire 契约使用规范任务状态：
 
 ```text
-queued -> running -> succeeded
+queued -> running -> completed
                   -> failed
                   -> canceled
                   -> timeout
@@ -54,7 +54,7 @@ queued -> running -> succeeded
 |---|---|
 | `queued` | `queued` |
 | `running` | `processing` |
-| `succeeded` | `completed` |
+| `completed` | `completed` |
 | `failed` | `failed` |
 | `canceled` | `cancelled` |
 | `timeout` | `failed`，`reason=timeout` |
@@ -128,4 +128,3 @@ queued -> running -> runtime_committed -> projection_pending -> succeeded
 - ACP、Message Envelope、Runtime Operation 和产品投影使用 `cancelled`。
 
 读取端应兼容两种拼写，写入端必须按所在协议输出对应值。
-

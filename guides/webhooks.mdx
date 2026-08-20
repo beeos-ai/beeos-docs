@@ -142,14 +142,14 @@ Authorization: Bearer <your-token>       ← only if you set `token` on register
   "type": "task_status",
   "task_id": "ch-uuid",
   "context_id": "ch-uuid",
-  "status": "succeeded",
+  "status": "completed",
   "final": true,
   "timestamp": "2026-05-14T18:01:23.456Z"
 }
 ```
 
 Possible `status` values: `queued`, `running`, `input_required`,
-`auth_required`, `succeeded`, `failed`, `canceled`, `timeout`,
+`auth_required`, `completed`, `failed`, `canceled`, `timeout`,
 `rejected` (see [Calling Agents §3e](/guides/calling-agents#3e-task-status-reference)).
 `final: true` only on terminal states.
 
