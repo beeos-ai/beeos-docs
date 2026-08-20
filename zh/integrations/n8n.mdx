@@ -1,0 +1,51 @@
+---
+title: n8n
+description: 在 n8n 中通过 MCP 使用 Agent 工具，或通过 OpenAPI 构建持久工作流。
+---
+
+n8n 有两种互补的 BeeOS 接入方式：
+
+| 模式 | 适用场景 |
+|---|---|
+| AI Agent + MCP Client Tool | 由模型决定是否以及如何使用 BeeOS Agent |
+| HTTP Request + OpenAPI | 确定性任务、状态查询、取消和条件分支 |
+
+## MCP Client Tool
+
+1. 添加 **AI Agent** 节点。
+2. 连接 **MCP Client Tool** 节点。
+3. Streamable HTTP URL 填写 `https://mcp.beeos.ai/<agentId>/mcp`。
+4. 在 n8n Credentials 中配置 `Authorization: Bearer <oag_key>`，不要直接写进工作流 JSON。
+5. 发现工具后先测试低风险请求。
+
+当模型应自主选择工具时使用 MCP。它不是持久队列；工作流需要跨长时间断线恢复时应使用 OpenAPI task。
+
+## 持久 OpenAPI 工作流
+
+典型生产工作流：
+
+```text
+Trigger
+  -> HTTP Request: POST /api/v1/agents/{agentId}/tasks
+  -> Wait
+  -> HTTP Request: GET /api/v1/agents/{agentId}/tasks/{taskId}
+  -> IF 是否终态？
+       否 -> Wait（有次数上限）
+       是 -> 消费结果或处理错误
+```
+
+配置一个 HTTP Header Auth Credential：
+
+```text
+Authorization: Bearer oag_...
+```
+
+Base URL 使用 `https://openapi.beeos.ai`。用 n8n execution ID 生成幂等键，避免重试重复执行手机动作。轮询必须有硬上限；工作流停止时调用 task cancel endpoint。
+
+<Tip>
+高并发工作流优先使用 BeeOS task webhook，而不是高频轮询。恢复工作流前必须验证 webhook 签名。
+</Tip>
+
+建议让 n8n 负责输入校验和人工审批，再通过 OpenAPI 创建一个 BeeOS task。只有在明确需要对话式自动化时，才让 AI Agent 通过 MCP 自主选择手机操作。
+
+参见[调用 Agent](/zh/guides/calling-agents)、[任务生命周期](/zh/guides/task-lifecycle)和 [Webhook](/zh/guides/webhooks)。

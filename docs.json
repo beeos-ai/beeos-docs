@@ -84,6 +84,17 @@
                 ]
               },
               {
+                "group": "Integrations",
+                "pages": [
+                  "integrations/overview",
+                  "integrations/claude-code",
+                  "integrations/n8n",
+                  "integrations/langgraph",
+                  "integrations/google-a2a-sdk",
+                  "integrations/dify"
+                ]
+              },
+              {
                 "group": "SDKs",
                 "pages": [
                   "sdks/typescript",
@@ -153,6 +164,17 @@
                   "zh/mcp/oauth",
                   "zh/mcp/tools",
                   "zh/mcp/resources"
+                ]
+              },
+              {
+                "group": "集成",
+                "pages": [
+                  "zh/integrations/overview",
+                  "zh/integrations/claude-code",
+                  "zh/integrations/n8n",
+                  "zh/integrations/langgraph",
+                  "zh/integrations/google-a2a-sdk",
+                  "zh/integrations/dify"
                 ]
               },
               {
