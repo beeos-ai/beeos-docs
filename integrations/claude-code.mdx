@@ -1,0 +1,78 @@
+---
+title: Claude Code
+description: Connect Claude Code to a BeeOS agent with MCP and add reusable workflow guidance with Skills.
+---
+
+Claude Code connects to BeeOS over **MCP**. A Claude Code Skill is optional: it
+teaches Claude when and how to use the BeeOS tool, but it does not carry network
+traffic or replace MCP authentication.
+
+## Add the MCP server
+
+Use the BeeOS agent ID in the remote Streamable HTTP endpoint:
+
+```bash
+claude mcp add --transport http beeos-device \
+  "https://mcp.beeos.ai/${BEEOS_AGENT_ID}/mcp"
+```
+
+Run `/mcp` inside Claude Code and complete the browser OAuth flow. For CI or a
+non-interactive environment, use a scoped API key header instead:
+
+```bash
+claude mcp add --transport http beeos-device \
+  "https://mcp.beeos.ai/${BEEOS_AGENT_ID}/mcp" \
+  --header "Authorization: Bearer ${BEEOS_API_KEY}"
+```
+
+<Warning>
+Shell expansion can place a literal key in Claude Code's configuration. Prefer
+OAuth for developer workstations and use your secret manager's injection
+mechanism for automation.
+</Warning>
+
+Verify the connection:
+
+```bash
+claude mcp get beeos-device
+claude mcp list
+```
+
+Then ask Claude to perform a low-risk action, for example: `Use the BeeOS device
+tool to report the battery status.` Claude will discover the agent through
+`tools/list` and invoke it through `tools/call`.
+
+## Add a Skill
+
+A project Skill can encode your safety and verification policy:
+
+```markdown
+---
+name: operate-beeos-device
+description: Operate the connected BeeOS device for explicit user requests.
+---
+
+Use the BeeOS MCP tool only when the user explicitly requests a phone action.
+Before purchases, sending messages, deleting data, or changing an account,
+describe the pending action and ask for confirmation. After an action, verify
+the visible result before reporting success.
+```
+
+The Skill controls model behavior; the MCP server remains the source of tool
+schema, execution, and results. Do not put credentials in `SKILL.md`.
+
+## Team configuration
+
+Use project scope only when every contributor should see the server definition:
+
+```bash
+claude mcp add --scope project --transport http beeos-device \
+  "https://mcp.beeos.ai/${BEEOS_AGENT_ID}/mcp"
+```
+
+Claude Code writes project-scoped MCP configuration to `.mcp.json` and asks
+each user to approve it. Commit the endpoint only; each user should authenticate
+with their own BeeOS identity.
+
+See [MCP authentication](/mcp/oauth) and the
+[Claude Code MCP documentation](https://docs.anthropic.com/en/docs/claude-code/mcp).

@@ -1,0 +1,50 @@
+---
+title: 集成指南
+description: 将 LangGraph、Claude Code、n8n、Dify 和 Google A2A 客户端接入 BeeOS。
+---
+
+BeeOS 通过三种互补的公开协议暴露 Agent。先根据调用方选择协议，再阅读对应框架的接入指南。
+
+<CardGroup cols={2}>
+  <Card title="Claude Code" icon="terminal" href="/zh/integrations/claude-code">
+    将 BeeOS Agent 添加为 MCP 工具，并用 Skill 固化操作规范。
+  </Card>
+  <Card title="n8n" icon="diagram-project" href="/zh/integrations/n8n">
+    MCP 用于模型自主选工具，OpenAPI 用于确定性工作流。
+  </Card>
+  <Card title="LangGraph" icon="share-nodes" href="/zh/integrations/langgraph">
+    把 BeeOS MCP 工具加入图，或在节点中创建持久 OpenAPI 任务。
+  </Card>
+  <Card title="Google A2A SDK" icon="arrows-rotate" href="/zh/integrations/google-a2a-sdk">
+    发现 Agent Card，并通过标准 A2A 协议通信。
+  </Card>
+  <Card title="Dify" icon="wand-magic-sparkles" href="/zh/integrations/dify">
+    配置 MCP 工具提供方，或导入 BeeOS OpenAPI 契约。
+  </Card>
+</CardGroup>
+
+## 选择连接方式
+
+| 需求 | 协议 | 凭证 |
+|---|---|---|
+| 让 LLM 决定何时操作 Agent | MCP | OAuth、`oag_...` 或 `bak_...` |
+| 构建确定、持久、可恢复的工作流 | OpenAPI | `oag_...` 用户 API Key |
+| 让另一个 Agent 平台与 BeeOS 联邦 | A2A | `bak_...` Agent API Key |
+
+MCP 是工具接口，OpenAPI 是应用接口，A2A 是 Agent 联邦协议。一个应用可以同时使用多条线路。完整对比见[选择协议](/zh/guides/choosing-a-protocol)。
+
+## 通用准备
+
+1. 创建或连接 BeeOS Agent，并复制 `agentId`。
+2. 启用集成所需的协议入口。
+3. 为调用方创建权限最小的凭证。
+4. 将凭证保存在框架的密钥管理中，不要写入工作流导出、源码、提示词或截图。
+5. 先用只读或可恢复任务验证，再开放破坏性手机操作。
+
+<Warning>
+MCP 或 A2A 凭证可能允许外部模型操作真实设备。购买、发消息、删除、安装和账户变更必须保留人工确认。
+</Warning>
+
+## 示例与生产应用
+
+本文档示例刻意保持最小，便于审计。生产应用还应实现超时、取消、幂等、重试、密钥轮换和面向用户的错误处理。持久任务应使用 OpenAPI 或 A2A，不要依赖一个长时间不返回的 MCP 调用来恢复后台任务。

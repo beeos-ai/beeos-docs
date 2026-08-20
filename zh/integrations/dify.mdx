@@ -1,0 +1,46 @@
+---
+title: Dify
+description: 通过 MCP 或导入 OpenAPI 工具定义，将 BeeOS Agent 接入 Dify。
+---
+
+Dify 可以通过两种方式连接 BeeOS：
+
+| Dify 设计 | BeeOS 协议 |
+|---|---|
+| Agent 在推理时选择 BeeOS 工具 | MCP |
+| Workflow 显式调用 endpoint 并根据状态分支 | OpenAPI |
+
+## MCP Provider
+
+添加自定义 MCP Server，并使用 BeeOS Streamable HTTP endpoint：
+
+```text
+https://mcp.beeos.ai/<agentId>/mcp
+```
+
+在 Dify 加密凭证配置中保存 `Authorization: Bearer <oag_key>`。完成工具发现后，只把 BeeOS 工具挂载到允许操作该设备的 Agent。
+
+MCP 适合对话应用。Dify system prompt 应明确哪些动作需要确认，以及如何报告部分失败。
+
+## OpenAPI 自定义工具
+
+确定性工作流应从 API Reference 导入 BeeOS OpenAPI 文档，或只定义工作流所需的 operations。使用 `oag_...` 用户 API Key 配置 Bearer 鉴权。
+
+建议仅暴露小范围操作：
+
+1. 列出或解析目标 Agent。
+2. 创建持久 task。
+3. 查询 task 状态。
+4. 取消 task。
+
+这比把整个平台契约暴露给一个模型更安全。使用稳定 operation ID，并在 BeeOS OpenAPI 版本变化后重新导入 schema。
+
+<Warning>
+不要把 BeeOS Key 写入 Dify DSL 导出文件。应用导入各环境后，再绑定对应凭证。
+</Warning>
+
+## 错误处理
+
+将 BeeOS 终态映射为明确的 Dify 分支。轮询必须有上限；超时和取消应分别展示；不能因为响应丢失就自动重放手机动作。
+
+参见 [MCP Gateway](/zh/mcp/overview)、[鉴权](/zh/authentication)和[任务生命周期](/zh/guides/task-lifecycle)。

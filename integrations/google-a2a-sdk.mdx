@@ -1,0 +1,70 @@
+---
+title: Google A2A SDK
+description: Discover and call a BeeOS agent with the standard A2A Python SDK.
+---
+
+BeeOS publishes a standard Agent Card and A2A JSON-RPC endpoint for each
+eligible agent. Use an A2A SDK when the caller is itself an agent or agent
+runtime. Application backends should generally use OpenAPI instead.
+
+## Endpoints
+
+```text
+Base URL:   https://a2a.beeos.ai/<agentId>
+Agent Card: https://a2a.beeos.ai/<agentId>/.well-known/agent-card.json
+```
+
+The Agent Card is the source of truth for supported interfaces, skills, input
+modes, and security schemes. Do not hard-code capabilities from this page.
+
+## Python setup
+
+```bash
+pip install a2a-sdk httpx
+```
+
+Resolve the public card first:
+
+```python
+import asyncio
+import os
+
+import httpx
+from a2a.client import A2ACardResolver
+
+
+async def main():
+    base_url = f"https://a2a.beeos.ai/{os.environ['BEEOS_AGENT_ID']}"
+    async with httpx.AsyncClient() as http:
+        resolver = A2ACardResolver(http, base_url)
+        card = await resolver.get_agent_card()
+        print(card.name, card.supported_interfaces)
+
+
+asyncio.run(main())
+```
+
+Create a client from that card and attach `X-Agent-API-Key: bak_...` through an
+A2A client interceptor. Then send a `SendMessageRequest`; the current SDK's
+`send_message()` API yields an async iterator and negotiates streaming from the
+Agent Card.
+
+<Info>
+The A2A SDK evolves independently of BeeOS. Use the request models and
+interceptor interface from the installed SDK version, while keeping the BeeOS
+base URL and `bak_` credential semantics shown here.
+</Info>
+
+## Lifecycle rules
+
+- Keep the returned A2A task ID for `get`, `cancel`, and resubscription.
+- Treat `input-required` and `auth-required` as resumable states, not failures.
+- Use a stable message ID for idempotency.
+- Prefer stream resubscription or push notifications over restarting an
+  uncertain phone action.
+- Preserve A2A artifact part types, especially file parts; do not flatten every
+  artifact into text.
+
+See [A2A Gateway](/a2a/overview), [JSON-RPC methods](/a2a/json-rpc),
+[A2A streaming](/a2a/streaming), and the official
+[A2A Python SDK reference](https://a2a-protocol.org/latest/sdk/python/).

@@ -1,0 +1,61 @@
+---
+title: Integration Recipes
+description: Connect LangGraph, Claude Code, n8n, Dify, and Google A2A clients to BeeOS.
+---
+
+BeeOS exposes agents through three complementary public surfaces. Choose the
+surface that matches the caller, then follow a framework-specific recipe.
+
+<CardGroup cols={2}>
+  <Card title="Claude Code" icon="terminal" href="/integrations/claude-code">
+    Add a BeeOS agent as an MCP tool and package repeatable instructions as a Skill.
+  </Card>
+  <Card title="n8n" icon="diagram-project" href="/integrations/n8n">
+    Use MCP for model-selected actions or OpenAPI for deterministic workflows.
+  </Card>
+  <Card title="LangGraph" icon="share-nodes" href="/integrations/langgraph">
+    Load BeeOS MCP tools into a graph or call durable OpenAPI tasks from a node.
+  </Card>
+  <Card title="Google A2A SDK" icon="arrows-rotate" href="/integrations/google-a2a-sdk">
+    Discover an Agent Card and communicate through the native A2A protocol.
+  </Card>
+  <Card title="Dify" icon="wand-magic-sparkles" href="/integrations/dify">
+    Add BeeOS through an MCP tool provider or import the OpenAPI contract.
+  </Card>
+</CardGroup>
+
+## Choose the connection
+
+| Need | Use | Credential |
+|---|---|---|
+| Let an LLM decide when to operate an agent | MCP | OAuth, `oag_...`, or `bak_...` |
+| Build a deterministic, durable workflow | OpenAPI | `oag_...` user API key |
+| Let another agent platform federate with BeeOS | A2A | `bak_...` agent API key |
+
+MCP is a tool interface, OpenAPI is an application API, and A2A is an agent
+federation protocol. They can coexist in one application. See
+[Choosing a Protocol](/guides/choosing-a-protocol) for the complete comparison.
+
+## Shared prerequisites
+
+1. Create or connect a BeeOS agent and copy its `agentId`.
+2. Enable the protocol surface required by your integration.
+3. Create the narrowest credential that fits the caller.
+4. Store credentials in the framework's secret manager, never in workflow
+   exports, source control, prompts, or screenshots.
+5. Start with a read-only or reversible task before allowing destructive phone
+   actions.
+
+<Warning>
+An MCP or A2A credential may let an external model operate a real device. Keep
+human confirmation around purchases, messages, deletion, installation, and
+account changes.
+</Warning>
+
+## Examples versus production applications
+
+These pages intentionally keep examples small enough to audit. A complete
+application should additionally define timeouts, cancellation, idempotency,
+retry policy, secret rotation, and user-visible error handling. Durable tasks
+belong on OpenAPI or A2A; do not build background job recovery around a single
+long-lived MCP call.

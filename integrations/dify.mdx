@@ -1,0 +1,57 @@
+---
+title: Dify
+description: Expose BeeOS agents to Dify through MCP or an imported OpenAPI tool definition.
+---
+
+Dify can reach BeeOS in two ways:
+
+| Dify design | BeeOS surface |
+|---|---|
+| Agent chooses a BeeOS tool during reasoning | MCP |
+| Workflow calls explicit endpoints and branches on status | OpenAPI |
+
+## MCP provider
+
+Add a custom MCP server using the BeeOS Streamable HTTP endpoint:
+
+```text
+https://mcp.beeos.ai/<agentId>/mcp
+```
+
+Store the `Authorization: Bearer <oag_key>` header in Dify's encrypted
+credential configuration. After tool discovery, attach the BeeOS tool only to
+the agents that are allowed to operate that device.
+
+Use MCP for conversational applications. Keep the Dify system prompt explicit
+about actions that require confirmation and how to report partial failure.
+
+## OpenAPI custom tool
+
+For deterministic workflows, import the BeeOS OpenAPI document from the API
+Reference or define only the operations the workflow needs. Configure bearer
+authentication with an `oag_...` user API key.
+
+Prefer a small operation set:
+
+1. List or resolve the target agent.
+2. Create a durable task.
+3. Read task status.
+4. Cancel the task.
+
+This is safer than exposing the entire platform contract to one model. Use
+stable operation IDs and re-import the schema when the BeeOS OpenAPI version
+changes.
+
+<Warning>
+Do not embed a BeeOS key in a Dify DSL export. Bind credentials after importing
+the application into each environment.
+</Warning>
+
+## Error handling
+
+Map BeeOS terminal status to explicit Dify branches. Bound every poll loop,
+surface timeout and cancellation separately in the user experience, and never
+automatically replay a phone action merely because its response was lost.
+
+See [MCP Gateway](/mcp/overview), [Authentication](/authentication), and
+[Task Lifecycle](/guides/task-lifecycle).

@@ -1,0 +1,69 @@
+---
+title: LangGraph
+description: 将 BeeOS MCP 工具加载到 LangGraph，或从图节点调用持久 BeeOS OpenAPI 任务。
+---
+
+BeeOS 作为模型可选工具时使用 MCP；由图负责创建任务、重试、取消和状态转换时使用 OpenAPI。
+
+## 在图中加载 MCP 工具
+
+```bash
+pip install langgraph langchain-mcp-adapters
+```
+
+加载远程 Streamable HTTP Server：
+
+```python
+import os
+
+from langchain.agents import create_agent
+from langchain_mcp_adapters.client import MultiServerMCPClient
+
+
+async def build_agent():
+    agent_id = os.environ["BEEOS_AGENT_ID"]
+    client = MultiServerMCPClient(
+        {
+            "beeos": {
+                "transport": "http",
+                "url": f"https://mcp.beeos.ai/{agent_id}/mcp",
+                "headers": {
+                    "Authorization": f"Bearer {os.environ['BEEOS_API_KEY']}"
+                },
+            }
+        }
+    )
+    tools = await client.get_tools()
+    return create_agent(os.environ["LLM_MODEL"], tools)
+```
+
+在图状态或系统提示词中加入明确权限策略。不要让通用研究图默认获得在真实手机上发消息、购买或修改账户的权限。
+
+## 持久 OpenAPI 节点
+
+长任务应从普通异步节点创建 BeeOS task，并把 `taskId` 存入图状态。后续节点轮询，或由 webhook 恢复图。这样 LangGraph checkpoint 与 BeeOS task 持久性可以协作，而不是一直占用一个 MCP 请求。
+
+```python
+import os
+import httpx
+
+
+async def create_beeos_task(state: dict) -> dict:
+    headers = {"Authorization": f"Bearer {os.environ['BEEOS_API_KEY']}"}
+    body = {
+        "message": state["phone_task"],
+        "idempotency_key": state["run_id"],
+    }
+    async with httpx.AsyncClient(base_url="https://openapi.beeos.ai") as client:
+        response = await client.post(
+            f"/api/v1/agents/{state['agent_id']}/tasks",
+            headers=headers,
+            json=body,
+        )
+        response.raise_for_status()
+        return {"beeos_task": response.json()}
+```
+
+生产使用前请在[调用 Agent](/zh/guides/calling-agents)确认当前请求 schema，也可用生成的 BeeOS SDK 替代原始 HTTP。
+
+参见 [LangChain MCP 官方文档](https://docs.langchain.com/oss/python/langchain/mcp)和[选择协议](/zh/guides/choosing-a-protocol)。

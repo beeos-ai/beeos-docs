@@ -1,0 +1,64 @@
+---
+title: Claude Code
+description: 通过 MCP 将 Claude Code 连接到 BeeOS Agent，并用 Skill 增加可复用操作规范。
+---
+
+Claude Code 通过 **MCP** 连接 BeeOS。Skill 是可选的行为说明层：它告诉 Claude 何时、如何使用 BeeOS 工具，但不承载网络流量，也不替代 MCP 鉴权。
+
+## 添加 MCP Server
+
+在远程 Streamable HTTP 地址中使用 BeeOS Agent ID：
+
+```bash
+claude mcp add --transport http beeos-device \
+  "https://mcp.beeos.ai/${BEEOS_AGENT_ID}/mcp"
+```
+
+在 Claude Code 中运行 `/mcp` 并完成浏览器 OAuth。CI 或非交互环境可使用受限 API Key：
+
+```bash
+claude mcp add --transport http beeos-device \
+  "https://mcp.beeos.ai/${BEEOS_AGENT_ID}/mcp" \
+  --header "Authorization: Bearer ${BEEOS_API_KEY}"
+```
+
+<Warning>
+Shell 展开可能把真实 Key 写入 Claude Code 配置。开发机优先使用 OAuth，自动化环境应通过密钥管理器注入。
+</Warning>
+
+验证连接：
+
+```bash
+claude mcp get beeos-device
+claude mcp list
+```
+
+随后先执行低风险任务，例如：“使用 BeeOS 设备工具读取电池状态。”Claude 会通过 `tools/list` 发现工具，再通过 `tools/call` 调用。
+
+## 添加 Skill
+
+项目 Skill 可以固化安全与验证规则：
+
+```markdown
+---
+name: operate-beeos-device
+description: 根据用户明确请求操作已连接的 BeeOS 设备。
+---
+
+仅在用户明确要求手机操作时使用 BeeOS MCP 工具。购买、发消息、删除数据或修改账户前，先说明即将执行的动作并请求确认。动作完成后验证可见结果，再报告成功。
+```
+
+Skill 控制模型行为；MCP Server 仍负责工具 schema、执行和结果。不要把凭证放进 `SKILL.md`。
+
+## 团队配置
+
+只有整个项目团队都应看到该 Server 定义时才使用 project scope：
+
+```bash
+claude mcp add --scope project --transport http beeos-device \
+  "https://mcp.beeos.ai/${BEEOS_AGENT_ID}/mcp"
+```
+
+Claude Code 会写入 `.mcp.json`，并要求每位用户批准。只提交 endpoint，每位用户使用自己的 BeeOS 身份授权。
+
+参见 [MCP 鉴权](/zh/mcp/oauth)和 [Claude Code MCP 官方文档](https://docs.anthropic.com/en/docs/claude-code/mcp)。

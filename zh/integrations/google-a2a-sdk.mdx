@@ -1,0 +1,58 @@
+---
+title: Google A2A SDK
+description: 使用标准 A2A Python SDK 发现并调用 BeeOS Agent。
+---
+
+BeeOS 为符合条件的 Agent 发布标准 Agent Card 和 A2A JSON-RPC endpoint。当调用方本身是 Agent 或 Agent runtime 时使用 A2A SDK；普通应用后端通常应使用 OpenAPI。
+
+## Endpoint
+
+```text
+Base URL:   https://a2a.beeos.ai/<agentId>
+Agent Card: https://a2a.beeos.ai/<agentId>/.well-known/agent-card.json
+```
+
+Agent Card 是支持接口、技能、输入模式和安全方案的事实源，不要把能力硬编码到客户端。
+
+## Python 初始化
+
+```bash
+pip install a2a-sdk httpx
+```
+
+先解析公开 Agent Card：
+
+```python
+import asyncio
+import os
+
+import httpx
+from a2a.client import A2ACardResolver
+
+
+async def main():
+    base_url = f"https://a2a.beeos.ai/{os.environ['BEEOS_AGENT_ID']}"
+    async with httpx.AsyncClient() as http:
+        resolver = A2ACardResolver(http, base_url)
+        card = await resolver.get_agent_card()
+        print(card.name, card.supported_interfaces)
+
+
+asyncio.run(main())
+```
+
+再根据 Card 创建 client，并通过 A2A client interceptor 添加 `X-Agent-API-Key: bak_...`。发送 `SendMessageRequest`；当前 SDK 的 `send_message()` 返回异步迭代器，并根据 Agent Card 协商是否使用流式传输。
+
+<Info>
+A2A SDK 独立于 BeeOS 演进。请求模型和 interceptor API 应以当前安装版本为准；BeeOS Base URL 和 `bak_` 凭证语义保持不变。
+</Info>
+
+## 生命周期规则
+
+- 保存返回的 A2A task ID，用于 get、cancel 和重新订阅。
+- `input-required`、`auth-required` 是可恢复状态，不是失败。
+- 使用稳定 message ID 保证幂等。
+- 响应丢失时优先重新订阅或等待推送，不要重放状态不确定的手机操作。
+- 保留 A2A artifact part 类型，尤其是 file part；不要全部压平成文本。
+
+参见 [A2A Gateway](/zh/a2a/overview)、[JSON-RPC](/zh/a2a/json-rpc)、[A2A 流式传输](/zh/a2a/streaming)和 [A2A Python SDK 官方参考](https://a2a-protocol.org/latest/sdk/python/)。

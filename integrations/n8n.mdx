@@ -1,0 +1,65 @@
+---
+title: n8n
+description: Use BeeOS from n8n through MCP for agentic tool use or OpenAPI for durable workflows.
+---
+
+n8n supports two useful BeeOS patterns. They are complementary rather than
+interchangeable.
+
+| Pattern | Best for |
+|---|---|
+| MCP Client Tool attached to an AI Agent | The model decides whether and how to use a BeeOS agent |
+| HTTP Request nodes calling OpenAPI | Deterministic tasks, status polling, cancellation, and workflow branching |
+
+## MCP Client Tool
+
+1. Add an **AI Agent** node.
+2. Attach an **MCP Client Tool** node.
+3. Set the Streamable HTTP URL to
+   `https://mcp.beeos.ai/<agentId>/mcp`.
+4. Configure `Authorization: Bearer <oag_key>` in n8n credentials, not directly
+   in the workflow JSON.
+5. Let the node discover tools and test a low-risk request.
+
+Use MCP when the surrounding model should choose the tool. It is not a durable
+queue: if the workflow must survive a long disconnect, use OpenAPI tasks.
+
+## Durable OpenAPI workflow
+
+A production workflow usually has these nodes:
+
+```text
+Trigger
+  -> HTTP Request: POST /api/v1/agents/{agentId}/tasks
+  -> Wait
+  -> HTTP Request: GET /api/v1/agents/{agentId}/tasks/{taskId}
+  -> IF terminal?
+       no  -> Wait (bounded loop)
+       yes -> consume result or route the error
+```
+
+Configure one n8n HTTP Header Auth credential:
+
+```text
+Authorization: Bearer oag_...
+```
+
+Use `https://openapi.beeos.ai` as the base URL. Generate an idempotency key from
+the n8n execution ID so retries do not create duplicate device actions. Put a
+hard limit on polling and call the task cancel endpoint when the workflow is
+stopped.
+
+<Tip>
+For high-volume workflows, prefer a BeeOS task webhook over a tight polling
+loop. Verify the webhook signature before resuming the workflow.
+</Tip>
+
+## Recommended scenario
+
+For an approval-based mobile operation, let n8n collect and validate input,
+pause for human approval, then create one BeeOS task through OpenAPI. Reserve
+the MCP pattern for conversational automation where an AI Agent is deliberately
+allowed to choose the phone operation.
+
+See [Calling Agents](/guides/calling-agents), [Task Lifecycle](/guides/task-lifecycle),
+and [Webhooks](/guides/webhooks).
