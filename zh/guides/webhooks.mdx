@@ -135,14 +135,14 @@ Authorization: Bearer <your-token>       ← 仅当你 register 时设了 `token
   "type": "task_status",
   "task_id": "ch-uuid",
   "context_id": "ch-uuid",
-  "status": "succeeded",
+  "status": "completed",
   "final": true,
   "timestamp": "2026-05-14T18:01:23.456Z"
 }
 ```
 
 可能的 `status` 值：`queued`、`running`、`input_required`、
-`auth_required`、`succeeded`、`failed`、`canceled`、`timeout`、
+`auth_required`、`completed`、`failed`、`canceled`、`timeout`、
 `rejected`（见
 [调用智能体 §状态参考](/zh/guides/calling-agents#状态参考-adr-0017)）。
 `final: true` 仅在终止态。

@@ -262,7 +262,7 @@ GET /api/v1/agents/agent_abc123/tasks/ch-uuid
 ```
 
 When the task reaches a terminal state, `status` flips to one of
-`succeeded` / `failed` / `canceled` / `timeout` / `rejected` and
+`completed` / `failed` / `canceled` / `timeout` / `rejected` and
 `result` (success) or `error` (failure) is populated. Terminal states
 are leaf nodes in the state machine — polling can short-circuit.
 
@@ -289,7 +289,7 @@ of:
 
 | `reason` | Meaning |
 |---|---|
-| `task_terminal` | Task reached a terminal `TaskStatus` (`succeeded` / `failed` / `canceled` / `timeout` / `rejected`). The preceding `event: message` is the terminal reply. |
+| `task_terminal` | Task reached a terminal `TaskStatus` (`completed` / `failed` / `canceled` / `timeout` / `rejected`). The preceding `event: message` is the terminal reply. |
 | `channel_closed` | Underlying Message Service channel was closed externally (e.g. by an admin or reaper). Treat as terminal. |
 | `stream_closed` | Client-side close, or gateway dropping the stream due to idle timeout. Re-subscribe to resume. |
 
@@ -338,7 +338,7 @@ const created = await tasks.createTask({
 
 // Poll
 let state = await tasks.getTask({ agentId: "agent_abc123", taskId: created.data!.taskId! });
-while (!["succeeded", "failed", "canceled", "timeout", "rejected"].includes(state.data!.status!)) {
+while (!["completed", "failed", "canceled", "timeout", "rejected"].includes(state.data!.status!)) {
   await new Promise(r => setTimeout(r, 2000));
   state = await tasks.getTask({ agentId: "agent_abc123", taskId: created.data!.taskId! });
 }
@@ -495,7 +495,7 @@ an application UI or an A2A client.
 | `running` | no | Agent producing output |
 | `input_required` | no | Paused, waiting for `user.continue` |
 | `auth_required` | no | Paused, waiting for `user.auth_grant` |
-| `succeeded` | yes | Terminal success; `result` populated |
+| `completed` | yes | Terminal success; `result` populated |
 | `failed` | yes | Terminal error; `error` populated |
 | `canceled` | yes | Cancelled by caller |
 | `timeout` | yes | Deadline elapsed before terminal |

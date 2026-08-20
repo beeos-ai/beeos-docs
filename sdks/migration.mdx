@@ -29,10 +29,12 @@ on one SDK that doesn't exist on the other.
 
 | You're on | Read this section |
 |---|---|
-| `0.3.x` and earlier (pre-webhook-signing) | [§ 1 — 0.3 → 0.4](#1-03--04) and [§ 2 — 0.4 → unreleased](#2-04--unreleased) |
-| `0.4.x` (today's published) | [§ 2 — 0.4 → unreleased](#2-04--unreleased) |
-| Hand-rolled `fetch`/`net/http` directly against `openapi.beeos.ai` | [§ 3 — hand-rolled HTTP → SDK](#3-hand-rolled-http--sdk) |
-| Migrating off `0.2.x` (pre-BFF decoupling) | [§ 4 — 0.2.x → 0.4.x](#4-02x--04x) |
+| `0.6.0` | [§ 2 — 0.6.0 → 0.6.1](#2-060--061) |
+| `0.5.0` | [§ 3 — 0.5.0 → 0.6.0](#3-050--060), then § 2 |
+| `0.4.x` | [§ 4 — 0.4.x → 0.5.0](#4-04x--050), then §§ 3–2 |
+| `0.3.x` and earlier (pre-webhook-signing) | [§ 1 — 0.3 → 0.4](#1-03--04), then §§ 4–2 |
+| Hand-rolled `fetch`/`net/http` directly against `openapi.beeos.ai` | [§ 5 — hand-rolled HTTP → SDK](#5-hand-rolled-http--sdk) |
+| Migrating off `0.2.x` (pre-BFF decoupling) | [§ 6 — 0.2.x → 0.4.x](#6-02x--04x) |
 
 ---
 
@@ -129,7 +131,21 @@ clients can use it for filtering.
 
 ---
 
-## 2. `0.5.0` → `0.6.0`
+## 2. `0.6.0` → `0.6.1`
+
+`TaskStatus` success now matches the server's canonical wire value:
+
+```text
+succeeded -> completed
+```
+
+Update polling and terminal-state comparisons to use `completed`. This change
+only applies to Platform Task status. Runtime Operation outcomes and webhook
+delivery status have separate enums and continue to use `succeeded`.
+
+---
+
+## 3. `0.5.0` → `0.6.0`
 
 This release has no wire-level migration. Existing generated-client calls
 continue to work. You can adopt the new task facade incrementally:
@@ -148,11 +164,11 @@ generated client through `Client.API`.
 
 ---
 
-## 3. `0.4.x` → `0.5.0`
+## 4. `0.4.x` → `0.5.0`
 
 The entries below shipped together in `0.5.0`. None are breaking.
 
-### 3.1 Webhook HMAC signing — opt-in but recommended
+### 4.1 Webhook HMAC signing — opt-in but recommended
 
 Set `secret` when registering a webhook and every delivery
 ships an `X-BeeOS-Signature` header. The wire response only
@@ -192,7 +208,7 @@ if (!timingSafeEqual(Buffer.from(expected), Buffer.from(got))) {
 See [Webhooks § 6 HMAC signing](/guides/webhooks#6-hmac-signing-p2-a)
 for the Python variant and the full delivery contract.
 
-### 3.2 Webhook delivery audit log + manual replay
+### 4.2 Webhook delivery audit log + manual replay
 
 Two new endpoints:
 
@@ -213,7 +229,7 @@ for (const d of failed) {
 }
 ```
 
-### 3.3 `GET /api/v1/tasks` — cross-agent inbox
+### 4.3 `GET /api/v1/tasks` — cross-agent inbox
 
 Previously you had to call `GET /agents/{id}/tasks` once per
 agent to assemble a multi-agent inbox. Now:
@@ -227,7 +243,7 @@ const inbox = await api.listUserTasks({
 
 Pages with `since` (offset cursor).
 
-### 3.4 `attachments[].file_id` on invoke / tasks / conversations
+### 4.4 `attachments[].file_id` on invoke / tasks / conversations
 
 Replace the old "stuff the binary in `message`" workflow with:
 
@@ -252,7 +268,7 @@ await api.invokeAgent({
 Old "no attachments" callers keep working — the field is
 optional.
 
-### 3.5 `PATCH /api/v1/agents/{agentId}`
+### 4.5 `PATCH /api/v1/agents/{agentId}`
 
 Owner-only update of `visibility` and `mcp_enabled` (whitelist).
 Other fields (`name`, `description`, …) are still synced by the
@@ -269,14 +285,14 @@ await api.updateAgent({
 });
 ```
 
-### 3.6 Wire-error envelope tightened
+### 4.6 Wire-error envelope tightened
 
 All 4xx / 5xx now follow the canonical envelope (`type`,
 `code`, `message`, `param?`, `request_id`). Old code that only
 inspected the HTTP status keeps working; new code should branch
 on `error.code`. See [Error Reference](/reference/errors).
 
-### 3.7 Scope vocabulary removed (v1.1.0)
+### 4.7 Scope vocabulary removed (v1.1.0)
 
 The `oag_` User API Key per-route scope gate
 (`agents:read`, `agents:write`, `tasks:read`, `tasks:write`,
@@ -299,7 +315,7 @@ What this means for SDK migrations:
 - **Remove scope badges / pickers from your UI.** Server-side responses
   no longer carry a `scopes` field on `APIKey` or `APIKeyCreateResult`.
 
-### 3.8 `timeout_ms` clamp on `invoke`
+### 4.8 `timeout_ms` clamp on `invoke`
 
 The blocking-invoke timeout is clamped to `[100, 115_000]` ms
 server-side. Passing `timeoutMs: 200_000` no longer hangs your
@@ -310,7 +326,7 @@ error out promptly.
 
 ---
 
-## 4. Hand-rolled HTTP → SDK
+## 5. Hand-rolled HTTP → SDK
 
 If you've been calling `https://openapi.beeos.ai/api/v1/...`
 with `fetch` / `axios` / `net/http` directly, the migration is
@@ -352,7 +368,7 @@ mostly mechanical:
 
 ---
 
-## 5. `0.2.x` → `0.4.x`
+## 6. `0.2.x` → `0.4.x`
 
 `0.2` predates the OpenAPI Gateway BFF decoupling (ADR-001).
 The SDK was generated from the **main** Gateway's swagger and

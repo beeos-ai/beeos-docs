@@ -234,7 +234,7 @@ following invariants hold across them:
 | **Single source of truth for the message log** | Message Service `channel_messages` is the durable log; SSE on any surface reads from the same table. A reply visible on OpenAPI's `/events` is visible on A2A's `message/stream` for the same task. |
 | **Idempotency end-to-end** | OpenAPI `idempotency_key` → A2A `message_id` → MS `idempotency_key` are aliases for the same dedup key. Retry across surfaces is safe. |
 | **Attachments are protocol-agnostic** | `file_id` from `POST /files/presign-upload` is valid in OpenAPI requests, A2A `FilePart`s, and MCP tool arguments. The receiver always sees the same `file_id` in the inbound `chat_message`. |
-| **Status terminology** | OpenAPI status strings (`succeeded` / `failed` / `canceled` / `timeout`) are derived from the same `msgderive` resolver A2A uses for its `TaskState` enum. |
+| **Status terminology** | OpenAPI status strings (`completed` / `failed` / `canceled` / `timeout`) are derived from the same `msgderive` resolver A2A uses for its `TaskState` enum. |
 | **Rate limits are per-credential** | A burst on OpenAPI doesn't deplete an A2A budget and vice versa. |
 
 The intentional **non-invariants** (places where the surfaces

@@ -205,7 +205,7 @@ gRPC。
 | **消息日志的单一真相源** | Message Service `channel_messages` 是持久日志；任何面的 SSE 都从同一张表读。OpenAPI `/events` 看到的回复跟同一任务的 A2A `message/stream` 看到的一致。 |
 | **端到端幂等** | OpenAPI `idempotency_key` → A2A `message_id` → MS `idempotency_key` 是同一去重 key 的别名。跨面重试安全。 |
 | **附件协议无关** | `POST /files/presign-upload` 返回的 `file_id` 在 OpenAPI 请求、A2A `FilePart` 和 MCP 工具参数里都有效。接收方在入站 `chat_message` 里看到的总是同一个 `file_id`。 |
-| **状态术语** | OpenAPI 状态字符串（`succeeded` / `failed` / `canceled` / `timeout`）从 A2A `TaskState` 枚举用的同一个 `msgderive` resolver 派生。 |
+| **状态术语** | OpenAPI 状态字符串（`completed` / `failed` / `canceled` / `timeout`）从 A2A `TaskState` 枚举用的同一个 `msgderive` resolver 派生。 |
 | **限流按凭证** | OpenAPI 上的爆发不会耗 A2A 预算，反之亦然。 |
 
 刻意的**非不变式**（接入面刻意有差的地方）：

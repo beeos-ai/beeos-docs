@@ -80,6 +80,25 @@ generator 输出之上（README、LICENSE）。
 
 ---
 
+## [0.6.1] — 2026-08-20
+
+### 修复
+
+- **规范任务成功状态。** 生成的 TypeScript、Go、Python `TaskStatus`
+  enum 现在使用 `completed`，不再使用过时的 `succeeded`；它与
+  OpenAPI 服务端、Message Service resolver 和 A2A 成功语义一致。
+- **任务示例。** 轮询、webhook payload、生命周期和架构示例统一使用
+  `completed`。Runtime Operation 与 webhook delivery 是独立枚举，仍保留
+  各自的 `succeeded`。
+
+### 迁移
+
+- 将 `TaskStatus.Succeeded`、`TASKSTATUS_SUCCEEDED` 或字符串
+  `"succeeded"` 的判断替换为对应的 `completed`。接口、请求结构和其他
+  非成功状态均未改变。
+
+---
+
 ## [0.6.0] — 2026-08-18
 
 ### 新增

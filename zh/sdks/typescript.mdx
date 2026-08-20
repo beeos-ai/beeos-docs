@@ -23,7 +23,7 @@ SDK 只针对 **Platform API**。[A2A 协议](/zh/a2a/overview)
 npm install @beeos-ai/sdk
 ```
 
-当前发布版本：**0.6.0**（wire delta 见 [SDK 变更日志](/zh/sdks/changelog)）。
+当前发布版本：**0.6.1**（wire delta 见 [SDK 变更日志](/zh/sdks/changelog)）。
 
 ## 稳定任务 facade（推荐）
 
@@ -215,7 +215,7 @@ const taskId = created.data!.task_id;
 
 // Poll
 let task = await tasks.getTask({ agentId: "agent_abc123", taskId });
-while (task.data?.status !== "succeeded" && task.data?.status !== "failed") {
+while (task.data?.status !== "completed" && task.data?.status !== "failed") {
   await new Promise(r => setTimeout(r, 2_000));
   task = await tasks.getTask({ agentId: "agent_abc123", taskId });
 }
