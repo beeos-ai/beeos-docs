@@ -2864,6 +2864,17 @@ components:
         stoppedAt: { type: string, format: date-time }
         statusEnteredAt: { type: string, format: date-time }
         connectivityUpdatedAt: { type: string, format: date-time }
+        msConnectionStatus:
+          type: string
+          enum: [unknown, connecting, connected, reconnecting, disconnected, failed]
+          description: |
+            Independent MessageClient/Centrifugo connection reported by the
+            current Runtime. One of `unknown` | `connecting` | `connected` |
+            `reconnecting` | `disconnected` | `failed`. Cluster returns
+            `unknown` when the Runtime lease is missing, expired, or the
+            instance is stopped/terminated. This does not replace
+            `connectivity`.
+        msConnectionUpdatedAt: { type: string, format: date-time }
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
         screenshotUrl: { type: string }
