@@ -1,0 +1,107 @@
+---
+title: Mobile Platform
+description: "Control Device Agent, BeeRunner, and Redroid through one reliable task contract."
+---
+
+BeeOS exposes three Android runtime types through one task model:
+
+| Runtime | Where it runs | Task execution | Atomic `/mobile` control |
+| --- | --- | --- | --- |
+| Device Agent | ADB-connected phone on your host | WebChat, OpenAPI tasks, A2A, MCP | Yes |
+| BeeRunner | Accessibility app on the phone | WebChat, OpenAPI tasks, A2A, MCP | Not yet; use a task |
+| Redroid | BeeOS-hosted Android container | WebChat, OpenAPI tasks, A2A, MCP | Yes |
+
+WebChat and every public task ingress use Message Service as the durable fact
+source. ACP remains available to compatible Device Agent clients for live
+session events and tools, but it is not a second task database and is not the
+default WebChat dispatch path.
+
+## Ten-minute path
+
+1. Install and bind a Device Agent, bind BeeRunner by QR code, or provision a
+   Redroid instance.
+2. Create an `oag_` user API key in **Settings -> API Keys**.
+3. Find the Android instance and its Agent.
+4. Submit a durable task and watch its event stream.
+5. Cancel through the task API if the result is no longer needed.
+
+```bash
+export BEEOS_API_KEY="oag_..."
+export BASE="https://openapi.beeos.ai"
+
+curl -s "$BASE/api/v1/instances?pageSize=100" \
+  -H "Authorization: Bearer $BEEOS_API_KEY" | jq '.data[] | select(.osType == "android")'
+
+export AGENT_ID="<agent-id>"
+TASK_ID=$(curl -s -X POST "$BASE/api/v1/agents/$AGENT_ID/tasks" \
+  -H "Authorization: Bearer $BEEOS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: mobile-quickstart-001" \
+  -d '{"message":"Open Settings","deadline_ms":120000}' | jq -r '.data.task_id')
+
+curl -N "$BASE/api/v1/agents/$AGENT_ID/tasks/$TASK_ID/events" \
+  -H "Authorization: Bearer $BEEOS_API_KEY"
+```
+
+The accepted task survives caller disconnects. Repeating the create request
+with the same idempotency key does not create a second phone task.
+
+## Single-writer rule
+
+A phone can safely execute only one mutating task at a time. BeeOS therefore
+uses a device-level lease across WebChat, OpenAPI tasks, A2A, MCP, and atomic
+control calls.
+
+- A second writer fails immediately with `device_busy`; BeeOS does not hide it
+  in an unbounded queue.
+- OpenAPI atomic calls return HTTP `409` with error code `device_busy`.
+- A2A projects the conflict as `rejected` with reason `device_busy`.
+- MCP returns a structured tool error carrying `device_busy`.
+- Screenshots, UI tree reads, app listing, and passive live viewing may coexist
+  with the active writer.
+
+Retry only after the active task reaches a terminal state. Use a fresh
+idempotency key for a new intent.
+
+## Task states
+
+The product task states are:
+
+```text
+queued -> running -> completed
+                  -> failed
+                  -> cancelled
+queued ----------> cancelled
+```
+
+`input_required` and `auth_required` are resumable pauses. A deadline expiry is
+`failed` with reason `timeout`. An uncertain delivery is also `failed`, with
+`outcomeCertainty=uncertain`; do not automatically replay it because an action
+may already have reached the phone.
+
+Protocol adapters may use their standard wire vocabulary. For example, A2A
+uses `working`, `completed`, and `rejected`; the BeeOS product projection keeps
+the meaning above.
+
+## Atomic control
+
+For Device Agent and Redroid, `GET /api/v1/instances/{id}/mobile` returns the
+live geometry and supported actions. The v1 safe surface includes:
+
+```text
+screenshot, ui_tree, list_apps
+tap, double_tap, long_press, drag, swipe, scroll
+type, key, press_button, open_app
+```
+
+Every endpoint maps to a fixed allow-listed runtime tool. Arbitrary MCP tool
+names, app install/uninstall, shell execution, and privileged device settings
+are intentionally excluded. BeeRunner currently returns
+`action_unsupported` for this direct surface; submit a task instead.
+
+## Evidence and artifacts
+
+Task replies and artifacts are read through the task/message APIs. Artifact
+resolution is owner-scoped: a `file_id` or URL from another user is not
+readable. Preserve the terminal reason, action results, screenshots, and task
+ID together when building an audit trail.

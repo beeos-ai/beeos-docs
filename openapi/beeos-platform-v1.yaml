@@ -1,10 +1,3 @@
-# ============================================================================
-# AUTO-SYNCED FROM backend/openapi/beeos-platform-v1.yaml
-# DO NOT EDIT HERE — edit the source in the openagent repo and run
-#   cd beeos-docs && npm run sync-spec
-# Last synced: 2026-08-20T09:02:07Z
-# Source SHA: db37922f
-# ============================================================================
 openapi: 3.1.0
 info:
   title: BeeOS OpenAPI (user contract)
@@ -723,6 +716,78 @@ paths:
         "429": { $ref: '#/components/responses/RateLimited' }
         "503": { $ref: '#/components/responses/ServerError' }
         "5XX": { $ref: '#/components/responses/ServerError' }
+  /api/v1/instances/{id}/mobile/double_tap:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+    post:
+      operationId: mobileDoubleTap
+      tags: [mobile]
+      summary: Double-tap at (x, y).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TapRequest' }
+      responses:
+        "200": { $ref: '#/components/responses/ControlActionOK' }
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "409": { $ref: '#/components/responses/Conflict' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "503": { $ref: '#/components/responses/ServerError' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+  /api/v1/instances/{id}/mobile/long_press:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+    post:
+      operationId: mobileLongPress
+      tags: [mobile]
+      summary: Long-press at (x, y).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LongPressRequest' }
+      responses:
+        "200": { $ref: '#/components/responses/ControlActionOK' }
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "409": { $ref: '#/components/responses/Conflict' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "503": { $ref: '#/components/responses/ServerError' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+  /api/v1/instances/{id}/mobile/drag:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+    post:
+      operationId: mobileDrag
+      tags: [mobile]
+      summary: Drag an object from (x1, y1) to (x2, y2).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DragRequest' }
+      responses:
+        "200": { $ref: '#/components/responses/ControlActionOK' }
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "409": { $ref: '#/components/responses/Conflict' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "503": { $ref: '#/components/responses/ServerError' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
   /api/v1/instances/{id}/mobile/swipe:
     parameters:
       - name: id
@@ -833,6 +898,97 @@ paths:
       responses:
         "200": { $ref: '#/components/responses/ControlActionOK' }
         "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "503": { $ref: '#/components/responses/ServerError' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+  /api/v1/instances/{id}/mobile/open_app:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+    post:
+      operationId: mobileOpenApp
+      tags: [mobile]
+      summary: Open an installed app by package id or display name.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/OpenAppRequest' }
+      responses:
+        "200": { $ref: '#/components/responses/ControlActionOK' }
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "409": { $ref: '#/components/responses/Conflict' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "503": { $ref: '#/components/responses/ServerError' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+  /api/v1/instances/{id}/mobile/ui_tree:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+    get:
+      operationId: mobileGetUiTree
+      tags: [mobile]
+      summary: Read the current Android UI hierarchy.
+      parameters:
+        - name: query
+          in: query
+          schema: { type: string }
+        - name: format
+          in: query
+          schema: { type: string, enum: [compact, raw], default: compact }
+      responses:
+        "200":
+          description: Standard envelope containing the normalized UI hierarchy.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/UITreeResult' }
+        "400": { $ref: '#/components/responses/BadRequest' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "429": { $ref: '#/components/responses/RateLimited' }
+        "503": { $ref: '#/components/responses/ServerError' }
+        "5XX": { $ref: '#/components/responses/ServerError' }
+  /api/v1/instances/{id}/mobile/apps:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, maxLength: 128 }
+    get:
+      operationId: mobileListApps
+      tags: [mobile]
+      summary: List installed Android applications.
+      parameters:
+        - name: include_system
+          in: query
+          schema: { type: boolean, default: false }
+        - name: launchable_only
+          in: query
+          schema: { type: boolean, default: false }
+      responses:
+        "200":
+          description: Standard envelope containing installed apps.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/AppListResult' }
         "401": { $ref: '#/components/responses/Unauthorized' }
         "404": { $ref: '#/components/responses/NotFound' }
         "429": { $ref: '#/components/responses/RateLimited' }
@@ -2393,7 +2549,7 @@ components:
       additionalProperties: false
       required: [code, message, operationId, effectState, retryMode]
       properties:
-        code: {"$schema":"https://json-schema.org/draft/2020-12/schema","enum":["AGENT_DEFAULT_MODEL_NOT_CONFIGURED","COMMAND_EXPIRED","CONTRACT_VERSION_MISMATCH","CONVERSATION_CLEARING","HISTORY_GENERATION_MISMATCH","IDEMPOTENCY_CONFLICT","INSTANCE_EPOCH_MISMATCH","INSTANCE_OFFLINE","INVALID_EXECUTION_GRANT","INVALID_INVOCATION","METHOD_NOT_SUPPORTED","OPERATION_CANCELLED","OPERATION_NOT_CANCELLABLE","OPERATION_NOT_FOUND","OUTCOME_UNKNOWN","PROJECTION_BLOCKED","PROJECTION_PENDING","RUNTIME_EXECUTION_FAILED","UNAUTHORIZED_PUBLISHER","UNAUTHORIZED_TARGET","USE_AGENTS_API"],"title":"RuntimeErrorCode","type":"string"}
+        code: { $ref: './runtime-error-codes-v4.generated.json' }
         message: { type: string }
         operationId: { type: string, format: uuid }
         requestId: { type: string }
@@ -2485,7 +2641,7 @@ components:
                 revision: { type: string, pattern: '^(0|[1-9][0-9]*)$' }
                 platformAgentId: { type: string, minLength: 1 }
                 errorCode: { type: string, enum: [PROJECTION_BLOCKED] }
-                causeCode: {"$schema":"https://json-schema.org/draft/2020-12/schema","enum":["AGENT_DEFAULT_MODEL_NOT_CONFIGURED","COMMAND_EXPIRED","CONTRACT_VERSION_MISMATCH","CONVERSATION_CLEARING","HISTORY_GENERATION_MISMATCH","IDEMPOTENCY_CONFLICT","INSTANCE_EPOCH_MISMATCH","INSTANCE_OFFLINE","INVALID_EXECUTION_GRANT","INVALID_INVOCATION","METHOD_NOT_SUPPORTED","OPERATION_CANCELLED","OPERATION_NOT_CANCELLABLE","OPERATION_NOT_FOUND","OUTCOME_UNKNOWN","PROJECTION_BLOCKED","PROJECTION_PENDING","RUNTIME_EXECUTION_FAILED","UNAUTHORIZED_PUBLISHER","UNAUTHORIZED_TARGET","USE_AGENTS_API"],"title":"RuntimeErrorCode","type":"string"}
+                causeCode: { $ref: './runtime-error-codes-v4.generated.json' }
                 requestedBy: { type: string, minLength: 1 }
                 reason: { type: string }
             outcome: { type: string, enum: [succeeded, failed, cancelled, expired, outcome_unknown, projection_blocked] }
@@ -2651,6 +2807,64 @@ components:
           type: integer
           format: int32
           description: Gesture duration; clamped device-side to [1, 10000].
+    LongPressRequest:
+      type: object
+      title: LongPressRequest
+      required: [x, y]
+      properties:
+        x: { type: integer, format: int32 }
+        y: { type: integer, format: int32 }
+        duration_ms:
+          type: integer
+          format: int32
+          description: Hold duration; clamped device-side to [1, 10000].
+    DragRequest:
+      type: object
+      title: DragRequest
+      required: [x1, y1, x2, y2]
+      properties:
+        x1: { type: integer, format: int32 }
+        y1: { type: integer, format: int32 }
+        x2: { type: integer, format: int32 }
+        y2: { type: integer, format: int32 }
+        duration_ms:
+          type: integer
+          format: int32
+          description: Drag duration; clamped device-side to [1, 10000].
+    OpenAppRequest:
+      type: object
+      title: OpenAppRequest
+      required: [app]
+      properties:
+        app:
+          type: string
+          description: Android package id or installed app display name.
+        activity: { type: string }
+        locale:
+          type: string
+          description: Optional BCP-47 per-app locale (Android 13+, best effort).
+    UITreeResult:
+      type: object
+      title: UITreeResult
+      required: [supported, content]
+      properties:
+        supported: { type: boolean }
+        content: { type: string }
+    AppInfo:
+      type: object
+      title: AppInfo
+      required: [package_id]
+      properties:
+        package_id: { type: string }
+        label: { type: string }
+    AppListResult:
+      type: object
+      title: AppListResult
+      required: [apps]
+      properties:
+        apps:
+          type: array
+          items: { $ref: '#/components/schemas/AppInfo' }
     PressButtonRequest:
       type: object
       title: PressButtonRequest

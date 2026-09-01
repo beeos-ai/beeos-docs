@@ -1,0 +1,86 @@
+---
+title: 手机开放平台
+description: "通过统一可靠任务合同控制 Device Agent、BeeRunner 和 Redroid。"
+---
+
+BeeOS 通过一套任务模型暴露三种 Android 运行时：
+
+| 运行时 | 运行位置 | 任务入口 | 原子 `/mobile` 控制 |
+| --- | --- | --- | --- |
+| Device Agent | 宿主机 ADB 连接的手机 | WebChat、OpenAPI、A2A、MCP | 支持 |
+| BeeRunner | 手机上的无障碍应用 | WebChat、OpenAPI、A2A、MCP | 暂不支持，请提交任务 |
+| Redroid | BeeOS 托管 Android 容器 | WebChat、OpenAPI、A2A、MCP | 支持 |
+
+WebChat 和所有公开任务入口都以 Message Service 为持久化事实源。ACP
+继续服务于兼容的 Device Agent 实时 session、事件和工具，但它不是第二套任务数据库，
+也不是 WebChat 的默认投递通道。
+
+## 十分钟流程
+
+1. 安装并绑定 Device Agent、扫码绑定 BeeRunner，或创建 Redroid 实例。
+2. 在 **设置 -> API Keys** 创建 `oag_` 用户 API Key。
+3. 找到 Android Instance 及其 Agent。
+4. 提交可靠任务并订阅事件。
+5. 不再需要结果时，通过任务 API 取消。
+
+```bash
+export BEEOS_API_KEY="oag_..."
+export BASE="https://openapi.beeos.ai"
+export AGENT_ID="<agent-id>"
+
+TASK_ID=$(curl -s -X POST "$BASE/api/v1/agents/$AGENT_ID/tasks" \
+  -H "Authorization: Bearer $BEEOS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: mobile-quickstart-001" \
+  -d '{"message":"打开设置","deadline_ms":120000}' | jq -r '.data.task_id')
+
+curl -N "$BASE/api/v1/agents/$AGENT_ID/tasks/$TASK_ID/events" \
+  -H "Authorization: Bearer $BEEOS_API_KEY"
+```
+
+请求被接受后，即使调用方断线，任务也会继续可靠执行。用同一个 idempotency key
+重试不会创建第二个手机任务。
+
+## 单写入规则
+
+同一台手机同一时间只安全执行一个会改变设备状态的任务。BeeOS 在 WebChat、
+OpenAPI、A2A、MCP 和原子控制之间共用设备级 lease：
+
+- 第二个写入请求立即返回 `device_busy`，不会被隐藏排队。
+- OpenAPI 原子调用返回 HTTP `409` 和 `device_busy`。
+- A2A 投影为 `rejected`，reason 为 `device_busy`。
+- MCP 返回包含 `device_busy` 的结构化工具错误。
+- 截图、UI Tree、应用列表和被动实时画面可与当前写任务并存。
+
+只有活动任务进入终态后才能重试；新的用户意图应使用新的 idempotency key。
+
+## 任务状态
+
+```text
+queued -> running -> completed
+                  -> failed
+                  -> cancelled
+queued ----------> cancelled
+```
+
+`input_required` 和 `auth_required` 是可恢复暂停态。超时表示为
+`failed + reason=timeout`。结果不确定表示为
+`failed + outcomeCertainty=uncertain`，不能自动重放，因为动作可能已经到达手机。
+
+协议适配器可以使用各自的标准 wire 状态。例如 A2A 使用 `working`、
+`completed` 和 `rejected`，BeeOS 产品投影保持上述统一语义。
+
+## 原子控制
+
+Device Agent 和 Redroid 可通过 `GET /api/v1/instances/{id}/mobile`
+读取实时屏幕尺寸和能力。v1 安全面包括：
+
+```text
+screenshot, ui_tree, list_apps
+tap, double_tap, long_press, drag, swipe, scroll
+type, key, press_button, open_app
+```
+
+每个端点只映射到固定 allow-list 工具，不允许传入任意 MCP 工具名。安装/卸载应用、
+shell 和高权限系统设置不属于 v1。BeeRunner 的直接控制适配尚未接入，因此会返回
+`action_unsupported`，应使用任务入口。
