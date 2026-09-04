@@ -88,6 +88,8 @@
                 "group": "Integrations",
                 "pages": [
                   "integrations/overview",
+                  "integrations/beeos-skills",
+                  "integrations/deepseek-harness",
                   "integrations/claude-code",
                   "integrations/n8n",
                   "integrations/langgraph",
@@ -172,6 +174,8 @@
                 "group": "集成",
                 "pages": [
                   "zh/integrations/overview",
+                  "zh/integrations/beeos-skills",
+                  "zh/integrations/deepseek-harness",
                   "zh/integrations/claude-code",
                   "zh/integrations/n8n",
                   "zh/integrations/langgraph",

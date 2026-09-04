@@ -1,11 +1,17 @@
 ---
 title: 集成指南
-description: 将 LangGraph、Claude Code、n8n、Dify 和 Google A2A 客户端接入 BeeOS。
+description: 将编码 Agent、Agent Harness、自动化平台和 A2A 客户端接入 BeeOS。
 ---
 
 BeeOS 通过三种互补的公开协议暴露 Agent。先根据调用方选择协议，再阅读对应框架的接入指南。
 
 <CardGroup cols={2}>
+  <Card title="BeeOS Skills" icon="puzzle-piece" href="/zh/integrations/beeos-skills">
+    安装官方多宿主插件，支持 Codex、Claude Code、Cursor、Hermes、OpenClaw 等平台。
+  </Card>
+  <Card title="DeepSeek Harness" icon="code" href="/zh/integrations/deepseek-harness">
+    挂载原生 BeeOS OpenAPI 工具，操作实例、任务、电脑和手机。
+  </Card>
   <Card title="Claude Code" icon="terminal" href="/zh/integrations/claude-code">
     将 BeeOS Agent 添加为 MCP 工具，并用 Skill 固化操作规范。
   </Card>

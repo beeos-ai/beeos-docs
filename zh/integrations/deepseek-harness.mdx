@@ -1,0 +1,64 @@
+---
+title: DeepSeek Harness
+description: 为 DeepSeek Harness 增加操作实例、任务、电脑和手机的原生 BeeOS OpenAPI 工具。
+---
+
+BeeOS DeepSeek Harness 适配器注册由公开 BeeOS OpenAPI 驱动的原生 Harness 工具，
+不内嵌 ADB、设备 Runtime 协议或凭证。
+
+## 可用工具
+
+| 工具 | 用途 |
+|---|---|
+| `beeos_list_instances` | 列出当前用户 Key 可见的实例 |
+| `beeos_list_agents` | 列出可调用的 Agent |
+| `beeos_run_agent_task` | 创建持久任务，并可选择等待终态 |
+| `beeos_get_task` | 读取任务当前状态 |
+| `beeos_cancel_task` | 请求取消任务 |
+| `beeos_mobile_action` | 执行一个有边界的手机原子动作 |
+| `beeos_computer_action` | 执行一个有边界的电脑原子动作 |
+
+只有 list 和 get 操作声明为并发安全。写操作不会被标记为并发安全，同时受 BeeOS
+设备 lease 和 capability 检查约束。
+
+## 构建适配器
+
+该适配器尚未作为 supported 包发布，测试前需从当前源码构建：
+
+```bash
+git clone https://github.com/beeos-ai/beeos-skills.git
+cd beeos-skills
+corepack enable
+pnpm install --frozen-lockfile
+pnpm build
+```
+
+可安装包生成到 `dist/packages/deepseek-harness`。其中 Cordis patch 会把
+`@beeos-ai/deepseek-harness-plugin` 注册为 `beeos`。
+
+## 配置 BeeOS
+
+在 Harness 密钥配置中填写凭证，或通过进程环境变量注入：
+
+```bash
+export BEEOS_API_URL="https://public-api.beeos.ai"
+export BEEOS_API_KEY="your-user-api-key"
+```
+
+Harness 配置中的 `apiKey` 字段已标记为 secret，便于宿主脱敏。验证 staging 时，
+请使用 staging OpenAPI 地址。
+
+## 安全验证
+
+1. 使用 Harness 的包安装流程加载生成的适配器。
+2. 确认七个工具均成功注册且没有 schema 错误。
+3. 首先调用 `beeos_list_instances`。
+4. 开放电脑或手机动作前，先执行一个可恢复的 Agent 任务。
+5. 自动化前验证任务取消和终态处理。
+
+<Warning>
+发布包通过 BeeOS 在线验证门禁前，该适配器仍为 experimental。第一次写操作不要使用生产手机。
+</Warning>
+
+参见 [BeeOS Skills](/zh/integrations/beeos-skills)、[任务生命周期](/zh/guides/task-lifecycle)和
+[实例与设备](/zh/guides/instances-and-devices)。

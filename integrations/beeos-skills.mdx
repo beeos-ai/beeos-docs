@@ -1,0 +1,76 @@
+---
+title: BeeOS Skills
+description: Install the official BeeOS skills and integration adapters for coding agents, Agent harnesses, and automation platforms.
+---
+
+[`beeos-ai/beeos-skills`](https://github.com/beeos-ai/beeos-skills) is the
+official open-source integration repository for operating BeeOS instances,
+Agents, computers, and mobile devices. The repository is itself a multi-host
+plugin: supported coding-agent hosts load it directly, while hosts that need
+native executable adapters use packages built from the same source tree.
+
+## What is included
+
+| Host | Connection | Distribution |
+|---|---|---|
+| Codex | MCP plus five BeeOS Skills | Repository plugin |
+| Claude Code | MCP plus five BeeOS Skills | Repository plugin |
+| Cursor | MCP plus five BeeOS Skills | Repository plugin |
+| Hermes | MCP plus native Skill registration | Repository plugin |
+| DeepSeek Harness | Seven native OpenAPI tools | Built adapter package |
+| OpenClaw | Eight native OpenAPI tools plus Skills | Built adapter package |
+| n8n | Action node and task trigger | Independent npm package |
+
+The five canonical Skills cover instance management, durable Agent tasks,
+computer use, mobile use, and artifact management. A Skill teaches the host
+when and how to use BeeOS; MCP or OpenAPI remains the authenticated execution
+transport.
+
+## Get the repository
+
+```bash
+git clone https://github.com/beeos-ai/beeos-skills.git
+cd beeos-skills
+corepack enable
+pnpm install --frozen-lockfile
+npm ci --prefix packages/n8n-nodes-beeos
+pnpm verify
+```
+
+Codex, Claude Code, Cursor, and Hermes consume the repository root directly.
+DeepSeek Harness and OpenClaw distributions are generated with:
+
+```bash
+pnpm build
+```
+
+The generated packages are written to `dist/packages/`. The n8n integration
+is built independently from `packages/n8n-nodes-beeos`.
+
+## Authentication
+
+MCP-backed hosts connect to the user endpoint and read a user API key from the
+environment:
+
+```bash
+export BEEOS_API_KEY="your-user-api-key"
+```
+
+OpenAPI-backed adapters additionally support an explicit environment URL:
+
+```bash
+export BEEOS_API_URL="https://public-api.beeos.ai"
+```
+
+Use the corresponding staging or local URL outside production. Never commit a
+key to a host manifest, Skill, workflow export, or source file.
+
+## Release status
+
+The repository manifests, package builds, schemas, and isolated host installs
+are validated in CI. The integrations remain **experimental** until each
+released artifact completes a harmless live BeeOS call. Start with instance
+listing or another read-only action before granting computer or mobile writes.
+
+See [MCP authentication](/mcp/oauth), [Choosing a Protocol](/guides/choosing-a-protocol),
+and [DeepSeek Harness](/integrations/deepseek-harness).
