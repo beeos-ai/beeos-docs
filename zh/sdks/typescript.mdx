@@ -21,22 +21,20 @@ SDK 只针对 **Platform API**。[A2A 协议](/zh/a2a/overview)
 
 ```bash
 npm install @beeos-ai/sdk
+export BEEOS_API_KEY="oag_your_key"
 ```
 
-当前发布版本：**0.6.1**（wire delta 见 [SDK 变更日志](/zh/sdks/changelog)）。
+当前发布版本：**0.8.0**（wire delta 见 [SDK 变更日志](/zh/sdks/changelog)）。
 
 ## 稳定任务 facade（推荐）
 
-0.6.0 新增手工维护的 `BeeOSClient`，覆盖常用 Agent 任务生命周期；
+`BeeOSClient` 是覆盖常用 Agent 任务生命周期的手工维护 facade；
 OpenAPI 生成代码重新生成时，它的调用方式保持稳定。
 
 ```typescript
 import { BeeOSClient } from "@beeos-ai/sdk";
 
-const client = new BeeOSClient({
-  apiKey: process.env.BEEOS_API_KEY!,
-  baseUrl: "https://openapi.beeos.ai",
-});
+const client = new BeeOSClient();
 
 const agents = await client.listAgents();
 const created = await client.createTask(agents[0].id, {
@@ -45,6 +43,10 @@ const created = await client.createTask(agents[0].id, {
 const task = await client.getTask(agents[0].id, created.data.taskId);
 await client.cancelTask(agents[0].id, created.data.taskId);
 ```
+
+`new BeeOSClient()` 会自动读取 `BEEOS_API_KEY`，并默认连接
+`https://openapi.beeos.ai`。如需切换环境，可设置 `BEEOS_API_URL`；也可以显式传入
+`{ apiKey, baseUrl }` 覆盖默认值。
 
 `client.taskEvents(agentId, taskId)` 是任务 SSE 流的 async generator。
 完整生成 API 仍从 package root 导出，facade 也可从
