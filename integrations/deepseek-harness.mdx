@@ -1,0 +1,70 @@
+---
+title: DeepSeek Harness
+description: Add native BeeOS OpenAPI tools to DeepSeek Harness for instances, tasks, computers, and mobile devices.
+---
+
+The BeeOS DeepSeek Harness adapter registers native Harness tools backed only
+by the public BeeOS OpenAPI. It does not embed ADB, device runtime protocols,
+or credentials.
+
+## Available tools
+
+| Tool | Purpose |
+|---|---|
+| `beeos_list_instances` | List instances visible to the current user key |
+| `beeos_list_agents` | List callable Agents |
+| `beeos_run_agent_task` | Create a durable task and optionally wait for completion |
+| `beeos_get_task` | Read a task's current state |
+| `beeos_cancel_task` | Request task cancellation |
+| `beeos_mobile_action` | Run one bounded atomic mobile action |
+| `beeos_computer_action` | Run one bounded atomic computer action |
+
+Only list and get operations are declared concurrency-safe. Write operations
+are deliberately not marked concurrency-safe and remain subject to BeeOS
+device leases and capability checks.
+
+## Build the adapter
+
+The adapter has not yet been published as a supported package. Build the
+current source before testing:
+
+```bash
+git clone https://github.com/beeos-ai/beeos-skills.git
+cd beeos-skills
+corepack enable
+pnpm install --frozen-lockfile
+pnpm build
+```
+
+The installable package is generated at
+`dist/packages/deepseek-harness`. Its Cordis patch registers
+`@beeos-ai/deepseek-harness-plugin` as `beeos`.
+
+## Configure BeeOS
+
+Set credentials in the Harness secret configuration or inject them through
+the process environment:
+
+```bash
+export BEEOS_API_URL="https://public-api.beeos.ai"
+export BEEOS_API_KEY="your-user-api-key"
+```
+
+The `apiKey` Harness configuration field is marked secret for host-side
+redaction. Use the staging OpenAPI URL when validating against staging.
+
+## Validate safely
+
+1. Load the generated adapter with your Harness package workflow.
+2. Confirm all seven tools register without schema errors.
+3. Call `beeos_list_instances` first.
+4. Run a reversible Agent task before allowing computer or mobile actions.
+5. Confirm task cancellation and terminal-state handling before automation.
+
+<Warning>
+This adapter is experimental until a released package passes the live BeeOS
+validation gate. Do not use a production phone for the first write test.
+</Warning>
+
+See [BeeOS Skills](/integrations/beeos-skills), [Task Lifecycle](/guides/task-lifecycle),
+and [Instances and Devices](/guides/instances-and-devices).

@@ -1,0 +1,70 @@
+---
+title: BeeOS Skills
+description: 为编码 Agent、Agent Harness 和自动化平台安装官方 BeeOS Skills 与集成适配器。
+---
+
+[`beeos-ai/beeos-skills`](https://github.com/beeos-ai/beeos-skills) 是操作
+BeeOS 实例、Agent、电脑和手机的官方开源集成仓库。仓库本身就是一个多宿主插件：
+支持的编码 Agent 可直接加载仓库，需要原生执行适配器的宿主则从同一代码树构建独立包。
+
+## 已包含的集成
+
+| 宿主 | 连接方式 | 分发方式 |
+|---|---|---|
+| Codex | MCP 和五个 BeeOS Skills | 仓库插件 |
+| Claude Code | MCP 和五个 BeeOS Skills | 仓库插件 |
+| Cursor | MCP 和五个 BeeOS Skills | 仓库插件 |
+| Hermes | MCP 和原生 Skill 注册 | 仓库插件 |
+| DeepSeek Harness | 七个原生 OpenAPI 工具 | 构建后的适配器包 |
+| OpenClaw | 八个原生 OpenAPI 工具和 Skills | 构建后的适配器包 |
+| n8n | Action Node 和任务 Trigger | 独立 npm 包 |
+
+五个标准 Skill 覆盖实例管理、持久 Agent 任务、电脑操作、手机操作和产物管理。
+Skill 负责告诉宿主何时以及如何使用 BeeOS；MCP 或 OpenAPI 仍是经过鉴权的执行通道。
+
+## 获取与验证
+
+```bash
+git clone https://github.com/beeos-ai/beeos-skills.git
+cd beeos-skills
+corepack enable
+pnpm install --frozen-lockfile
+npm ci --prefix packages/n8n-nodes-beeos
+pnpm verify
+```
+
+Codex、Claude Code、Cursor 和 Hermes 直接使用仓库根目录。DeepSeek Harness
+和 OpenClaw 的独立分发包通过以下命令生成：
+
+```bash
+pnpm build
+```
+
+构建结果位于 `dist/packages/`。n8n 集成在
+`packages/n8n-nodes-beeos` 中独立构建。
+
+## 鉴权
+
+MCP 宿主从环境变量读取用户 API Key：
+
+```bash
+export BEEOS_API_KEY="your-user-api-key"
+```
+
+OpenAPI 适配器还支持指定环境地址：
+
+```bash
+export BEEOS_API_URL="https://public-api.beeos.ai"
+```
+
+测试 staging 或本地环境时替换为对应 OpenAPI 地址。不要把 Key 写入宿主
+manifest、Skill、工作流导出或源码。
+
+## 发布状态
+
+仓库 manifest、包构建、schema 和隔离宿主安装均已进入 CI 验证。每个发布产物完成
+一次无害的 BeeOS 在线调用前，集成状态仍为 **experimental**。开放电脑或手机写操作前，
+应先用实例列表等只读动作验证。
+
+参见 [MCP 鉴权](/zh/mcp/oauth)、[选择协议](/zh/guides/choosing-a-protocol)和
+[DeepSeek Harness](/zh/integrations/deepseek-harness)。
