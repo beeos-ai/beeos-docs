@@ -1,0 +1,210 @@
+---
+title: BeeOS Cloud
+sidebarTitle: Home
+description: Infrastructure for AI agents that operate computers, phones, and persistent cloud instances.
+mode: custom
+---
+
+<div className="beeos-landing">
+  <section className="beeos-hero">
+    <div className="beeos-hero-copy">
+      <p className="beeos-kicker"><span /> OPEN AGENT RUNTIME CLOUD</p>
+      <h1>Run any agent.<br />Anywhere.</h1>
+      <p className="beeos-hero-lede">
+        Open, cloud-neutral infrastructure that decouples agent logic from
+        persistent sandboxes, computers, and mobile devices.
+      </p>
+      <div className="beeos-hero-actions">
+        <a className="beeos-button beeos-button-primary" href="https://beeos.ai">
+          Start building
+        </a>
+        <a className="beeos-button beeos-button-secondary" href="/introduction">
+          View Docs <span aria-hidden="true">&rarr;</span>
+        </a>
+      </div>
+    </div>
+
+    <div className="beeos-sdk-panel">
+<Tabs>
+  <Tab title="Python">
+    <div className="beeos-install-command">
+
+```bash
+python -m pip install beeos
+```
+
+    </div>
+    <div className="beeos-run-example">
+
+```python
+from beeos import BeeOS
+
+client = BeeOS()
+
+agent = client.agents.list().data[0]
+task = client.tasks.create(
+    agent_id=agent.id,
+    message="Create a promotional video for BeeOS",
+)
+
+print(task.data.task_id)
+```
+
+    </div>
+  </Tab>
+  <Tab title="TypeScript">
+    <div className="beeos-install-command">
+
+```bash
+npm install @beeos-ai/sdk
+```
+
+    </div>
+    <div className="beeos-run-example">
+
+```typescript
+import { BeeOSClient } from "@beeos-ai/sdk";
+
+const beeos = new BeeOSClient();
+
+const agents = await beeos.listAgents();
+const task = await beeos.createTask(agents[0].id, {
+  message: "Create a promotional video for BeeOS",
+});
+
+console.log(task.data.taskId);
+```
+
+    </div>
+  </Tab>
+  <Tab title="Go">
+    <div className="beeos-install-command">
+
+```bash
+go get github.com/beeos-ai/sdk-go
+```
+
+    </div>
+    <div className="beeos-run-example">
+
+```go
+client, err := beeos.NewClient()
+if err != nil {
+    panic(err)
+}
+
+agents, err := client.ListAgents(ctx)
+if err != nil {
+    panic(err)
+}
+
+task, err := client.CreateTask(ctx, agents[0].Id,
+    *beeos.NewCreateTaskRequest("Create a promotional video for BeeOS"))
+if err != nil {
+    panic(err)
+}
+
+fmt.Println(task.Data.TaskId)
+```
+
+    </div>
+  </Tab>
+</Tabs>
+    </div>
+  </section>
+
+  <section className="beeos-trust-strip" aria-label="BeeOS platform principles">
+    <span>Open source</span><i /><span>Cloud neutral</span><i /><span>Model neutral</span><i />
+    <span>Private deployment</span><i /><span>Bring your own cloud</span>
+  </section>
+
+  <section className="beeos-platform-section">
+    <div className="beeos-section-title">
+      <p>UNIVERSAL RUNTIME FABRIC</p>
+      <h2>One control plane.<br />Every execution surface.</h2>
+    </div>
+    <div className="beeos-feature-grid">
+      <a className="beeos-feature" href="/guides/mobile-platform">
+        <span className="beeos-feature-index">01</span>
+        <svg className="beeos-feature-visual" viewBox="0 0 180 120" fill="none" aria-hidden="true">
+          <rect x="14" y="24" width="108" height="70" rx="9" />
+          <path d="M48 108h40M68 94v14" />
+          <rect x="132" y="13" width="36" height="94" rx="10" />
+          <path d="M143 23h14" />
+          <circle cx="150" cy="96" r="2" />
+          <path className="beeos-feature-signal" d="M112 38c7 2 12 7 14 14M115 51c2 1 4 3 5 6" />
+        </svg>
+        <div><h3>Computers & mobile</h3><p>Operate sandboxes, desktops, BYOD phones, and cloud devices through one contract.</p></div>
+        <b>&nearr;</b>
+      </a>
+      <a className="beeos-feature" href="/quickstart">
+        <span className="beeos-feature-index">02</span>
+        <svg className="beeos-feature-visual" viewBox="0 0 180 120" fill="none" aria-hidden="true">
+          <path d="m22 76 68 32 68-32-68-32-68 32Z" />
+          <path d="m22 58 68 32 68-32M22 40l68 32 68-32L90 12 22 40Z" />
+          <circle className="beeos-feature-node" cx="90" cy="40" r="6" />
+        </svg>
+        <div><h3>Runtime primitives</h3><p>Start with agent-free base environments that are persistent, addressable, and reusable.</p></div>
+        <b>&nearr;</b>
+      </a>
+      <a className="beeos-feature" href="/guides/task-lifecycle">
+        <span className="beeos-feature-index">03</span>
+        <svg className="beeos-feature-visual" viewBox="0 0 180 120" fill="none" aria-hidden="true">
+          <path d="M22 69h136" />
+          <circle cx="31" cy="69" r="9" />
+          <circle cx="71" cy="69" r="9" />
+          <circle cx="111" cy="69" r="9" />
+          <circle className="beeos-feature-node" cx="151" cy="69" r="13" />
+          <path d="m145 69 4 4 8-9M51 45c10-19 38-28 61-18 7 3 13 7 18 13" />
+          <path d="m130 29 1 12-12 1" />
+        </svg>
+        <div><h3>Durable execution</h3><p>Keep work alive across disconnects with leases, status, events, and artifacts.</p></div>
+        <b>&nearr;</b>
+      </a>
+      <a className="beeos-feature" href="/integrations/beeos-skills">
+        <span className="beeos-feature-index">04</span>
+        <svg className="beeos-feature-visual" viewBox="0 0 180 120" fill="none" aria-hidden="true">
+          <rect x="64" y="34" width="52" height="52" rx="14" />
+          <circle className="beeos-feature-node" cx="90" cy="60" r="7" />
+          <path d="M64 49 39 34M116 49l25-15M64 72 39 88M116 72l25 16" />
+          <circle cx="31" cy="29" r="9" />
+          <circle cx="149" cy="29" r="9" />
+          <circle cx="31" cy="93" r="9" />
+          <circle cx="149" cy="93" r="9" />
+        </svg>
+        <div><h3>Bring any agent</h3><p>Attach your framework and model without rebuilding the infrastructure underneath it.</p></div>
+        <b>&nearr;</b>
+      </a>
+    </div>
+  </section>
+
+  <section className="beeos-runtime-section">
+    <div className="beeos-runtime-copy">
+      <p>AGENT LOGIC, DECOUPLED</p>
+      <h2>Your agent can change.<br />The runtime stays.</h2>
+      <span>
+        Build on stable runtime primitives instead of coupling your product to
+        one framework, model, cloud, or device provider. Every interface shares
+        the same identity, lifecycle, control, and evidence.
+      </span>
+      <a href="/architecture/public-overview">Explore the architecture &rarr;</a>
+    </div>
+    <div className="beeos-runtime-flow">
+      <div><em>01</em><strong>Submit</strong><small>OpenAPI / A2A / MCP / SDK</small></div>
+      <div><em>02</em><strong>Execute</strong><small>Single-writer device lease</small></div>
+      <div><em>03</em><strong>Observe</strong><small>SSE / status / live view</small></div>
+      <div><em>04</em><strong>Complete</strong><small>Result / artifacts / reason</small></div>
+    </div>
+  </section>
+
+  <section className="beeos-final-cta">
+    <p>BUILD ON BEEOS CLOUD</p>
+    <h2>Bring the agent. We provide the runtime.</h2>
+    <div className="beeos-hero-actions">
+      <a className="beeos-button beeos-button-primary" href="/quickstart">Read the Quickstart</a>
+      <a className="beeos-button beeos-button-secondary" href="/guides/mobile-platform">
+        Explore Mobile <span aria-hidden="true">&rarr;</span>
+      </a>
+    </div>
+  </section>
+</div>
