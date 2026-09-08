@@ -1,13 +1,45 @@
 ---
-title: LangGraph
-description: Load BeeOS MCP tools into LangGraph or call durable BeeOS OpenAPI tasks from graph nodes.
+title: LangGraph workflows
+description: Combine LangGraph state and checkpoints with native BeeOS tools, MCP, or durable OpenAPI tasks
 ---
+
+<Note>
+For installation, typed tools, permissions, screenshots, and client lifecycle,
+start with [LangChain and LangGraph](/integrations/langchain). This page focuses
+on graph-specific orchestration choices.
+</Note>
+
+## Native BeeOS tools in a graph
+
+`langchain-beeos` returns standard LangChain tools that can be passed directly
+to LangGraph's `ToolNode`:
+
+```python
+import os
+
+from langgraph.prebuilt import ToolNode
+from langchain_beeos import BeeOSToolkit
+
+
+with BeeOSToolkit(
+    instance_id=os.environ["BEEOS_INSTANCE_ID"],
+    include_tools={"beeos_computer_info", "beeos_mobile_info"},
+) as toolkit:
+    beeos_node = ToolNode(toolkit.get_tools())
+    # Build, compile, and invoke the graph while the toolkit remains open.
+```
+
+Use `include_tools`, fixed target IDs, and mutation scopes before compiling the
+graph. A checkpoint restores graph state; it must not silently broaden the
+BeeOS tools or permissions available to a resumed run.
+
+## Choose MCP or OpenAPI
 
 Use MCP when BeeOS should be a tool available to a model-driven graph. Use
 OpenAPI when the graph itself owns task creation, retries, cancellation, and
 state transitions.
 
-## MCP tool in a graph
+## MCP tools in a graph
 
 Install the LangChain MCP adapter:
 

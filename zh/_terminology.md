@@ -97,6 +97,14 @@
 | 英文 | 中文 (锁定) | 备注 |
 |---|---|---|
 | tool | 工具 | |
+| toolkit | 工具包 | |
+| tool allowlist | 工具允许列表 | 只能缩小已授予能力 |
+| mutation | 修改操作 | 会改变远端状态的工具调用 |
+| mutation scope | 修改权限范围 | `device`/`tasks` 等显式权限族 |
+| destructive operation | 破坏性操作 | 删除等不可轻易恢复的操作 |
+| multimodal | 多模态 | 模型输入可包含图像等非文本内容 |
+| context manager | 上下文管理器 | Python `with` 生命周期管理 |
+| checkpoint | 检查点 | LangGraph 持久状态术语 |
 | tools/list | tools/list (保留) | MCP 方法名 |
 | tools/call | tools/call (保留) | |
 | resources | 资源 | MCP resources |
@@ -125,3 +133,4 @@
 ## 修改历史
 
 - 2026-05-19: 首版，锁定 50+ 词条。
+- 2026-09-08: 增加 Agent 框架工具包、安全范围和生命周期术语。

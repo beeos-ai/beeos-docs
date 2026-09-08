@@ -1,0 +1,230 @@
+---
+title: LangChain 与 LangGraph
+description: 在 LangChain 智能体和 LangGraph 工作流中使用类型化 BeeOS 工具
+---
+
+`langchain-beeos` 将固定的 BeeOS 实例、智能体、计算机和移动设备转换为标准
+LangChain 工具。LangGraph 可以通过 `ToolNode` 使用同一组工具，因此不需要单独的
+`langgraph-beeos` 包。
+
+<Warning>
+`langchain-beeos` 0.1.0 正在准备发布，目前尚未在 PyPI 提供。下方安装命令将在首个
+包版本发布后生效。
+</Warning>
+
+## 选择接入面
+
+| 需求 | 推荐接入面 | 原因 |
+|---|---|---|
+| 构建 Python LangChain 或 LangGraph 应用 | `langchain-beeos` | 类型化工具、固定目标、显式修改权限范围和 Python 生命周期管理 |
+| 让任何支持 MCP 的框架发现远程工具 | MCP | 不需要安装框架专用 BeeOS 包 |
+| 在模型选工具之外构建确定性编排 | BeeOS Python SDK 或 OpenAPI | 由应用管理重试、任务状态和控制流 |
+
+当 BeeOS 操作需要进入 LangChain 或 LangGraph 工具循环时，使用
+`langchain-beeos`。协议级连接使用 MCP，确定性的控制面代码则直接使用 BeeOS
+SDK。
+
+## 安装和配置
+
+<Steps>
+  <Step title="安装包">
+    本示例使用 OpenAI LangChain 集成作为模型提供方，也可以替换为任何兼容的
+    LangChain 对话模型。
+
+    ```bash
+    pip install langchain-beeos langchain langgraph langchain-openai
+    ```
+  </Step>
+  <Step title="设置凭证">
+    凭证必须保存在源码控制之外。
+
+    ```bash
+    export BEEOS_API_KEY="your_beeos_api_key"
+    export BEEOS_API_URL="https://openapi.beeos.ai"
+    export BEEOS_INSTANCE_ID="inst_example"
+    export OPENAI_MODEL="your_model_name"
+    ```
+  </Step>
+  <Step title="选择固定目标">
+    实例、计算机和移动设备工具需要传入 `instance_id`，持久智能体任务工具需要传入
+    `agent_id`。这些资源 ID 属于应用配置，不会作为模型生成的工具参数公开。
+  </Step>
+</Steps>
+
+## 创建只读 LangChain 智能体
+
+工具包默认只公开已配置目标的读取操作。以下示例允许模型检查设备状态，但不授予
+输入控制能力：
+
+```python
+import os
+
+from langchain.agents import create_agent
+from langchain_openai import ChatOpenAI
+from langchain_beeos import BeeOSToolkit
+
+
+with BeeOSToolkit(
+    instance_id=os.environ["BEEOS_INSTANCE_ID"],
+    include_tools={"beeos_computer_info", "beeos_mobile_info"},
+) as toolkit:
+    agent = create_agent(
+        model=ChatOpenAI(model=os.environ["OPENAI_MODEL"]),
+        tools=toolkit.get_tools(),
+    )
+    result = agent.invoke(
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Report which configured BeeOS device is online.",
+                }
+            ]
+        }
+    )
+```
+
+智能体的构建和调用必须留在 `with` 块内。采用这种写法时，工具包拥有 BeeOS
+客户端，并在退出 `with` 块时将其关闭。
+
+## 在 LangGraph 中使用工具
+
+LangGraph 预构建的 `ToolNode` 可以直接使用同一组标准 LangChain 工具：
+
+```python
+import os
+
+from langgraph.prebuilt import ToolNode
+from langchain_beeos import BeeOSToolkit
+
+
+with BeeOSToolkit(
+    instance_id=os.environ["BEEOS_INSTANCE_ID"],
+    include_tools={"beeos_computer_info", "beeos_mobile_info"},
+) as toolkit:
+    beeos_node = ToolNode(toolkit.get_tools())
+    # Build, compile, and invoke the graph while the toolkit remains open.
+```
+
+有关检查点、长时间运行的 BeeOS 任务、取消和恢复，参见
+[LangGraph 工作流](/zh/integrations/langgraph)。
+
+## 目标与读取权限
+
+| 设置 | 默认值 | 效果 |
+|---|---|---|
+| `instance_id` | None | 配置后启用固定目标的实例、计算机和移动设备工具 |
+| `agent_id` | None | 配置后启用固定目标的智能体任务工具 |
+| `include_instance_list` | `False` | 默认不向模型公开账户级实例发现 |
+| `include_tools` | 其他条件允许的全部工具 | 应用最终工具允许列表，只能移除能力 |
+
+由于目标 ID 不会出现在工具 schema 中，模型不能将操作重定向到其他实例或智能体。
+只有工作流确实需要时，才启用账户级发现：
+
+```python
+with BeeOSToolkit(include_instance_list=True) as toolkit:
+    tools = toolkit.get_tools()
+```
+
+## 显式启用副作用
+
+每个写操作都需要设置 `allow_mutations=True`，并配置至少一个匹配的修改权限范围：
+
+| 范围 | 启用的操作 |
+|---|---|
+| `device` | 桌面指针、滚动、输入和按键；移动端点击、手势、输入、按钮和打开应用 |
+| `tasks` | 创建和取消持久智能体任务 |
+| `instance_lifecycle` | 启动、停止和重启固定实例 |
+| `deployment` | 创建可能产生费用的托管实例 |
+
+下面的工具包只公开移动设备状态和点击操作：
+
+```python
+import os
+
+from langchain_beeos import BeeOSToolkit
+
+
+with BeeOSToolkit(
+    instance_id=os.environ["BEEOS_INSTANCE_ID"],
+    allow_mutations=True,
+    mutation_scopes={"device"},
+    include_tools={"beeos_mobile_info", "beeos_mobile_tap"},
+) as toolkit:
+    tools = toolkit.get_tools()
+```
+
+`include_tools` 可以缩小可用工具集合，但不能授予缺失的目标或权限。销毁实例还需要
+在 `instance_lifecycle` 范围之外设置 `allow_destructive=True`。
+
+<Warning>
+购买、发送消息、修改账户、安装、删除和其他会产生外部后果的操作必须保留人工确认。
+工具包参数限制公开哪些工具，但用户授权和策略执行仍由应用负责。
+</Warning>
+
+## 截图隐私
+
+默认的 `screenshot_mode="metadata"` 会先移除短期下载 URL，再将截图结果返回给
+模型。返回内容只有 BeeOS 文件 ID、格式、宽度和高度。
+
+只有模型必须查看屏幕时，才显式启用多模态输出：
+
+```python
+with BeeOSToolkit(
+    instance_id=os.environ["BEEOS_INSTANCE_ID"],
+    screenshot_mode="multimodal",
+    include_tools={"beeos_computer_screenshot"},
+) as toolkit:
+    tools = toolkit.get_tools()
+```
+
+<Warning>
+多模态模式会把授权截图 URL 和屏幕内容发送到模型工具循环。模型提供方、消息历史、
+LangGraph 检查点存储和追踪系统可能保留这些内容。只使用可信提供方，并配置合适的
+数据保留策略。
+</Warning>
+
+## 使用调用方管理的 BeeOS 客户端
+
+`create_beeos_tools` 可以接收已有的 `beeos.BeeOS` 客户端。返回工具的整个生命
+周期内必须保持客户端开启：
+
+```python
+import os
+
+from beeos import BeeOS
+from langchain_beeos import create_beeos_tools
+
+
+with BeeOS() as client:
+    tools = create_beeos_tools(
+        client=client,
+        instance_id=os.environ["BEEOS_INSTANCE_ID"],
+    )
+    # Build and invoke the Agent or graph inside this block.
+```
+
+应用已经管理 BeeOS 客户端时使用这种方式，否则优先将 `BeeOSToolkit` 用作上下文
+管理器。
+
+## 失败与重试语义
+
+- 集成不会自动重试设备修改操作。
+- 超时表示结果可能未知，不代表操作没有执行。
+- 取消异步调用方不能停止已经在线程中运行的同步设备请求。
+- 应用可能重试任务创建时，传入稳定的 `idempotency_key`。
+- 返回给模型的 API 错误不会包含响应正文、Header、签名 URL 或私有诊断信息。
+
+## 后续阅读
+
+<CardGroup cols={2}>
+  <Card title="LangGraph 工作流" icon="share-nodes" href="/zh/integrations/langgraph">
+    将图状态和检查点与持久 BeeOS 任务结合。
+  </Card>
+  <Card title="MCP 集成" icon="plug" href="/zh/mcp/overview">
+    将 BeeOS 连接到任何支持 MCP 客户端的框架。
+  </Card>
+  <Card title="Python SDK" icon="python" href="/zh/sdks/python">
+    从确定性的应用代码直接调用 BeeOS 控制面。
+  </Card>
+</CardGroup>

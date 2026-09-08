@@ -1,0 +1,242 @@
+---
+title: LangChain and LangGraph
+description: Use typed BeeOS tools in LangChain agents and LangGraph workflows
+---
+
+`langchain-beeos` turns fixed BeeOS instances, Agents, computers, and mobile
+devices into standard LangChain tools. LangGraph accepts the same tools through
+`ToolNode`, so a separate `langgraph-beeos` package is not required.
+
+<Warning>
+`langchain-beeos` 0.1.0 is in release preparation and is not yet available on
+PyPI. The install command below becomes valid with the first package release.
+</Warning>
+
+## Choose the integration surface
+
+| Need | Recommended surface | Why |
+|---|---|---|
+| Build a Python LangChain or LangGraph application | `langchain-beeos` | Typed tools, fixed targets, explicit mutation scopes, and Python lifecycle management |
+| Let any MCP-capable framework discover remote tools | MCP | No framework-specific BeeOS package is required |
+| Build deterministic orchestration outside model tool selection | BeeOS Python SDK or OpenAPI | The application owns retries, task state, and control flow |
+
+Use `langchain-beeos` when BeeOS actions should participate in a LangChain or
+LangGraph tool loop. Use MCP for a protocol-level connection, and use the BeeOS
+SDK directly for deterministic control-plane code.
+
+## Install and configure
+
+<Steps>
+  <Step title="Install the packages">
+    This example uses the OpenAI LangChain integration as its model provider.
+    Replace it with any compatible LangChain chat model.
+
+    ```bash
+    pip install langchain-beeos langchain langgraph langchain-openai
+    ```
+  </Step>
+  <Step title="Set credentials">
+    Keep credentials outside source control.
+
+    ```bash
+    export BEEOS_API_KEY="your_beeos_api_key"
+    export BEEOS_API_URL="https://openapi.beeos.ai"
+    export BEEOS_INSTANCE_ID="inst_example"
+    export OPENAI_MODEL="your_model_name"
+    ```
+  </Step>
+  <Step title="Choose fixed targets">
+    Pass `instance_id` for instance, computer, and mobile tools. Pass `agent_id`
+    for durable Agent task tools. These resource IDs are application
+    configuration and are not exposed as model-generated tool arguments.
+  </Step>
+</Steps>
+
+## Create a read-only LangChain agent
+
+The default toolkit exposes only read operations for configured targets. This
+example lets the model inspect device status without giving it input control:
+
+```python
+import os
+
+from langchain.agents import create_agent
+from langchain_openai import ChatOpenAI
+from langchain_beeos import BeeOSToolkit
+
+
+with BeeOSToolkit(
+    instance_id=os.environ["BEEOS_INSTANCE_ID"],
+    include_tools={"beeos_computer_info", "beeos_mobile_info"},
+) as toolkit:
+    agent = create_agent(
+        model=ChatOpenAI(model=os.environ["OPENAI_MODEL"]),
+        tools=toolkit.get_tools(),
+    )
+    result = agent.invoke(
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Report which configured BeeOS device is online.",
+                }
+            ]
+        }
+    )
+```
+
+Keep Agent construction and invocation inside the `with` block. The toolkit
+owns its BeeOS client in this form and closes it when the block exits.
+
+## Use the tools in LangGraph
+
+LangGraph's prebuilt `ToolNode` consumes the same standard LangChain tools:
+
+```python
+import os
+
+from langgraph.prebuilt import ToolNode
+from langchain_beeos import BeeOSToolkit
+
+
+with BeeOSToolkit(
+    instance_id=os.environ["BEEOS_INSTANCE_ID"],
+    include_tools={"beeos_computer_info", "beeos_mobile_info"},
+) as toolkit:
+    beeos_node = ToolNode(toolkit.get_tools())
+    # Build, compile, and invoke the graph while the toolkit remains open.
+```
+
+For checkpointing, long-running BeeOS tasks, cancellation, and recovery, see
+[LangGraph workflows](/integrations/langgraph).
+
+## Targets and read access
+
+| Setting | Default | Effect |
+|---|---|---|
+| `instance_id` | None | Enables fixed-target instance, computer, and mobile tools when configured |
+| `agent_id` | None | Enables fixed-target Agent task tools when configured |
+| `include_instance_list` | `False` | Keeps account-wide instance discovery away from the model |
+| `include_tools` | All otherwise permitted tools | Applies a final allowlist that can only remove capabilities |
+
+The model cannot redirect an action to a different instance or Agent because
+target IDs do not appear in the tool schemas. Enable account-wide discovery
+only when a workflow genuinely needs it:
+
+```python
+with BeeOSToolkit(include_instance_list=True) as toolkit:
+    tools = toolkit.get_tools()
+```
+
+## Enable side effects deliberately
+
+Every write requires `allow_mutations=True` and at least one matching mutation
+scope:
+
+| Scope | Enabled actions |
+|---|---|
+| `device` | Desktop pointer, scrolling, typing and keys; mobile taps, gestures, typing, buttons, and app launch |
+| `tasks` | Create and cancel durable Agent tasks |
+| `instance_lifecycle` | Start, stop, and restart the fixed instance |
+| `deployment` | Create a new, potentially billable managed instance |
+
+The following toolkit exposes only mobile status and tap actions:
+
+```python
+import os
+
+from langchain_beeos import BeeOSToolkit
+
+
+with BeeOSToolkit(
+    instance_id=os.environ["BEEOS_INSTANCE_ID"],
+    allow_mutations=True,
+    mutation_scopes={"device"},
+    include_tools={"beeos_mobile_info", "beeos_mobile_tap"},
+) as toolkit:
+    tools = toolkit.get_tools()
+```
+
+`include_tools` can narrow the available tools, but it cannot grant a missing
+target or permission. Instance destruction additionally requires
+`allow_destructive=True` together with the `instance_lifecycle` scope.
+
+<Warning>
+Keep human confirmation around purchases, messages, account changes,
+installation, deletion, and other actions with external consequences. Toolkit
+flags limit which tools are exposed; the application still owns user
+authorization and policy enforcement.
+</Warning>
+
+## Screenshot privacy
+
+The default `screenshot_mode="metadata"` removes the short-lived download URL
+before returning a screenshot result to the model. Only the BeeOS file ID,
+format, width, and height are returned.
+
+Explicitly enable multimodal output only when the model must inspect the screen:
+
+```python
+with BeeOSToolkit(
+    instance_id=os.environ["BEEOS_INSTANCE_ID"],
+    screenshot_mode="multimodal",
+    include_tools={"beeos_computer_screenshot"},
+) as toolkit:
+    tools = toolkit.get_tools()
+```
+
+<Warning>
+Multimodal mode sends an authorized screenshot URL and screen content into the
+model tool loop. The model provider, message history, LangGraph checkpoint
+store, and tracing system may retain them. Use trusted providers and an
+appropriate retention policy.
+</Warning>
+
+## Use a caller-owned BeeOS client
+
+`create_beeos_tools` accepts an existing `beeos.BeeOS` client. Keep the client
+open for the complete lifetime of the returned tools:
+
+```python
+import os
+
+from beeos import BeeOS
+from langchain_beeos import create_beeos_tools
+
+
+with BeeOS() as client:
+    tools = create_beeos_tools(
+        client=client,
+        instance_id=os.environ["BEEOS_INSTANCE_ID"],
+    )
+    # Build and invoke the Agent or graph inside this block.
+```
+
+Use this form when the application already manages a BeeOS client. Otherwise,
+prefer `BeeOSToolkit` as a context manager.
+
+## Failure and retry semantics
+
+- The integration does not transparently retry device mutations.
+- A timeout means the outcome may be unknown; it does not prove that an action
+  did not execute.
+- Cancelling an async caller cannot stop a synchronous device request that is
+  already running in its worker thread.
+- Pass a stable `idempotency_key` when task creation may be retried by the
+  application.
+- API errors returned to the model omit response bodies, headers, signed URLs,
+  and private diagnostics.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="LangGraph workflows" icon="share-nodes" href="/integrations/langgraph">
+    Combine graph state and checkpoints with durable BeeOS tasks.
+  </Card>
+  <Card title="MCP integration" icon="plug" href="/mcp/overview">
+    Connect BeeOS to any framework with an MCP client.
+  </Card>
+  <Card title="Python SDK" icon="python" href="/sdks/python">
+    Call the BeeOS control plane directly from deterministic application code.
+  </Card>
+</CardGroup>
