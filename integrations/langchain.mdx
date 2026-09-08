@@ -3,13 +3,16 @@ title: LangChain and LangGraph
 description: Use typed BeeOS tools in LangChain agents and LangGraph workflows
 ---
 
-`langchain-beeos` turns fixed BeeOS instances, Agents, computers, and mobile
+BeeOS provides native integrations for both LangChain languages:
+`langchain-beeos` for Python and `@beeos-ai/langchain` for JavaScript and
+TypeScript. They turn fixed BeeOS instances, Agents, computers, and mobile
 devices into standard LangChain tools. LangGraph accepts the same tools through
-`ToolNode`, so a separate `langgraph-beeos` package is not required.
+`ToolNode`, so separate LangGraph packages are not required.
 
 <Warning>
-`langchain-beeos` 0.1.0 is in release preparation and is not yet available on
-PyPI. The install command below becomes valid with the first package release.
+`langchain-beeos` and `@beeos-ai/langchain` 0.1.0 are in release preparation
+and are not yet available on PyPI or npm. The install commands below become
+valid with the first package releases.
 </Warning>
 
 ## Choose the integration surface
@@ -17,6 +20,7 @@ PyPI. The install command below becomes valid with the first package release.
 | Need | Recommended surface | Why |
 |---|---|---|
 | Build a Python LangChain or LangGraph application | `langchain-beeos` | Typed tools, fixed targets, explicit mutation scopes, and Python lifecycle management |
+| Build a Node.js LangChain.js or LangGraph.js application | `@beeos-ai/langchain` | Typed tools, fixed targets, explicit mutation scopes, and the official TypeScript SDK |
 | Let any MCP-capable framework discover remote tools | MCP | No framework-specific BeeOS package is required |
 | Build deterministic orchestration outside model tool selection | BeeOS Python SDK or OpenAPI | The application owns retries, task state, and control flow |
 
@@ -51,6 +55,16 @@ SDK directly for deterministic control-plane code.
     configuration and are not exposed as model-generated tool arguments.
   </Step>
 </Steps>
+
+For JavaScript or TypeScript on server-side Node.js 22.12 or newer:
+
+```bash
+npm install @beeos-ai/langchain @langchain/core
+```
+
+Add `langchain`, `@langchain/langgraph`, and a model-provider package according
+to your application. Keep `BEEOS_API_KEY` on the server; do not include this
+integration or its credentials in a browser bundle.
 
 ## Create a read-only LangChain agent
 
@@ -88,6 +102,32 @@ with BeeOSToolkit(
 Keep Agent construction and invocation inside the `with` block. The toolkit
 owns its BeeOS client in this form and closes it when the block exits.
 
+## Create a read-only JavaScript agent
+
+The JavaScript/TypeScript package uses camelCase configuration while preserving
+the same safety policy:
+
+```ts
+import { createAgent } from "langchain";
+import { ChatOpenAI } from "@langchain/openai";
+import { BeeOSToolkit } from "@beeos-ai/langchain";
+
+const instanceId = process.env.BEEOS_INSTANCE_ID;
+if (!instanceId) throw new Error("BEEOS_INSTANCE_ID is required");
+
+const toolkit = new BeeOSToolkit({
+  instanceId,
+  includeTools: ["beeos_computer_info", "beeos_mobile_info"],
+});
+const agent = createAgent({
+  model: new ChatOpenAI({ model: process.env.OPENAI_MODEL }),
+  tools: toolkit.getTools(),
+});
+const result = await agent.invoke({
+  messages: [{ role: "user", content: "Report which configured device is online." }],
+});
+```
+
 ## Use the tools in LangGraph
 
 LangGraph's prebuilt `ToolNode` consumes the same standard LangChain tools:
@@ -107,6 +147,23 @@ with BeeOSToolkit(
     # Build, compile, and invoke the graph while the toolkit remains open.
 ```
 
+The JavaScript equivalent uses `@langchain/langgraph`:
+
+```ts
+import { ToolNode } from "@langchain/langgraph/prebuilt";
+import { createBeeOSTools } from "@beeos-ai/langchain";
+
+const instanceId = process.env.BEEOS_INSTANCE_ID;
+if (!instanceId) throw new Error("BEEOS_INSTANCE_ID is required");
+
+const beeosNode = new ToolNode(
+  createBeeOSTools({
+    instanceId,
+    includeTools: ["beeos_computer_info", "beeos_mobile_info"],
+  }),
+);
+```
+
 For checkpointing, long-running BeeOS tasks, cancellation, and recovery, see
 [LangGraph workflows](/integrations/langgraph).
 
@@ -118,6 +175,9 @@ For checkpointing, long-running BeeOS tasks, cancellation, and recovery, see
 | `agent_id` | None | Enables fixed-target Agent task tools when configured |
 | `include_instance_list` | `False` | Keeps account-wide instance discovery away from the model |
 | `include_tools` | All otherwise permitted tools | Applies a final allowlist that can only remove capabilities |
+
+JavaScript and TypeScript use the corresponding camelCase names:
+`instanceId`, `agentId`, `includeInstanceList`, and `includeTools`.
 
 The model cannot redirect an action to a different instance or Agent because
 target IDs do not appear in the tool schemas. Enable account-wide discovery
@@ -160,6 +220,22 @@ with BeeOSToolkit(
 `include_tools` can narrow the available tools, but it cannot grant a missing
 target or permission. Instance destruction additionally requires
 `allow_destructive=True` together with the `instance_lifecycle` scope.
+
+The equivalent JavaScript configuration is:
+
+```ts
+const instanceId = process.env.BEEOS_INSTANCE_ID;
+if (!instanceId) throw new Error("BEEOS_INSTANCE_ID is required");
+
+const toolkit = new BeeOSToolkit({
+  instanceId,
+  allowMutations: true,
+  mutationScopes: ["device"],
+  includeTools: ["beeos_mobile_info", "beeos_mobile_tap"],
+});
+```
+
+Permanent destruction additionally requires `allowDestructive: true`.
 
 <Warning>
 Keep human confirmation around purchases, messages, account changes,
@@ -214,6 +290,16 @@ with BeeOS() as client:
 
 Use this form when the application already manages a BeeOS client. Otherwise,
 prefer `BeeOSToolkit` as a context manager.
+
+JavaScript applications can reuse a caller-owned official SDK client too:
+
+```ts
+import { BeeOSClient } from "@beeos-ai/sdk/facade";
+import { createBeeOSTools } from "@beeos-ai/langchain";
+
+const client = new BeeOSClient();
+const tools = createBeeOSTools({ client, instanceId: "inst_example" });
+```
 
 ## Failure and retry semantics
 

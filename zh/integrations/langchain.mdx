@@ -3,13 +3,14 @@ title: LangChain 与 LangGraph
 description: 在 LangChain 智能体和 LangGraph 工作流中使用类型化 BeeOS 工具
 ---
 
-`langchain-beeos` 将固定的 BeeOS 实例、智能体、计算机和移动设备转换为标准
-LangChain 工具。LangGraph 可以通过 `ToolNode` 使用同一组工具，因此不需要单独的
-`langgraph-beeos` 包。
+BeeOS 为 LangChain 的两种语言分别提供原生集成：Python 使用
+`langchain-beeos`，JavaScript 与 TypeScript 使用 `@beeos-ai/langchain`。它们将
+固定的 BeeOS 实例、智能体、计算机和移动设备转换为标准 LangChain 工具。
+LangGraph 可以通过 `ToolNode` 使用同一组工具，因此不需要单独的 LangGraph 包。
 
 <Warning>
-`langchain-beeos` 0.1.0 正在准备发布，目前尚未在 PyPI 提供。下方安装命令将在首个
-包版本发布后生效。
+`langchain-beeos` 与 `@beeos-ai/langchain` 0.1.0 正在准备发布，目前尚未在 PyPI
+或 npm 提供。下方安装命令将在首个包版本发布后生效。
 </Warning>
 
 ## 选择接入面
@@ -17,6 +18,7 @@ LangChain 工具。LangGraph 可以通过 `ToolNode` 使用同一组工具，因
 | 需求 | 推荐接入面 | 原因 |
 |---|---|---|
 | 构建 Python LangChain 或 LangGraph 应用 | `langchain-beeos` | 类型化工具、固定目标、显式修改权限范围和 Python 生命周期管理 |
+| 构建 Node.js LangChain.js 或 LangGraph.js 应用 | `@beeos-ai/langchain` | 类型化工具、固定目标、显式修改权限范围和官方 TypeScript SDK |
 | 让任何支持 MCP 的框架发现远程工具 | MCP | 不需要安装框架专用 BeeOS 包 |
 | 在模型选工具之外构建确定性编排 | BeeOS Python SDK 或 OpenAPI | 由应用管理重试、任务状态和控制流 |
 
@@ -50,6 +52,15 @@ SDK。
     `agent_id`。这些资源 ID 属于应用配置，不会作为模型生成的工具参数公开。
   </Step>
 </Steps>
+
+JavaScript 或 TypeScript 需要服务端 Node.js 22.12 或更高版本：
+
+```bash
+npm install @beeos-ai/langchain @langchain/core
+```
+
+再按应用需要添加 `langchain`、`@langchain/langgraph` 和模型提供方包。请把
+`BEEOS_API_KEY` 留在服务端，不要把本集成或凭证打进浏览器 bundle。
 
 ## 创建只读 LangChain 智能体
 
@@ -87,6 +98,31 @@ with BeeOSToolkit(
 智能体的构建和调用必须留在 `with` 块内。采用这种写法时，工具包拥有 BeeOS
 客户端，并在退出 `with` 块时将其关闭。
 
+## 创建只读 JavaScript 智能体
+
+JavaScript/TypeScript 包使用 camelCase 配置，同时保持与 Python 版一致的安全策略：
+
+```ts
+import { createAgent } from "langchain";
+import { ChatOpenAI } from "@langchain/openai";
+import { BeeOSToolkit } from "@beeos-ai/langchain";
+
+const instanceId = process.env.BEEOS_INSTANCE_ID;
+if (!instanceId) throw new Error("BEEOS_INSTANCE_ID is required");
+
+const toolkit = new BeeOSToolkit({
+  instanceId,
+  includeTools: ["beeos_computer_info", "beeos_mobile_info"],
+});
+const agent = createAgent({
+  model: new ChatOpenAI({ model: process.env.OPENAI_MODEL }),
+  tools: toolkit.getTools(),
+});
+const result = await agent.invoke({
+  messages: [{ role: "user", content: "Report which configured device is online." }],
+});
+```
+
 ## 在 LangGraph 中使用工具
 
 LangGraph 预构建的 `ToolNode` 可以直接使用同一组标准 LangChain 工具：
@@ -106,6 +142,23 @@ with BeeOSToolkit(
     # Build, compile, and invoke the graph while the toolkit remains open.
 ```
 
+JavaScript 版本使用 `@langchain/langgraph`：
+
+```ts
+import { ToolNode } from "@langchain/langgraph/prebuilt";
+import { createBeeOSTools } from "@beeos-ai/langchain";
+
+const instanceId = process.env.BEEOS_INSTANCE_ID;
+if (!instanceId) throw new Error("BEEOS_INSTANCE_ID is required");
+
+const beeosNode = new ToolNode(
+  createBeeOSTools({
+    instanceId,
+    includeTools: ["beeos_computer_info", "beeos_mobile_info"],
+  }),
+);
+```
+
 有关检查点、长时间运行的 BeeOS 任务、取消和恢复，参见
 [LangGraph 工作流](/zh/integrations/langgraph)。
 
@@ -117,6 +170,9 @@ with BeeOSToolkit(
 | `agent_id` | None | 配置后启用固定目标的智能体任务工具 |
 | `include_instance_list` | `False` | 默认不向模型公开账户级实例发现 |
 | `include_tools` | 其他条件允许的全部工具 | 应用最终工具允许列表，只能移除能力 |
+
+JavaScript 与 TypeScript 使用对应的 camelCase 名称：`instanceId`、`agentId`、
+`includeInstanceList` 和 `includeTools`。
 
 由于目标 ID 不会出现在工具 schema 中，模型不能将操作重定向到其他实例或智能体。
 只有工作流确实需要时，才启用账户级发现：
@@ -156,6 +212,22 @@ with BeeOSToolkit(
 
 `include_tools` 可以缩小可用工具集合，但不能授予缺失的目标或权限。销毁实例还需要
 在 `instance_lifecycle` 范围之外设置 `allow_destructive=True`。
+
+对应的 JavaScript 配置为：
+
+```ts
+const instanceId = process.env.BEEOS_INSTANCE_ID;
+if (!instanceId) throw new Error("BEEOS_INSTANCE_ID is required");
+
+const toolkit = new BeeOSToolkit({
+  instanceId,
+  allowMutations: true,
+  mutationScopes: ["device"],
+  includeTools: ["beeos_mobile_info", "beeos_mobile_tap"],
+});
+```
+
+永久销毁还需要设置 `allowDestructive: true`。
 
 <Warning>
 购买、发送消息、修改账户、安装、删除和其他会产生外部后果的操作必须保留人工确认。
@@ -206,6 +278,16 @@ with BeeOS() as client:
 
 应用已经管理 BeeOS 客户端时使用这种方式，否则优先将 `BeeOSToolkit` 用作上下文
 管理器。
+
+JavaScript 应用也可以复用调用方管理的官方 SDK 客户端：
+
+```ts
+import { BeeOSClient } from "@beeos-ai/sdk/facade";
+import { createBeeOSTools } from "@beeos-ai/langchain";
+
+const client = new BeeOSClient();
+const tools = createBeeOSTools({ client, instanceId: "inst_example" });
+```
 
 ## 失败与重试语义
 

@@ -1,14 +1,38 @@
 ---
 title: n8n
-description: 在 n8n 中通过 MCP 使用 Agent 工具，或通过 OpenAPI 构建持久工作流。
+description: 在 n8n 工作流中使用 BeeOS 社区节点、MCP 或 OpenAPI。
 ---
 
-n8n 有两种互补的 BeeOS 接入方式：
+n8n 有三种互补的 BeeOS 接入方式：
 
 | 模式 | 适用场景 |
 |---|---|
+| `n8n-nodes-beeos` 社区包 | 原生 BeeOS 操作、任务轮询和 AI Agent 工具调用 |
 | AI Agent + MCP Client Tool | 由模型决定是否以及如何使用 BeeOS Agent |
 | HTTP Request + OpenAPI | 确定性任务、状态查询、取消和条件分支 |
+
+## BeeOS 社区节点
+
+独立仓库中的
+[`n8n-nodes-beeos`](https://github.com/beeos-ai/n8n-nodes-beeos) 包提供：
+
+- 一个 BeeOS 操作节点，覆盖实例与 Agent 发现、持久任务、实例生命周期、文件解析、
+  计算机操作和移动设备控制；
+- 一个轮询触发器，用于发现新建或已关闭的 BeeOS 任务；
+- 一个带连接测试的加密 BeeOS API Credential。
+
+<Warning>
+`n8n-nodes-beeos` 0.1.0 正在准备发布，目前尚未出现在 npm 或 n8n Community
+Nodes 目录。下方安装流程将在首个版本发布后生效。
+</Warning>
+
+在自托管 n8n 中打开 **Settings → Community Nodes**，安装
+`n8n-nodes-beeos`，再创建 **BeeOS API** Credential：API URL 使用
+`https://openapi.beeos.ai`，API Key 使用 BeeOS 用户密钥。BeeOS 操作节点既可用于
+确定性工作流，也可挂到 n8n AI Agent 上作为工具。
+
+销毁实例需要单独确认。购买、对外发送消息、修改账号等外部副作用应保留明确的人工
+审批节点。计算机或移动设备操作超时后不要自动重试，因为动作可能已经执行。
 
 ## MCP Client Tool
 

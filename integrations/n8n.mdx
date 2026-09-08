@@ -1,15 +1,43 @@
 ---
 title: n8n
-description: Use BeeOS from n8n through MCP for agentic tool use or OpenAPI for durable workflows.
+description: Use the BeeOS community nodes, MCP, or OpenAPI in n8n workflows.
 ---
 
-n8n supports two useful BeeOS patterns. They are complementary rather than
+n8n supports three useful BeeOS patterns. They are complementary rather than
 interchangeable.
 
 | Pattern | Best for |
 |---|---|
+| `n8n-nodes-beeos` community package | Native BeeOS actions, task polling, and AI Agent tool use |
 | MCP Client Tool attached to an AI Agent | The model decides whether and how to use a BeeOS agent |
 | HTTP Request nodes calling OpenAPI | Deterministic tasks, status polling, cancellation, and workflow branching |
+
+## BeeOS community nodes
+
+The standalone
+[`n8n-nodes-beeos`](https://github.com/beeos-ai/n8n-nodes-beeos) package
+provides:
+
+- one BeeOS action node for instance and Agent discovery, durable tasks,
+  instance lifecycle, file resolution, computer use, and mobile control;
+- a polling trigger for newly created or closed BeeOS tasks;
+- an encrypted BeeOS API credential with a connection test.
+
+<Warning>
+`n8n-nodes-beeos` 0.1.0 is in release preparation and is not yet available from
+npm or the n8n Community Nodes catalog. The installation flow below becomes
+valid after the first release.
+</Warning>
+
+On a self-hosted n8n instance, open **Settings → Community Nodes**, install
+`n8n-nodes-beeos`, and create a **BeeOS API** credential using
+`https://openapi.beeos.ai` and a BeeOS user API key. The action node can be used
+in a deterministic workflow or attached to an n8n AI Agent as a tool.
+
+Instance destruction has a dedicated confirmation field. For purchases,
+outbound messages, account changes, and other external side effects, keep an
+explicit human-approval step in the workflow. Do not automatically retry a
+timed-out computer or mobile action: it may already have executed.
 
 ## MCP Client Tool
 
