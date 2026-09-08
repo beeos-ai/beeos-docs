@@ -1,7 +1,37 @@
 ---
-title: LangGraph
-description: 将 BeeOS MCP 工具加载到 LangGraph，或从图节点调用持久 BeeOS OpenAPI 任务。
+title: LangGraph 工作流
+description: 将 LangGraph 状态和检查点与 BeeOS 原生工具、MCP 或持久 OpenAPI 任务结合
 ---
+
+<Note>
+有关安装、类型化工具、权限、截图和客户端生命周期，先阅读
+[LangChain 与 LangGraph](/zh/integrations/langchain)。本页专注于图特有的编排选择。
+</Note>
+
+## 在图中使用 BeeOS 原生工具
+
+`langchain-beeos` 返回标准 LangChain 工具，可以直接传给 LangGraph 的
+`ToolNode`：
+
+```python
+import os
+
+from langgraph.prebuilt import ToolNode
+from langchain_beeos import BeeOSToolkit
+
+
+with BeeOSToolkit(
+    instance_id=os.environ["BEEOS_INSTANCE_ID"],
+    include_tools={"beeos_computer_info", "beeos_mobile_info"},
+) as toolkit:
+    beeos_node = ToolNode(toolkit.get_tools())
+    # Build, compile, and invoke the graph while the toolkit remains open.
+```
+
+编译图之前，通过 `include_tools`、固定目标 ID 和修改权限范围限定能力。检查点可以
+恢复图状态，但不能在恢复运行时静默扩大可用的 BeeOS 工具或权限。
+
+## 选择 MCP 或 OpenAPI
 
 BeeOS 作为模型可选工具时使用 MCP；由图负责创建任务、重试、取消和状态转换时使用 OpenAPI。
 

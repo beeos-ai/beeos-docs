@@ -93,6 +93,7 @@
                   "integrations/deepseek-harness",
                   "integrations/claude-code",
                   "integrations/n8n",
+                  "integrations/langchain",
                   "integrations/langgraph",
                   "integrations/google-a2a-sdk",
                   "integrations/dify"
@@ -180,6 +181,7 @@
                   "zh/integrations/deepseek-harness",
                   "zh/integrations/claude-code",
                   "zh/integrations/n8n",
+                  "zh/integrations/langchain",
                   "zh/integrations/langgraph",
                   "zh/integrations/google-a2a-sdk",
                   "zh/integrations/dify"
