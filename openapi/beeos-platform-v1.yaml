@@ -2,8 +2,8 @@
 # AUTO-SYNCED FROM backend/openapi/beeos-platform-v1.yaml
 # DO NOT EDIT HERE — edit the source in the openagent repo and run
 #   cd beeos-docs && npm run sync-spec
-# Last synced: 2026-09-02T00:20:00Z
-# Source SHA: a73cc186
+# Last synced: 2026-09-08T15:56:18Z
+# Source SHA: 9db08aa3
 # ============================================================================
 openapi: 3.1.0
 info:
@@ -29,6 +29,15 @@ info:
     endpoints (A2A JSON-RPC with `bak_`, MCP) live in
     [beeos-agent-integration-v1.yaml](beeos-agent-integration-v1.yaml) and are
     hosted by A2A Gateway / MCP Gateway — not by `openapi-gateway`.
+
+    **Atomic control admission:** Computer/Mobile `info` shares a 300/minute
+    owner-scoped budget; all other Computer/Mobile atomic operations together
+    share 60/minute. Equivalent MCP atomic tools consume the same budgets.
+    Capacity replenishes continuously (GCRA), with an initial burst equal to
+    the minute rate. Switching credentials, devices or protocols does not reset
+    capacity. Exhaustion returns 429 `rate_limited` with `Retry-After`; an
+    unavailable quota store returns 503 `control_rate_limit_unavailable` before
+    dispatch. These limits do not define billing or device task concurrency.
 
     ## Changelog
 
@@ -920,6 +929,10 @@ paths:
       operationId: mobileOpenApp
       tags: [mobile]
       summary: Open an installed app by package id or display name.
+      description: >-
+        Runtime options vary. Portal/BeeRunner supports package or display-name
+        launch and explicit activity, but rejects a nonempty locale override
+        with action_unsupported.
       requestBody:
         required: true
         content:
@@ -944,6 +957,10 @@ paths:
       operationId: mobileGetUiTree
       tags: [mobile]
       summary: Read the current Android UI hierarchy.
+      description: >-
+        Raw content follows the runtime's native format. Portal/BeeRunner
+        returns accessibility JSON rather than ADB XML and does not support
+        a nonempty query filter.
       parameters:
         - name: query
           in: query
@@ -978,6 +995,10 @@ paths:
       operationId: mobileListApps
       tags: [mobile]
       summary: List installed Android applications.
+      description: >-
+        Portal/BeeRunner exposes launchable inventory only and requires
+        launchable_only=true. Unsupported inventory scopes return
+        action_unsupported instead of a silently partial result.
       parameters:
         - name: include_system
           in: query
@@ -2685,7 +2706,10 @@ components:
         supported_actions:
           type: array
           items: { type: string }
-          description: Action verbs this device supports (e.g. `screenshot`, `tap`).
+          description: |
+            Public action verbs confirmed by the runtime's exact tool list
+            (e.g. `screenshot`, `tap`). Empty when offline or when an older
+            runtime does not report that list; not inferred from OS alone.
         current_app:
           type: string
           description: Foreground app / window, when known.
@@ -4947,7 +4971,24 @@ components:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
     RateLimited:
-      description: Per-caller × endpoint quota exceeded. `code` is `rate_limited`. Honour `Retry-After` if present.
+      description: >-
+        Request quota exceeded; `code` is `rate_limited`. Honour `Retry-After`.
+        Computer/Mobile atomic quotas are owner-scoped and shared with equivalent
+        MCP tools. Atomic errors also include retry_after_seconds, limit,
+        remaining and reset_after_seconds as strings in error.metadata.
+      headers:
+        Retry-After:
+          description: Minimum wait in seconds before requesting admission again. Does not guarantee the next request will be admitted.
+          schema: { type: integer, minimum: 1 }
+        X-RateLimit-Limit:
+          description: Per-minute capacity of this request's bucket.
+          schema: { type: integer, minimum: 1 }
+        X-RateLimit-Remaining:
+          description: Remaining capacity in the bucket.
+          schema: { type: integer, minimum: 0 }
+        X-RateLimit-Reset:
+          description: Seconds until full capacity replenishes; not a Unix timestamp.
+          schema: { type: integer, minimum: 0 }
       content:
         application/json:
           schema:
@@ -4961,6 +5002,8 @@ components:
           subsystem unreachable
         - `auth_unavailable` / `auth_transient` (503) — Auth gRPC transient
         - `service_timeout` (504) — gateway gave up waiting for the agent
+        - `control_rate_limit_unavailable` (503) — atomic control admission
+          could not be checked; no device command was dispatched
 
         See [docs/reference/errors.md](https://github.com/beeos-ai/beeos/blob/main/docs/reference/errors.md).
       content:
