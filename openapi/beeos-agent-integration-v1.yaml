@@ -2,8 +2,8 @@
 # AUTO-SYNCED FROM backend/openapi/beeos-agent-integration-v1.yaml
 # DO NOT EDIT HERE — edit the source in the openagent repo and run
 #   cd beeos-docs && npm run sync-spec
-# Last synced: 2026-09-08T15:56:18Z
-# Source SHA: 9db08aa3
+# Last synced: 2026-09-11T16:05:56Z
+# Source SHA: f7702449
 # ============================================================================
 openapi: 3.1.0
 info:
@@ -18,11 +18,9 @@ info:
     1. **A2A JSON-RPC** — `POST /{agentId}` (same public base URL as the A2A
        Gateway) with an `A2A-Version` header and a JSON-RPC body. This remains
        the full protocol for tasks, cards, and streaming.
-    2. **REST invoke (thin)** — `POST /{agentId}/v1/invoke` with a JSON body.
-       Same Message Service / channel-primitives and authentication as MCP
-       Gateway `tools/call`, implemented via the shared
-       [chatinvoke](https://github.com/beeos-ai/openagent/tree/main/backend/pkg/chatinvoke)
-       package.
+    2. **REST invoke** — `POST /{agentId}/v1/invoke` with a JSON body.
+       Uses the existing A2A task service. Browser targets return durable,
+       scoped task snapshots; other agents keep the text reply envelope.
     3. **MCP** — public MCP base URL, agent scope `POST {mcpBase}/agents/{agentId}/mcp`
        (see product UI / agent object fields `mcpAgentEndpoint`).
 
@@ -34,7 +32,11 @@ info:
 
     **CORS / headers:** set `Accept: text/event-stream` for SSE streaming
     (delta events) on the REST path; else the response is a single JSON
-    object.
+    object. Browser `async: true` always returns JSON, even when SSE is accepted.
+    Browser admission requires a stable body `request_id` or `Idempotency-Key`
+    header. Connection loss ends waiting, not task execution. Retry identical
+    input with the original ID or query the accepted task; never automatically
+    create a replacement task after an uncertain response.
 
 servers:
   - url: https://a2a.beeos.ai
@@ -47,11 +49,17 @@ paths:
     post:
       operationId: invokeAgent
       tags: [a2aRest]
-      summary: Send a chat turn and block until a reply (or stream via SSE)
+      summary: Invoke an agent or submit/resume a browser task
       description: |
-        Publishes a `chat_message` to Message Service, then waits for the
-        agent’s `agent_reply` on the same IM channel, or streams deltas
-        (Accept `text/event-stream`).
+        Ordinary agents retain the text reply contract. Browser targets use
+        durable task admission, outbox delivery and scoped Message Service
+        facts. New browser tasks require `message` and stable `request_id`
+        (or Idempotency-Key). Same key with different input returns conflict.
+        Browser resume uses only original `task_id` and current `pause_sequence`,
+        plus optional `context_id`/`async`; it cannot change prompt or deadline.
+        Do not send Idempotency-Key on resume. Unknown browser fields are rejected.
+        Request bodies are limited to 1 MiB. This endpoint does not publish a
+        browser capability before its rollout has been enabled separately.
       parameters:
         - name: agentId
           in: path
@@ -59,12 +67,27 @@ paths:
           schema:
             type: string
             maxLength: 128
+        - name: Idempotency-Key
+          in: header
+          required: false
+          description: |
+            Browser new-task stable request ID, instead of body request_id.
+            Duplicate headers or a different body request_id are rejected.
+            Not used for ordinary agents or browser resume.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 128
+            pattern: '^[!-~]+$'
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/RestInvokeRequest'
+              anyOf:
+                - $ref: '#/components/schemas/RestInvokeRequest'
+                - $ref: '#/components/schemas/BrowserNewTask'
+                - $ref: '#/components/schemas/BrowserResumeTask'
       responses:
         '200':
           description: |
@@ -75,13 +98,110 @@ paths:
             **Streaming:** `text/event-stream` — one JSON object per `data:`
             line; `agent_reply_delta` for partials; final `agent_reply` (or
             `error` on failure) closes the turn.
+
+            **Browser JSON:** BrowserTaskSnapshot, preserving actual state and
+            typed artifacts. A pause is nonterminal, not completed.
+
+            **Browser SSE:** starts with `{type: task_accepted, task: snapshot}`
+            after committed admission, then `agent_reply_delta` events, and
+            `{type: agent_reply, task: snapshot, final: true}` when paused or
+            terminal. `final` ends this subscription, not necessarily execution;
+            check task.is_terminal. Comments provide 15-second keepalives.
+            An `error` event or unexpected EOF never implies task completion or
+            cancellation. Query task_id or retry the same request_id.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/RestInvokeResponse'
+                  - $ref: '#/components/schemas/BrowserTaskSnapshot'
+            text/event-stream:
+              schema: { type: string }
+        '202':
+          description: Browser async acceptance or original nonterminal task on retry
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BrowserTaskSnapshot' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/AuthError' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/BrowserConflict' }
+        '413': { description: Request body exceeds 1 MiB }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/ServerError' }
+        '503': { $ref: '#/components/responses/BrowserUnavailable' }
+        '504': { $ref: '#/components/responses/BrowserWaitEnded' }
+      security: [{ agentApiKey: [] }, { bearerOrUser: [] }]
+  /{agentId}/v1/tasks/{taskId}:
+    get:
+      operationId: getBrowserTask
+      tags: [a2aRest]
+      summary: Read one authorized browser task
+      description: |
+        Browser targets only. Verifies original caller, current target owner,
+        Agent and instance. Does not derive state from other messages in the
+        same conversation. Responses use Cache-Control no-store.
+      parameters:
+        - $ref: '#/components/parameters/AgentId'
+        - $ref: '#/components/parameters/TaskId'
+      responses:
+        '200':
+          description: Verified current task, including pause or terminal artifacts
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BrowserTaskSnapshot' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
         '401': { $ref: '#/components/responses/AuthError' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '429': { $ref: '#/components/responses/RateLimited' }
-        '500': { $ref: '#/components/responses/ServerError' }
+        '503': { $ref: '#/components/responses/BrowserUnavailable' }
+        '504': { $ref: '#/components/responses/BrowserWaitEnded' }
+      security: [{ agentApiKey: [] }, { bearerOrUser: [] }]
+  /{agentId}/v1/tasks/{taskId}/cancel:
+    post:
+      operationId: cancelBrowserTask
+      tags: [a2aRest]
+      summary: Persist cancellation intent for the original browser task
+      description: |
+        No request body. Same scope checks as getBrowserTask. A durable cancel
+        intent is not proof that an in-flight action stopped. Query until a
+        verified terminal outcome appears; this never closes the conversation.
+      parameters:
+        - $ref: '#/components/parameters/AgentId'
+        - $ref: '#/components/parameters/TaskId'
+      responses:
+        '200':
+          description: Original task is already terminal
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BrowserTaskSnapshot' }
+        '202':
+          description: Cancellation requested; current state remains nonterminal
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BrowserTaskSnapshot' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/AuthError' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/BrowserUnavailable' }
+        '504': { $ref: '#/components/responses/BrowserWaitEnded' }
       security: [{ agentApiKey: [] }, { bearerOrUser: [] }]
 components:
+  parameters:
+    AgentId:
+      name: agentId
+      in: path
+      required: true
+      schema: { type: string, minLength: 1, maxLength: 128 }
+    TaskId:
+      name: taskId
+      in: path
+      required: true
+      schema: { type: string, minLength: 1, maxLength: 128, pattern: '^[!-~]+$' }
   securitySchemes:
     agentApiKey:
       type: apiKey
@@ -94,6 +214,30 @@ components:
         `Authorization: Bearer bak_…` (agent key) or a user JWT or `oag_`
         User API Key, depending on policy for the same route.
   responses:
+    InvalidRequest:
+      description: Invalid request fields or conflicting idempotency keys
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    BrowserConflict:
+      description: Request ID conflicts with existing input, or task cannot be admitted/resumed
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    BrowserUnavailable:
+      description: |
+        Task admission or query unavailable, not proof that the browser is offline.
+        Retry identical original input or query the accepted task. Do not create
+        a replacement after an uncertain delivery. Any verified IDs appear in
+        error.metadata; absence of IDs does not prove no task was admitted.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    BrowserWaitEnded:
+      description: Waiting ended, not execution; query original task or retry original request
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
     AuthError:
       description: Missing or invalid credentials
       content:
@@ -124,6 +268,90 @@ components:
           properties:
             code: { type: string, description: Machine-readable error code }
             message: { type: string, description: Human-readable detail }
+            metadata:
+              type: object
+              additionalProperties: { type: string }
+              description: Browser retry_policy and optional request_id/task_id/context_id
+    BrowserNewTask:
+      type: object
+      additionalProperties: false
+      required: [message]
+      description: request_id is required unless supplied as the Idempotency-Key header
+      properties:
+        message: { type: string, minLength: 1 }
+        request_id: { type: string, minLength: 1, maxLength: 128, pattern: '^[!-~]+$' }
+        context_id: { type: string }
+        timeout_ms:
+          type: integer
+          minimum: 0
+          maximum: 300000
+          description: Execution budget; zero selects server default. Retry cannot extend it.
+        async: { type: boolean, default: false }
+    BrowserResumeTask:
+      type: object
+      additionalProperties: false
+      required: [task_id, pause_sequence]
+      properties:
+        task_id: { type: string, minLength: 1, maxLength: 128, pattern: '^[!-~]+$' }
+        pause_sequence: { type: integer, minimum: 1, maximum: 1000000 }
+        context_id: { type: string }
+        async: { type: boolean, default: false }
+    BrowserTaskSnapshot:
+      type: object
+      required: [task_id, context_id, status, is_terminal, is_error, text]
+      properties:
+        task_id: { type: string }
+        context_id: { type: string }
+        status:
+          type: string
+          enum: [submitted, working, input-required, auth-required, completed, failed, canceled, timeout, rejected]
+        is_terminal: { type: boolean }
+        is_error: { type: boolean, description: True only for a terminal non-completed task }
+        text: { type: string }
+        cancellation_requested: { type: boolean, description: Intent persisted; does not confirm stopped execution }
+        artifacts:
+          type: array
+          items: { $ref: '#/components/schemas/BrowserArtifact' }
+    BrowserArtifact:
+      type: object
+      required: [artifactId, parts]
+      description: Existing A2A v1 artifact shape, not a stringified/base64 attachment
+      properties:
+        artifactId: { type: string }
+        name: { type: string }
+        description: { type: string }
+        metadata: { type: object }
+        extensions: { type: array, items: { type: string } }
+        parts:
+          type: array
+          items:
+            oneOf:
+              - type: object
+                required: [text]
+                properties:
+                  text: { type: string }
+                  metadata: { type: object }
+              - type: object
+                required: [url]
+                properties:
+                  url: { type: string }
+                  filename: { type: string }
+                  mediaType: { type: string }
+                  metadata: { type: object }
+              - type: object
+                required: [data]
+                properties:
+                  data:
+                    description: Original JSON safety/outcome data, including effect_unknown, retry_policy or pause_sequence
+                  metadata: { type: object }
+    RestInvokeResponse:
+      type: object
+      required: [text, context_id, is_error, message]
+      properties:
+        text: { type: string }
+        context_id: { type: string }
+        is_error: { type: boolean }
+        message: { type: string }
     RestInvokeRequest:
       type: object
       required: [message]
