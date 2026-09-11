@@ -2,8 +2,8 @@
 # AUTO-SYNCED FROM backend/openapi/beeos-platform-v1.yaml
 # DO NOT EDIT HERE — edit the source in the openagent repo and run
 #   cd beeos-docs && npm run sync-spec
-# Last synced: 2026-09-08T15:56:18Z
-# Source SHA: 9db08aa3
+# Last synced: 2026-09-11T16:05:56Z
+# Source SHA: f7702449
 # ============================================================================
 openapi: 3.1.0
 info:
@@ -1325,12 +1325,24 @@ paths:
         response body will be Server-Sent Events with `delta` and `done`
         event types. For async fire-and-forget invocations, use the `tasks`
         API instead.
+        Browser agents use durable A2A admission backed by Message Service,
+        not a single-shot conversation channel. They require the current
+        browser owner and a stable Idempotency-Key header or idempotency_key
+        body field. See BrowserInvokeRequest and BrowserTaskEnvelope.
+        Browser SSE emits task_accepted, message, done/error; a pause ends
+        the subscription with is_terminal=false. Disconnect never cancels
+        execution. See BrowserEventStream. Unsupported attachments/metadata
+        are rejected for browser tasks rather than silently discarded.
+      parameters:
+        - $ref: '#/components/parameters/BrowserIdempotencyKey'
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/InvokeAgentRequest'
+              anyOf:
+                - $ref: '#/components/schemas/InvokeAgentRequest'
+                - $ref: '#/components/schemas/BrowserInvokeRequest'
       responses:
         "200":
           description: |
@@ -1341,7 +1353,9 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/InvokeAgentResponse'
+                anyOf:
+                  - $ref: '#/components/schemas/InvokeAgentResponse'
+                  - $ref: '#/components/schemas/BrowserTaskEnvelope'
               examples:
                 shortReply:
                   summary: Synchronous reply
@@ -1361,7 +1375,9 @@ paths:
                       is_error: true
             text/event-stream:
               schema:
-                $ref: '#/components/schemas/InvokeEventStream'
+                anyOf:
+                  - $ref: '#/components/schemas/InvokeEventStream'
+                  - $ref: '#/components/schemas/BrowserEventStream'
         "400": { $ref: '#/components/responses/BadRequest' }
         "401": { $ref: '#/components/responses/Unauthorized' }
         "403": { $ref: '#/components/responses/Forbidden' }
@@ -1393,19 +1409,37 @@ paths:
         The channel inherits the caller-supplied `deadline_ms` (capped at 7
         days server-side). If the deadline elapses before the agent produces a
         terminal message the task transitions to `timeout`.
+        Browser exception: task_id is independent of context_id and the
+        deadline is at most 300000 ms. Use BrowserCreateTaskRequest and a
+        stable Idempotency-Key header or idempotency_key body field.
+        Current instance ownership is required even for a public agent.
+        Returns BrowserTaskEnvelope (202 for nonterminal admission/replay,
+        200 for an already-terminal original task). No replacement task is
+        created when retrying identical input and the same key.
+      parameters:
+        - $ref: '#/components/parameters/BrowserIdempotencyKey'
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/CreateTaskRequest'
+              anyOf:
+                - $ref: '#/components/schemas/CreateTaskRequest'
+                - $ref: '#/components/schemas/BrowserCreateTaskRequest'
       responses:
+        "200":
+          description: Browser admission replay of an already-terminal task.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BrowserTaskEnvelope' }
         "202":
           description: Task accepted. Reply will land asynchronously.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/TaskCreatedResponse'
+                anyOf:
+                  - $ref: '#/components/schemas/TaskCreatedResponse'
+                  - $ref: '#/components/schemas/BrowserTaskEnvelope'
               examples:
                 accepted:
                   summary: Task accepted
@@ -1441,6 +1475,14 @@ paths:
         inside `GetTask`). Callers that need the precise status follow up
         with `GET /tasks/{taskId}` per row, or subscribe to SSE
         `GET /tasks/{taskId}/events`.
+        Browser agents instead return BrowserTaskListEnvelope from the
+        caller's durable A2A routing rows plus verified Message facts,
+        including browser tasks admitted via other task protocols.
+        Current browser ownership is rechecked. active/open include pauses;
+        closed means terminal. Exact BrowserTaskSnapshot.status values are
+        also accepted. Cursors start with browser: and are not channel
+        offsets. A filtered page may be empty with has_more=true; continue
+        with next_since until has_more=false.
       parameters:
         - name: state
           in: query
@@ -1450,7 +1492,7 @@ paths:
             alias for v2's `open`; `all` returns both. Default: `active`.
           schema:
             type: string
-            enum: [active, open, closed, all]
+            enum: [active, open, closed, all, submitted, working, input-required, auth-required, completed, failed, canceled, timeout, rejected]
             default: active
         - name: since
           in: query
@@ -1467,7 +1509,9 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ListTasksResponse'
+                anyOf:
+                  - $ref: '#/components/schemas/ListTasksResponse'
+                  - $ref: '#/components/schemas/BrowserTaskListEnvelope'
         "400": { $ref: '#/components/responses/BadRequest' }
         "401": { $ref: '#/components/responses/Unauthorized' }
         "403": { $ref: '#/components/responses/Forbidden' }
@@ -1502,7 +1546,17 @@ paths:
         conversations live at `GET /api/v1/agents/{agentId}/conversations`
         and are not mixed in to keep status semantics stable (tasks
         have a deadline; conversations don't).
+        To list browser tasks, explicitly pass task_kind=browser. That
+        opt-in returns BrowserTaskListEnvelope with current owner/agent/
+        instance checks, includes browser admissions from all task APIs,
+        and excludes legacy channels. Keep using next_since even when a
+        filtered page is empty but has_more=true. Without task_kind the
+        existing legacy channel listing remains unchanged.
       parameters:
+        - name: task_kind
+          in: query
+          description: Opt in to the separate durable browser task listing.
+          schema: { type: string, enum: [browser] }
         - name: agent_id
           in: query
           required: false
@@ -1531,7 +1585,7 @@ paths:
             `active`.
           schema:
             type: string
-            enum: [active, open, closed, all]
+            enum: [active, open, closed, all, submitted, working, input-required, auth-required, completed, failed, canceled, timeout, rejected]
             default: active
         - name: since
           in: query
@@ -1548,7 +1602,9 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ListTasksResponse'
+                anyOf:
+                  - $ref: '#/components/schemas/ListTasksResponse'
+                  - $ref: '#/components/schemas/BrowserTaskListEnvelope'
         "400": { $ref: '#/components/responses/BadRequest' }
         "401": { $ref: '#/components/responses/Unauthorized' }
         "403": { $ref: '#/components/responses/Forbidden' }
@@ -1573,13 +1629,19 @@ paths:
         Returns the snapshot derived by `msgderive` from the task's
         channel-message log — safe to call at any cadence; the resolver is a
         pure function and terminal states short-circuit polling loops.
+        Browser agents return BrowserTaskEnvelope after checking the
+        current browser owner and exact caller/agent/instance/task scope.
+        A browser task is NOT its containing conversation. Text and typed
+        file/data artifacts are retained; pauses are nonterminal.
       responses:
         "200":
           description: Current task snapshot.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/TaskResponse'
+                anyOf:
+                  - $ref: '#/components/schemas/TaskResponse'
+                  - $ref: '#/components/schemas/BrowserTaskEnvelope'
               examples:
                 running:
                   summary: Task still running
@@ -1649,6 +1711,14 @@ paths:
         Auth path is intentionally cheaper than `getTask` (one MS
         `GetConversation` + metadata check, no full message-log scan)
         so paged reads stay O(1)-per-page in auth cost.
+        Browser exception: returns BrowserMessagesEnvelope containing
+        immutable single-task public events, NOT raw conversation rows.
+        since/Last-Event-ID refers to event.sequence (0..1000003); since
+        takes precedence. latest_offset is the last RETURNED sequence,
+        with has_more for paging. Only sealed public text, action labels
+        and verified status are exposed; raw tool input/output, thinking,
+        execution claims and original user prompt are not included.
+        include_deltas does not enable private/unsealed parts for browsers.
       parameters:
         - name: since
           in: query
@@ -1677,7 +1747,9 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ListMessagesResponse'
+                anyOf:
+                  - $ref: '#/components/schemas/ListMessagesResponse'
+                  - $ref: '#/components/schemas/BrowserMessagesEnvelope'
         "400": { $ref: '#/components/responses/BadRequest' }
         "401": { $ref: '#/components/responses/Unauthorized' }
         "403": { $ref: '#/components/responses/Forbidden' }
@@ -1736,13 +1808,21 @@ paths:
         The stream auto-closes when the channel reaches a terminal envelope
         (`agent_reply` / `agent_reply_error`) — clients should release the
         connection on the synthesized `end` event.
+        Browser exception: BrowserEventStream emits task_accepted, immutable
+        message frames, then done for pause/terminal or error when the
+        subscription fails. Never interpret done alone as task completion;
+        inspect is_terminal/status. Use numeric SSE id as since or
+        Last-Event-ID (since takes precedence, range 0..1000003).
+        Disconnect stops this subscription only, not task execution.
       responses:
         "200":
           description: SSE stream of channel-message envelopes.
           content:
             text/event-stream:
               schema:
-                $ref: '#/components/schemas/TaskEventStream'
+                anyOf:
+                  - $ref: '#/components/schemas/TaskEventStream'
+                  - $ref: '#/components/schemas/BrowserEventStream'
         "401": { $ref: '#/components/responses/Unauthorized' }
         "403": { $ref: '#/components/responses/Forbidden' }
         "404": { $ref: '#/components/responses/NotFound' }
@@ -1768,19 +1848,34 @@ paths:
         turn cleanly, then closes the channel with `reason=canceled`.
         Idempotent — re-issuing cancel on an already-canceled task is a no-op
         and still returns the snapshot.
+        Browser exception: body must be empty or {}. Records durable
+        cancellation intent on the original task without closing its
+        conversation. Returns BrowserTaskEnvelope with 202 and
+        cancellation_requested=true while nonterminal; 200 only for a
+        verified terminal snapshot. Does not fabricate a canceled outcome.
       requestBody:
         required: false
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/CancelTaskRequest'
+              anyOf:
+                - $ref: '#/components/schemas/CancelTaskRequest'
+                - type: object
+                  additionalProperties: false
       responses:
         "200":
           description: Post-cancel task snapshot.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/TaskResponse'
+                anyOf:
+                  - $ref: '#/components/schemas/TaskResponse'
+                  - $ref: '#/components/schemas/BrowserTaskEnvelope'
+        "202":
+          description: Browser cancellation requested; execution is not yet terminal.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BrowserTaskEnvelope' }
         "400": { $ref: '#/components/responses/BadRequest' }
         "401": { $ref: '#/components/responses/Unauthorized' }
         "403": { $ref: '#/components/responses/Forbidden' }
@@ -1809,19 +1904,33 @@ paths:
         `input_required` / `auth_required` state. Returns the snapshot AFTER
         the envelope is published — typically `running`, or still
         `input_required` if the agent hasn't processed the resume yet.
+        Browser exception: requires BrowserContinueTaskRequest containing
+        only the current pause_sequence. Reuses the original task/context,
+        deadline and resume identity. Does not accept input, auth_grant,
+        new prompt or Idempotency-Key header. Returns BrowserTaskEnvelope,
+        202 while nonterminal and 200 for a verified terminal snapshot.
       requestBody:
         required: false
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/ContinueTaskRequest'
+              anyOf:
+                - $ref: '#/components/schemas/ContinueTaskRequest'
+                - $ref: '#/components/schemas/BrowserContinueTaskRequest'
       responses:
         "200":
           description: Post-continue task snapshot.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/TaskResponse'
+                anyOf:
+                  - $ref: '#/components/schemas/TaskResponse'
+                  - $ref: '#/components/schemas/BrowserTaskEnvelope'
+        "202":
+          description: Browser resume accepted on the original task.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BrowserTaskEnvelope' }
         "400": { $ref: '#/components/responses/BadRequest' }
         "401": { $ref: '#/components/responses/Unauthorized' }
         "403": { $ref: '#/components/responses/Forbidden' }
@@ -2508,6 +2617,16 @@ paths:
         "5XX": { $ref: '#/components/responses/ServerError' }
 
 components:
+  parameters:
+    BrowserIdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      description: |
+        Browser tasks require this header or the idempotency_key body field.
+        If both are present they must agree. Reuse identical input and key
+        after ambiguous failures; never retry with a replacement key.
+        Does not apply to continuing an existing browser task.
+      schema: { type: string, minLength: 1, maxLength: 128, pattern: '^[!-~]+$' }
   securitySchemes:
     bearerAuth:
       type: http
@@ -3172,6 +3291,11 @@ components:
         `providerId`). Client-supplied scheduling fields (ownershipPreference /
         maxPricePerHour / resourceTypeHint) are **not** accepted here; the
         catalog variant is the source of truth.
+        For `beeos-browser`, a published, visible catalog `variantId` is required;
+        the direct framework path is rejected. Its catalog owns cluster/region,
+        resource limits and price. Browser requests may select `modelPrimary`
+        but cannot supply non-empty `config`, `providerConfig`, `mcpServers`,
+        `systemPrompt` or `bridgeId`, or override the catalog's placement.
       properties:
         variantId:
           type: string
@@ -3772,6 +3896,170 @@ components:
         reason:
           type: string
           enum: [task_terminal, stream_closed, channel_closed]
+
+    # Browser-specific task projection, selected by the resolved agent.
+    BrowserInvokeRequest:
+      type: object
+      additionalProperties: false
+      required: [message]
+      properties:
+        message: { type: string, minLength: 1 }
+        context_id: { type: string }
+        timeout_ms: { type: integer, format: int64, minimum: 0, maximum: 300000 }
+        idempotency_key: { type: string, minLength: 1, maxLength: 128, pattern: '^[!-~]+$' }
+      description: |
+        Browser-only request; the current browser owner is required.
+        A stable header/body idempotency key is mandatory, even for sync.
+        A zero/omitted timeout selects the browser service default.
+        Request bodies are capped at 1 MiB. Attachments and caller metadata
+        are not currently accepted on this browser task surface.
+        Legacy /conversations endpoints reject browser targets with 400
+        (403 for a different owner), before reading/writing Message Service.
+        Use returned context_id for subsequent tasks in the same context.
+
+    BrowserCreateTaskRequest:
+      type: object
+      additionalProperties: false
+      required: [message]
+      properties:
+        message: { type: string, minLength: 1 }
+        context_id: { type: string }
+        deadline_ms: { type: integer, format: int64, minimum: 0, maximum: 300000 }
+        idempotency_key: { type: string, minLength: 1, maxLength: 128, pattern: '^[!-~]+$' }
+      description: Browser async admission; same key/owner/body restrictions as BrowserInvokeRequest.
+
+    BrowserContinueTaskRequest:
+      type: object
+      additionalProperties: false
+      required: [pause_sequence]
+      properties:
+        pause_sequence: { type: integer, format: int64, minimum: 1, maximum: 1000000 }
+      description: Resume the original task at the currently verified pause. No new message/key/deadline.
+
+    BrowserTaskSnapshot:
+      type: object
+      required: [task_kind, task_id, context_id, agent_id, status, is_terminal, is_error, text]
+      properties:
+        task_kind: { type: string, enum: [browser] }
+        task_id: { type: string, maxLength: 128 }
+        context_id: { type: string }
+        agent_id: { type: string }
+        status:
+          type: string
+          enum: [submitted, working, input-required, auth-required, completed, failed, canceled, timeout, rejected]
+        is_terminal:
+          type: boolean
+          description: False for submitted/working/input-required/auth-required, true only for verified terminal outcomes.
+        is_error: { type: boolean }
+        text: { type: string }
+        cancellation_requested:
+          type: boolean
+          description: Cancellation intent was persisted, not proof execution has stopped.
+        artifacts:
+          type: array
+          items:
+            type: object
+            properties:
+              artifactId: { type: string }
+              name: { type: string }
+              description: { type: string }
+              parts:
+                type: array
+                items:
+                  anyOf:
+                    - type: object
+                      required: [text]
+                      properties:
+                        text: { type: string }
+                    - type: object
+                      required: [url]
+                      properties:
+                        url: { type: string }
+                        filename: { type: string }
+                        mediaType: { type: string }
+                    - type: object
+                      required: [data]
+                      properties:
+                        data:
+                          description: JSON value, not a base64 string; includes browser_task pause/effect/retry metadata.
+
+    BrowserTaskEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/SuccessEnvelope'
+        - type: object
+          required: [data]
+          properties:
+            data: { $ref: '#/components/schemas/BrowserTaskSnapshot' }
+
+    BrowserTaskListEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/SuccessEnvelope'
+        - type: object
+          required: [data]
+          properties:
+            data:
+              type: object
+              required: [tasks, task_kind, has_more]
+              properties:
+                task_kind: { type: string, enum: [browser] }
+                tasks:
+                  type: array
+                  items: { $ref: '#/components/schemas/BrowserTaskSnapshot' }
+                next_since: { type: string, pattern: '^browser:' }
+                has_more:
+                  type: boolean
+                  description: Source page has more rows, even if this filtered page is empty. No exact total is provided.
+
+    BrowserPublicEvent:
+      type: object
+      required: [id, task_id, sequence, type, payload]
+      properties:
+        id: { type: string }
+        task_id: { type: string }
+        sequence: { type: integer, minimum: 1, maximum: 1000003 }
+        type:
+          type: string
+          enum: [browser.task.message, browser.task.tool_use, browser.task.tool_result, browser.task.status]
+        payload:
+          type: object
+          description: |
+            message has text; tool_use has action_id/name; tool_result has
+            action_id/is_error; status has status and optional request_id,
+            reply_id, terminal_id, late_reply, summary, code, pause_sequence,
+            effect_unknown, retry_policy. Private execution claims and raw
+            tool arguments/results are never projected here.
+        created_at: { type: string, format: date-time }
+
+    BrowserMessagesEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/SuccessEnvelope'
+        - type: object
+          required: [data]
+          properties:
+            data:
+              type: object
+              required: [messages, latest_offset, has_more, task]
+              properties:
+                messages:
+                  type: array
+                  items: { $ref: '#/components/schemas/BrowserPublicEvent' }
+                latest_offset: { type: integer, minimum: 0, maximum: 1000003 }
+                has_more: { type: boolean }
+                task: { $ref: '#/components/schemas/BrowserTaskSnapshot' }
+
+    BrowserEventStream:
+      type: string
+      description: |
+        SSE task_accepted carries BrowserTaskSnapshot after durable admission
+        or verified lookup. message carries BrowserPublicEvent with numeric
+        SSE id=sequence. Sequences are increasing, not necessarily contiguous.
+        done carries the latest BrowserTaskSnapshot at pause or terminal;
+        inspect is_terminal instead of assuming successful completion.
+        error(subscription_ended) ends only this subscription; query the
+        original task or reconnect with since/Last-Event-ID. There is no
+        automatic task cancellation or replacement admission on disconnect.
+        Server sends comment heartbeats every 15s and bounds subscriptions
+        to 5m30s. Reconnect to query further facts, not to re-execute actions.
 
     # -------- Tasks (ADR-0017 canonical task lifecycle) --------
     TaskStatus:
