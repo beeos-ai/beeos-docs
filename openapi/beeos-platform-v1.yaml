@@ -3466,6 +3466,7 @@ components:
         skillsInstall: { type: boolean }
         skillsUninstall: { type: boolean }
         skillsUpdate: { type: boolean }
+        automationWake: { type: boolean, description: Explicit support for Automation wake delivery. Missing or false means unsupported. }
     AgentDTO:
       type: object
       required: [id, instanceId, name, status, visibility, mcpEnabled, capabilities, conversationTransport]
