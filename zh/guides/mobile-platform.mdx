@@ -41,6 +41,55 @@ curl -N "$BASE/api/v1/agents/$AGENT_ID/tasks/$TASK_ID/events" \
 请求被接受后，即使调用方断线，任务也会继续可靠执行。用同一个 idempotency key
 重试不会创建第二个手机任务。
 
+## Device Agent 模式与模型
+
+观察模式与执行模式是独立参数：
+
+| 参数 | 可选值 | 默认 |
+| --- | --- | --- |
+| `observation_mode` | `auto`、`structure`、`vision` | `auto` |
+| `execution_mode` | `flash`、`pro` | `flash` |
+
+Flash 使用选定模型的适配器直接执行；Pro 增加规划、基于实时页面的操作、
+动作校验与原始任务要求的最终核对。兼容旧值：`fast -> flash`，
+`reasoning/advanced -> pro`，观察模式 `xml -> structure`。
+这些调整仅针对 Device Agent，BeeRunner/Portal 保持原样；
+旧版 Redroid sidecar 可能需要升级后才能使用新模式。
+
+Web 始终提供 **Default model**。不传 `model` 即使用设备配置中的默认模型，
+旧 `auto` 仍兼容。显式传入模型 ID 时复用设备现有 URL/API Key。
+Device Agent 的 `models/list` 是推荐目录，不是白名单；外部调用仍可传自定义模型。
+目录中有模型不代表当前服务商一定支持它。Pro 要求兼容原生工具调用的通用模型，
+专用 GUI 适配器仍用于 Flash。Planner/Checker 可由运行时另行配置模型。
+
+现有 Python SDK 可通过任务 metadata 传参，不需要重新生成 SDK：
+
+```python
+import os
+import beeos_sdk
+
+configuration = beeos_sdk.Configuration(
+    host="https://openapi.beeos.ai",
+    access_token=os.environ["BEEOS_API_KEY"],
+)
+with beeos_sdk.ApiClient(configuration) as client:
+    response = beeos_sdk.TasksApi(client).create_task(
+        agent_id=os.environ["BEEOS_AGENT_ID"],
+        create_task_request=beeos_sdk.CreateTaskRequest(
+            message="Open Settings, then return home without changing settings.",
+            deadline_ms=180000,
+            idempotency_key="device-pro-example-001",
+            metadata={"observation_mode": "auto", "execution_mode": "pro"},
+        ),
+    )
+    print(response)
+```
+
+直接执行改用 `execution_mode=flash`。仅需覆盖默认模型时才在 metadata 中添加
+`model`。任务已接受不等于成功，应等待终态并检查原因和动作回执。
+规划与最终核对阶段可能暂时没有正文，不能仅因文本暂停就认定超时；
+应使用任务 deadline 和取消接口。
+
 ## 单写入规则
 
 同一台手机同一时间只安全执行一个会改变设备状态的任务。BeeOS 在 WebChat、

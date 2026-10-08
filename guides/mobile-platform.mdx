@@ -46,6 +46,61 @@ curl -N "$BASE/api/v1/agents/$AGENT_ID/tasks/$TASK_ID/events" \
 The accepted task survives caller disconnects. Repeating the create request
 with the same idempotency key does not create a second phone task.
 
+## Device Agent modes and models
+
+Device Agent exposes two independent task options:
+
+| Option | Values | Default |
+| --- | --- | --- |
+| `observation_mode` | `auto`, `structure`, `vision` | `auto` |
+| `execution_mode` | `flash`, `pro` | `flash` |
+
+Flash executes directly using the selected model's adapter. Pro adds planning,
+live-page operation, validation and a final check against the original task.
+Legacy `fast` maps to `flash`; `reasoning` and `advanced` map to `pro`.
+Legacy observation `xml` remains accepted as `structure`.
+These names apply to Device Agent; BeeRunner/Portal options are unchanged.
+An older Redroid sidecar may require an upgrade before accepting these modes.
+
+The Web model picker always offers **Default model**. Omit `model` to use the
+device's configured model; legacy `auto` is also accepted. An explicit model ID
+overrides the task model while reusing the device's configured URL and API key.
+Device Agent supplies a curated `models/list` directory, not an execution
+allowlist: callers may supply other compatible model IDs. Listing a model does
+not guarantee that the configured provider serves it. Pro requires a compatible
+general tool-calling model; specialized GUI-only adapters remain Flash-only.
+Planner/checker models may be separately configured by the runtime.
+
+The existing Python SDK accepts these options through task metadata, without
+regenerating the SDK:
+
+```python
+import os
+import beeos_sdk
+
+configuration = beeos_sdk.Configuration(
+    host="https://openapi.beeos.ai",
+    access_token=os.environ["BEEOS_API_KEY"],
+)
+with beeos_sdk.ApiClient(configuration) as client:
+    response = beeos_sdk.TasksApi(client).create_task(
+        agent_id=os.environ["BEEOS_AGENT_ID"],
+        create_task_request=beeos_sdk.CreateTaskRequest(
+            message="Open Settings, then return home without changing settings.",
+            deadline_ms=180000,
+            idempotency_key="device-pro-example-001",
+            metadata={"observation_mode": "auto", "execution_mode": "pro"},
+        ),
+    )
+    print(response)
+```
+
+Use `execution_mode=flash` for a direct task. Add `model` to `metadata` only
+when overriding the configured default. Task acceptance is not task success:
+wait for the terminal outcome, including the reason and action receipts.
+Planner/checker phases can be silent; do not infer failure solely from a pause
+in text. Use the task deadline and cancellation API instead.
+
 ## Single-writer rule
 
 A phone can safely execute only one mutating task at a time. BeeOS therefore
