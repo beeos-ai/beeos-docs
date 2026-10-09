@@ -2,8 +2,8 @@
 # AUTO-SYNCED FROM backend/openapi/beeos-platform-v1.yaml
 # DO NOT EDIT HERE — edit the source in the openagent repo and run
 #   cd beeos-docs && npm run sync-spec
-# Last synced: 2026-09-11T16:05:56Z
-# Source SHA: f7702449
+# Last synced: 2026-10-09T14:26:18Z
+# Source SHA: a63ac73e
 # ============================================================================
 openapi: 3.1.0
 info:
@@ -3756,6 +3756,35 @@ components:
     # as standalone schemas lets SDK generators emit Go / TypeScript
     # types for the message envelope and end-frame without dragging
     # the entire SSE prose into client code.
+    MessageDeliveryContext:
+      type: object
+      additionalProperties: false
+      required: [target_agent_id, delivery_principal, runtime_epoch, scope, parent_message_id]
+      description: Trusted producer execution provenance outside opaque business content.
+      properties:
+        target_agent_id:
+          type: string
+          maxLength: 256
+        delivery_principal:
+          type: string
+          maxLength: 256
+        runtime_epoch:
+          type: string
+          pattern: '^[1-9][0-9]*$'
+        scope:
+          type: object
+          additionalProperties: false
+          required: [kind, id]
+          properties:
+            kind:
+              type: string
+              enum: [task, conversation_turn]
+            id:
+              type: string
+              maxLength: 128
+        parent_message_id:
+          type: string
+          maxLength: 128
     TaskSSEMessage:
       type: object
       required: [type]
@@ -3783,6 +3812,8 @@ components:
           type: string
         payload:
           description: Opaque JSON body of the per-type message.
+        delivery_context:
+          $ref: '#/components/schemas/MessageDeliveryContext'
         created_at:
           type: string
           format: date-time
@@ -4529,6 +4560,8 @@ components:
         in_reply_to: { type: string }
         payload:
           description: Opaque JSON payload of the message.
+        delivery_context:
+          $ref: '#/components/schemas/MessageDeliveryContext'
         created_at:
           type: string
           format: date-time

@@ -2,8 +2,8 @@
 # AUTO-SYNCED FROM backend/openapi/beeos-agent-integration-v1.yaml
 # DO NOT EDIT HERE — edit the source in the openagent repo and run
 #   cd beeos-docs && npm run sync-spec
-# Last synced: 2026-09-11T16:05:56Z
-# Source SHA: f7702449
+# Last synced: 2026-10-09T14:26:18Z
+# Source SHA: a63ac73e
 # ============================================================================
 openapi: 3.1.0
 info:
